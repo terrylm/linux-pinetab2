@@ -70,22 +70,3 @@
 &sdmmc1 {
 	mmc-pwrseq = <&sdio_pwrseq &sdio_pwrkey>;
 };
-/* These were added durring the struggle to get the keyboard working. It is not clear if they are needed.
-   These will be removed if commenting them out has no effect.
-&vcc5v0_usb_host0 {
-    status = "okay";
-};
-
-
-&usb_host0_xhci {
-    status = "okay";
-};
-
-&usb_host0_ehci {
-    status = "okay";
-};
-
-&usb_host0_ohci {
-    status = "okay";
-};
-*/

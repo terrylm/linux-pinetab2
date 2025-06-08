@@ -1372,9 +1372,15 @@ static int rockchip_usb2phy_probe(struct platform_device *pdev)
 	unsigned int reg;
 	int index = 0, ret;
 
+	dev_err(dev, "Probing USB2 PHY at %pOF, extcon=%p, gpio=%d\n",
+		pdev->dev.of_node, of_get_property(dev->of_node, "extcon", NULL),
+		gpiod_get_value(devm_gpiod_get_optional(dev, "keyboard-detect", GPIOD_IN)));
+
+
 	rphy = devm_kzalloc(dev, sizeof(*rphy), GFP_KERNEL);
-	if (!rphy)
+	if (!rphy) {
 		return -ENOMEM;
+	}
 
 	if (!dev->parent || !dev->parent->of_node) {
 		rphy->grf = syscon_regmap_lookup_by_phandle(np, "rockchip,usbgrf");
@@ -1604,41 +1610,47 @@ static int rk3128_usb2phy_tuning(struct rockchip_usb2phy *rphy)
 
 static int rk3568_usb2phy_tuning(struct rockchip_usb2phy *rphy)
 {
-	int ret;
+	int ret = 0; /* Initialize return value */
 
-	if(IS_ERR(rphy->phy_base))
+	/* Check if PHY base address is valid */
+	if (IS_ERR(rphy->phy_base))
 		return -EINVAL;
 
-	/* Turn off differential receiver by default to save power */
+	/* Turn off differential receiver to save power */
 	phy_clear_bits(rphy->phy_base + 0x30, BIT(2));
 
-	/* Enable otg port pre-emphasis during non-chirp phase */
+	/* Enable OTG port pre-emphasis during non-chirp phase */
 	phy_update_bits(rphy->phy_base, GENMASK(2, 0), 0x04);
 
 	/* Enable host port pre-emphasis during non-chirp phase */
 	phy_update_bits(rphy->phy_base + 0x0400, GENMASK(2, 0), 0x04);
 
+	/* Specific settings for USB2PHY0 (0xfe8a0000) */
 	if (rphy->phy_cfg->reg == 0xfe8a0000) {
-		/* Set otg port HS eye height to 437.5mv(default is 400mv) */
+		/* Set OTG port HS eye height to 437.5mV (default 400mV) */
 		phy_update_bits(rphy->phy_base + 0x30, GENMASK(6, 4), (0x06 << 4));
 
-		/*
-		 * Set the bvalid filter time to 10ms
-		 * based on the usb2 phy grf pclk 100MHz.
-		 */
-		ret |= regmap_write(rphy->grf, 0x0048, 0xF4240);
+		/* Set bvalid filter time to 10ms (pclk 100MHz) */
+		ret = regmap_write(rphy->grf, 0x0048, 0xF4240);
+		if (ret)
+			return ret;
 
-		/*
-		 * Set the id filter time to 10ms based
-		 * on the usb2 phy grf pclk 100MHz.
-		 */
-		ret |= regmap_write(rphy->grf, 0x004c, 0xF4240);
+		/* Set id filter time to 10ms (pclk 100MHz) */
+		ret = regmap_write(rphy->grf, 0x004c, 0xF4240);
+		if (ret)
+			return ret;
 	}
 
-	/* Enable host port (usb3 host1 and usb2 host1) wakeup irq */
-	ret |= regmap_write(rphy->grf, 0x000c, 0x80008000);
+	/* Skip host wakeup IRQ for OTG port (USB2PHY1, 0xfe8b0000) */
+	if (rphy->phy_cfg->reg != 0xfe8b0000) {
+		/* Enable host port (USB3 host1 and USB2 host1) wakeup IRQ */
+		ret = regmap_write(rphy->grf, 0x000c, 0x80008000);
+		if (ret)
+			return ret;
+	}
 
-	return ret;
+	return 0; /* Success */
+
 }
 
 static int rk3576_usb2phy_tuning(struct rockchip_usb2phy *rphy)

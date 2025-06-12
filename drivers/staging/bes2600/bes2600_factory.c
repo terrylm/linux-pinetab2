@@ -209,39 +209,39 @@ static inline int factory_parse(uint8_t *source_buf, struct factory_t *factory)
 		return -1;
 	}
 
-	ret = sscanf(source_buf, STANDARD_FACTORY,\
-		&factory->head.magic,\
-		&factory->head.version,\
-		&factory->head.crc,\
-		&factory->data.iQ_offset,\
-		&factory->data.freq_cal,\
-		&factory->data.freq_cal_flags,\
-		&factory->data.tx_power_ch[0],\
-		&factory->data.tx_power_ch[1],\
-		&factory->data.tx_power_ch[2],\
-		&factory->data.tx_power_type,\
-		&factory->data.temperature,\
-		&factory->data.tx_power_ch_5G[0],\
-		&factory->data.tx_power_ch_5G[1],\
-		&factory->data.tx_power_ch_5G[2],\
-		&factory->data.tx_power_ch_5G[3],\
-		&factory->data.tx_power_ch_5G[4],\
-		&factory->data.tx_power_ch_5G[5],\
-		&factory->data.tx_power_ch_5G[6],\
-		&factory->data.tx_power_ch_5G[7],\
-		&factory->data.tx_power_ch_5G[8],\
-		&factory->data.tx_power_ch_5G[9],\
-		&factory->data.tx_power_ch_5G[10],\
-		&factory->data.tx_power_ch_5G[11],\
-		&factory->data.tx_power_ch_5G[12],\
-		&factory->data.tx_power_flags_5G,\
-		&factory->data.temperature_5G,\
-		&factory->data.bt_tx_power[0],\
-		&factory->data.bt_tx_power[1],\
-		&factory->data.bt_tx_power[2],\
+	ret = sscanf(source_buf, STANDARD_FACTORY,
+		&factory->head.magic,
+		&factory->head.version,
+		&factory->head.crc,
+		&factory->data.iQ_offset,
+		&factory->data.freq_cal,
+		&factory->data.freq_cal_flags,
+		&factory->data.tx_power_ch[0],
+		&factory->data.tx_power_ch[1],
+		&factory->data.tx_power_ch[2],
+		&factory->data.tx_power_type,
+		&factory->data.temperature,
+		&factory->data.tx_power_ch_5G[0],
+		&factory->data.tx_power_ch_5G[1],
+		&factory->data.tx_power_ch_5G[2],
+		&factory->data.tx_power_ch_5G[3],
+		&factory->data.tx_power_ch_5G[4],
+		&factory->data.tx_power_ch_5G[5],
+		&factory->data.tx_power_ch_5G[6],
+		&factory->data.tx_power_ch_5G[7],
+		&factory->data.tx_power_ch_5G[8],
+		&factory->data.tx_power_ch_5G[9],
+		&factory->data.tx_power_ch_5G[10],
+		&factory->data.tx_power_ch_5G[11],
+		&factory->data.tx_power_ch_5G[12],
+		&factory->data.tx_power_flags_5G,
+		&factory->data.temperature_5G,
+		&factory->data.bt_tx_power[0],
+		&factory->data.bt_tx_power[1],
+		&factory->data.bt_tx_power[2],
 		&factory->data.bt_tx_power[3]
 #ifdef STANDARD_FACTORY_EFUSE_FLAG
-		,&factory->data.select_efuse);
+		, &factory->data.select_efuse);
 #else
 		);
 #endif

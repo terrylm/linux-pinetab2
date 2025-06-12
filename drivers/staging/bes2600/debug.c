@@ -705,6 +705,8 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	int ret = -ENOMEM;
 	struct bes2600_debug_priv *d;
 	char name[VIF_DEBUGFS_NAME_S];
+	static int entrycount=0;
+	printk(KERN_DEBUG "This function has been entered %i times before.\n", entrycount++);
 
 	if (WARN_ON(!hw_priv))
 		return ret;
@@ -719,13 +721,14 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 
 	memset(name, 0, VIF_DEBUGFS_NAME_S);
 	ret = snprintf(name, VIF_DEBUGFS_NAME_S, "vif_%d", priv->if_id);
-	if (WARN_ON(ret < 0))
-		goto err;
-
-	d->debugfs_phy = debugfs_create_dir(name,
-					    hw_priv->debug->debugfs_phy);
-	if (WARN_ON(!d->debugfs_phy))
-		goto err;
+	struct dentry *dir = debugfs_lookup(name, hw_priv->debug->debugfs_phy);
+	if (dir) {
+		printk(KERN_DEBUG "vif_%d exists, reusing\n", priv->if_id);
+		d->debugfs_phy = dir;
+	} else {
+		d->debugfs_phy = debugfs_create_dir(name, hw_priv->debug->debugfs_phy);
+		if (IS_ERR(d->debugfs_phy)) goto err;
+	}
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	if (WARN_ON(!debugfs_create_file("hang", S_IWUSR, d->debugfs_phy,

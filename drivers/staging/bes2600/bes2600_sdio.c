@@ -535,14 +535,16 @@ static int bes2600_sdio_irq_unsubscribe(struct sbus_priv *self)
 static void bes2600_sdio_off(const struct bes2600_platform_data_sdio *pdata)
 {
 	bes_devel("%s\n", __func__);
-	gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
-	gpiod_direction_output(pdata->reset, GPIOD_OUT_LOW);
+	// Both pins are not availiable? being used for other things?
+	//gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
+	//gpiod_direction_output(pdata->reset, GPIOD_OUT_LOW);
 }
 
 static void bes2600_sdio_on(const struct bes2600_platform_data_sdio *pdata)
 {
 	bes_devel("%s\n", __func__);
-	gpiod_direction_output(pdata->powerup, GPIOD_OUT_HIGH);
+	// Both pins are not availiable? being used for other things?
+	// gpiod_direction_output(pdata->powerup, GPIOD_OUT_HIGH);
 }
 
 static size_t bes2600_sdio_align_size(struct sbus_priv *self, size_t size)
@@ -878,6 +880,7 @@ static void sdio_rx_work(struct work_struct *work)
 			sdio_work_debug(self);
 			goto failed;
 		}
+
 		retry = 0;
 		self->rx_xfer_cnt++;
 		self->last_rx_data_timestamp = jiffies;
@@ -1283,6 +1286,7 @@ static int bes2600_platform_data_init(struct device *dev)
 	}
 
 	/* Ensure I/Os are pulled low */
+	/* The hardware for this pin has an error? So power cycle as a reset strategy?
 	pdata->reset = devm_fwnode_gpiod_get_index(dev, &np->fwnode, "reset", 0, GPIOD_OUT_LOW, "bes2600_wlan_reset");
 	if (IS_ERR(pdata->reset)) {
 		bes_err("can't request reset_gpio (%ld)\n", PTR_ERR(pdata->reset));
@@ -1294,6 +1298,9 @@ static int bes2600_platform_data_init(struct device *dev)
 		bes_err("can't request powerup_gpio (%ld)\n", PTR_ERR(pdata->powerup));
 		pdata->powerup = NULL;
  	}
+	*/
+	pdata->reset = NULL;
+	pdata->powerup = NULL;
 
 	pdata->wakeup = devm_fwnode_gpiod_get_index(dev, &np->fwnode, "wakeup", 0, GPIOD_OUT_LOW, "bes2600_wakeup");
 	if (IS_ERR(pdata->wakeup)) {
@@ -1314,13 +1321,16 @@ static int bes2600_platform_data_init(struct device *dev)
 
 static int bes2600_sdio_reset(struct sbus_priv *self)
 {
-	const struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
+	// As not used due to below comment, build fails.
+	//const struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
 
 	bes_devel("%s\n", __func__);
 
+/*	Due to error in hardware?, reset and power pins are not availiable?
 	gpiod_direction_output(pdata->reset, GPIOD_OUT_HIGH);
 	mdelay(50);
 	gpiod_direction_output(pdata->reset, GPIOD_OUT_LOW);
+*/
 
 	return 0;
 }
@@ -1728,8 +1738,10 @@ static void bes2600_sdio_power_down(struct sbus_priv *self)
 	sdio_writeb(self->func, tmp_val, BES_HOST_INT_REG_ID, &ret);
 	sdio_release_host(self->func);
 #else
-	struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
-	gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
+	// As not used due to below comment, build fails.
+	//struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
+	// Both pins are not availiable? being used for other things?
+	// gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
 #endif
 
 	msleep(10);

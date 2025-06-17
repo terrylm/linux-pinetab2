@@ -77,7 +77,6 @@ struct sbus_ops {
 	int (*reboot)(struct sbus_priv *self);
 };
 
-void bes2600_irq_handler(struct bes2600_common *priv);
 
 /* This MUST be wrapped with hwbus_ops->lock/unlock! */
 int __bes2600_irq_enable(int enable);

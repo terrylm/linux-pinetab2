@@ -78,7 +78,4 @@ struct sbus_ops {
 };
 
 
-/* This MUST be wrapped with hwbus_ops->lock/unlock! */
-int __bes2600_irq_enable(int enable);
-
 #endif /* BES2600_SBUS_H */

@@ -226,6 +226,9 @@ static inline int bes2600_ahb_read_32(u32 addr, u32 *val)
 	return bes2600_ahb_read(addr, val, sizeof(val));
 }
 
+/* This MUST be wrapped with hwbus_ops->lock/unlock! */
+int __bes2600_irq_enable(int enable);
+
 #if defined(BES2600_DETECTION_LOGIC)
 static inline int bes2600_ahb_write_32(u32 addr, u32 val)
 {

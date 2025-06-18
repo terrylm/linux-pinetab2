@@ -308,17 +308,40 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	spin_lock(&hw_priv->vif_list_lock);
 	if (atomic_read(&hw_priv->num_vifs) < CW12XX_MAX_VIFS) {
 #ifdef P2P_MULTIVIF
-		if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
-			priv->if_id = 0;
-		} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr,
-			ETH_ALEN)) {
-			priv->if_id = 2;
-		} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr,
-			ETH_ALEN)) {
-			priv->if_id = 1;
+	if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[0]) {
+			bes_err("VIF if_id=0 already in use for addr[0]=%pM\n",
+				hw_priv->addresses[0].addr);
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
 		}
-		bes_devel("%s: if_id %d mac %pM\n",
-				__func__, priv->if_id, vif->addr);
+		priv->if_id = 0;
+	} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[2]) {
+			bes_err("VIF if_id=2 already in use for addr[1]=%pM\n",
+				hw_priv->addresses[1].addr);
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+		priv->if_id = 2;
+	} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[1]) {
+			bes_err("VIF if_id=1 already in use for addr[2]=%pM\n",
+				hw_priv->addresses[2].addr);
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+		priv->if_id = 1;
+	} else {
+		bes_err("No matching address for VIF addr=%pM\n", vif->addr);
+		spin_unlock(&hw_priv->vif_list_lock);
+		up(&hw_priv->conf_lock);
+		return -EINVAL;
+	}
+
 #else
 		for (i = 0; i < CW12XX_MAX_VIFS; i++)
 			if (!memcmp(vif->addr, hw_priv->addresses[i].addr,
@@ -462,6 +485,8 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 		|| priv->mode == NL80211_IFTYPE_P2P_GO)) {
 		hw_priv->is_go_thru_go_neg = false;
 	}
+
+	flush_workqueue(hw_priv->workqueue);
 	spin_lock(&hw_priv->vif_list_lock);
 	spin_lock(&priv->vif_lock);
 	hw_priv->vif_list[priv->if_id] = NULL;
@@ -504,6 +529,7 @@ int bes2600_change_interface(struct ieee80211_hw *dev,
 	return ret;
 }
 
+#define MAX_SHORT_RETRIES 0x0F // Maximum short frame retry limit
 int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 {
 	int ret = 0;
@@ -587,8 +613,8 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 		spin_lock_bh(&hw_priv->tx_policy_cache.lock);
 		hw_priv->long_frame_max_tx_count = conf->long_frame_max_tx_count;
 		hw_priv->short_frame_max_tx_count =
-			(conf->short_frame_max_tx_count < 0x0F) ?
-			conf->short_frame_max_tx_count : 0x0F;
+			(conf->short_frame_max_tx_count < MAX_SHORT_RETRIES) ?
+			conf->short_frame_max_tx_count : MAX_SHORT_RETRIES;
 		hw_priv->hw->max_rate_tries = hw_priv->short_frame_max_tx_count;
 		spin_unlock_bh(&hw_priv->tx_policy_cache.lock);
 	}
@@ -601,6 +627,12 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 void bes2600_update_filtering(struct bes2600_vif *priv)
 {
 	int ret;
+
+	if (!priv->vif) {
+		bes_err("VIF is NULL in update_filtering\n");
+		return;
+	}
+
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	bool bssid_filtering = !priv->rx_filter.bssid;
 	static struct wsm_beacon_filter_control bf_disabled = {
@@ -1057,7 +1089,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 		}
 #endif
 
-		ret = WARN_ON(wsm_add_key(hw_priv, wsm_key, priv->if_id));
+		ret = wsm_add_key(hw_priv, wsm_key, priv->if_id);
 		if (!ret) {
 			key->hw_key_idx = idx;
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
@@ -1065,7 +1097,9 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				hw_priv->last_ins_wapi_usk_id = idx;
 #endif
 		} else {
+			bes_err("wsm_add_key failed: %d\n", ret);
 			bes2600_free_key(hw_priv, idx);
+			goto finally;
 		}
 
 		if (!ret && (pairwise
@@ -1576,8 +1610,6 @@ void bes2600_bss_loss_work(struct work_struct *work)
 #endif
 	} else if (priv->bss_loss_status == BES2600_BSS_LOSS_CONFIRMING) {
 #ifdef BSS_LOSS_CHECK
-		/* reset cca to workaround rx stuck issue */
-		// bes2600_cca_soft_reset();
 
 		/* succeeded to send last null frame */
 		bl_cfm_cnt = 0;
@@ -2078,7 +2110,7 @@ void bes2600_offchannel_work(struct work_struct *work)
 #endif
 		if (ret)
 			bes_err("bes2600_offchannel_work: "
-				       "queue_remove failed %d\n", ret);
+			       "queue_remove failed %d\n", ret);
 		wsm_unlock_tx(hw_priv);
 		return;
 	}
@@ -2179,6 +2211,13 @@ void bes2600_join_work(struct work_struct *work)
 	down(&hw_priv->conf_lock);
 	{
 		struct wsm_switch_channel channel;
+		static int join_retries;
+		if (join_retries++ > 5) {
+			bes_err("Join failed after %d retries\n", join_retries);
+			bes2600_queue_remove(queue, hw_priv->pending_frame_id);
+			wsm_unlock_tx(hw_priv);
+			return;
+		}
 		struct wsm_join join = {
 			.mode = (bss->capability & WLAN_CAPABILITY_IBSS) ?
 				WSM_JOIN_MODE_IBSS : WSM_JOIN_MODE_BSS,

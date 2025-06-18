@@ -8,7 +8,8 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
- #define DEBUG 1
+#define DEBUG 1
+#define SDIO_RETRY_MAX 30 // Arbitrary. Maybe something else?
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/gpio.h>
@@ -34,7 +35,6 @@
 #include "bes_chardev.h"
 #include "bes_log.h"
 
-static void sdio_scan_work(struct work_struct *work);
 void sdio_work_debug(struct sbus_priv *self);
 static void bes2600_sdio_power_down(struct sbus_priv *self);
 struct bes2600_platform_data_sdio *bes2600_get_platform_data(void);
@@ -56,7 +56,6 @@ struct sbus_priv {
 	spinlock_t		lock;
 	sbus_irq_handler	irq_handler;
 	void			*irq_priv;
-	struct work_struct sdio_scan_work;
 	struct device *dev;
 	struct workqueue_struct *sdio_wq;
 	bool fw_started;
@@ -400,6 +399,11 @@ static int bes2600_sdio_reg_write(struct sbus_priv *self, u32 reg,
 #ifndef CONFIG_BES2600_USE_GPIO_IRQ
 static void bes2600_sdio_irq_handler(struct sdio_func *func)
 {
+	if (!func) {
+		bes_err("SDIO IRQ handler called with NULL func\n");
+		return;
+	}
+
 	struct sbus_priv *self = sdio_get_drvdata(func);
 	unsigned long flags;
 
@@ -862,14 +866,14 @@ static void sdio_rx_work(struct work_struct *work)
 
 		do {
 			ret = bes2600_sdio_memcpy_fromio(self, 0, buf, total_len);
-			if (likely(ret != -84)) {
+			if (likely(ret != BES_SDIO_CRC_ERROR)) {
 				crc_retry = 0;
 				break;
 			} else {
 				crc_retry++;
 				bes_err("%s sdio read crc error(%d)\n", __func__, crc_retry);
 			}
-		} while (crc_retry <= 10);
+		} while (crc_retry <= SDIO_RETRY_MAX);
 		if (self->retune_protected == true) {
 			sdio_retune_release(self->func);
 			self->retune_protected = false;
@@ -914,11 +918,6 @@ failed:
 	bes2600_gpio_allow_mcu_sleep(self, GPIO_WAKE_FLAG_SDIO_RX);
 	bes2600_chrdev_wifi_force_close(self->core, false);
 	WARN_ON(1);
-}
-
-static void sdio_scan_work(struct work_struct *work)
-{
-	bes_warn("%s: this function does nothing\n", __FUNCTION__);
 }
 
 static void *bes2600_sdio_pipe_read(struct sbus_priv *self)
@@ -1168,7 +1167,7 @@ flush_previous:
 			}
 			do {
 				ret = bes_sdio_memcpy_to_io_helper(self->func, total_len, sg, scatters);
-				if (likely(ret != -84)) {
+				if (likely(ret != BES_SDIO_CRC_ERROR)) {
 					crc_retry = 0;
 					break;
 				} else {
@@ -1286,7 +1285,7 @@ static int bes2600_platform_data_init(struct device *dev)
 	}
 
 	/* Ensure I/Os are pulled low */
-	/* The hardware for this pin has an error? So power cycle as a reset strategy?
+	/* The hardware for these pins have an error? No connected?
 	pdata->reset = devm_fwnode_gpiod_get_index(dev, &np->fwnode, "reset", 0, GPIOD_OUT_LOW, "bes2600_wlan_reset");
 	if (IS_ERR(pdata->reset)) {
 		bes_err("can't request reset_gpio (%ld)\n", PTR_ERR(pdata->reset));
@@ -1299,8 +1298,6 @@ static int bes2600_platform_data_init(struct device *dev)
 		pdata->powerup = NULL;
  	}
 	*/
-	pdata->reset = NULL;
-	pdata->powerup = NULL;
 
 	pdata->wakeup = devm_fwnode_gpiod_get_index(dev, &np->fwnode, "wakeup", 0, GPIOD_OUT_LOW, "bes2600_wakeup");
 	if (IS_ERR(pdata->wakeup)) {
@@ -1343,7 +1340,7 @@ static int bes2600_sdio_readb_safe(struct sdio_func *func, unsigned int addr)
 
 	do {
 		val = sdio_readb(func, addr, &ret);
-	} while((ret < 0) && ++retry < 30);
+	} while((ret < 0) && ++retry < SDIO_RETRY_MAX);
 
 	if (ret)
 		bes_err("%s failed, ret:%d\n", __func__, ret);
@@ -1358,7 +1355,7 @@ static int bes2600_sdio_writeb_safe(struct sdio_func *func, unsigned int addr, u
 
 	do {
 		sdio_writeb(func, val, addr, &ret);
-	} while((ret < 0) && ++retry < 30);
+	} while((ret < 0) && ++retry < SDIO_RETRY_MAX);
 
 	if (ret)
 		bes_err("%s failed, ret:%d\n", __func__, ret);
@@ -1377,7 +1374,7 @@ static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self, int flag)
 
 	/* error check */
 	if((self->gpio_wakup_flags & BIT(flag)) != 0) {
-		bes_err(			"repeat set gpio_wake_flag, sub_sys:%d", flag);
+		bes_err("repeat set gpio_wake_flag, sub_sys:%d", flag);
 		mutex_unlock(&self->io_mutex);
 		return;
 	}
@@ -1747,7 +1744,6 @@ static void bes2600_sdio_power_down(struct sbus_priv *self)
 	msleep(10);
 
 	self->func->card->host->caps &= ~MMC_CAP_NONREMOVABLE;
-	schedule_work(&self->sdio_scan_work);
 
 }
 
@@ -1825,7 +1821,7 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 			      const struct sdio_device_id *id)
 {
 	struct sbus_priv *self;
-	int status;
+	int status=0;
 
 	bes_devel("Probe called:%p,%d\n", func, func->num);
 	if (func->num > 1)
@@ -1842,9 +1838,11 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	spin_lock_init(&self->lock);
 
 	struct device *dev = &func->dev;
-	int ret = bes2600_platform_data_init(dev);
-	if (ret)
+	status = bes2600_platform_data_init(dev);
+	if (status) {
+		bes_err("platform data init failed: %d\n", status);
 		goto err;
+	}
 
 	self->pdata = bes2600_get_platform_data();
 	self->func = func;
@@ -1854,7 +1852,6 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	self->unregister_in_process = false;
 	mutex_init(&self->io_mutex);
 	mutex_init(&self->sbus_mutex);
-	INIT_WORK(&self->sdio_scan_work, sdio_scan_work);
 #ifndef SDIO_HOST_ADMA_SUPPORT
 	if ((MAX_SDIO_TRANSFER_LEN < 1632 * BES_SDIO_RX_MULTIPLE_NUM) ||
 			(MAX_SDIO_TRANSFER_LEN < 1632 * BES_SDIO_TX_MULTIPLE_NUM)) {
@@ -1881,11 +1878,13 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 		bes_devel("interrupt init process beacuse device be closed.\n");
 		goto out;
 	} else if(status < 0) {	// for download fail case
+		bes_err("Loading of firmware failed: %d\n", status);
 		goto err;
 	}
 
 	status = bes2600_register_net_dev(self);
 	if (status) {
+		bes_err("Register net dev failed: %d\n", status);
 		goto err;
 	}
 
@@ -1905,7 +1904,13 @@ err:
 	bes2600_reg_set_object(NULL, NULL);
 	bes2600_chrdev_set_sbus_priv_data(NULL, true);
 	kfree(self);
-	return 0;
+
+	if (status < 0) {
+		return status;
+	} else {
+		bes_err("Unspecified probe failure.\n");
+		return -EIO; // Generic I/O error
+	}
 }
 
 int bes2600_register_net_dev(struct sbus_priv *bus_priv)

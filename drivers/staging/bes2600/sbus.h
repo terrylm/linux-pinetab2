@@ -11,6 +11,7 @@
 
 #ifndef BES2600_SBUS_H
 #define BES2600_SBUS_H
+#define BES_SDIO_CRC_ERROR -84 // Likely CRC error, undocumented
 
 /*
  * sbus priv forward definition.

@@ -860,7 +860,7 @@ static int bes_read_dpd_data(struct platform_fw_t *fw_data)
 	do {
 		msleep(100);
 		ret = bes2600_reg_read(BES_SLAVE_STATUS_REG_ID, &mcu_status, 1);
-	} while(((ret == 0) || (ret == -84)) &&
+	} while(((ret == 0) || (ret == BES_SDIO_CRC_ERROR)) &&
 	        !(mcu_status & BES_SLAVE_STATUS_DPD_READY) &&
 		time_before(jiffies, wait_timeout));
 
@@ -920,7 +920,7 @@ static int bes_read_dpd_log(struct platform_fw_t *fw_data)
 	do {
 		msleep(10);
 		ret = bes2600_reg_read(BES_SLAVE_STATUS_REG_ID, &mcu_status, 1);
-	} while(((ret == 0) || (ret == -84)) &&
+	} while(((ret == 0) || (ret == BES_SDIO_CRC_ERROR)) &&
 	        !(mcu_status & BES_SLAVE_STATUS_DPD_LOG_READY) &&
 		time_before(jiffies, wait_timeout));
 

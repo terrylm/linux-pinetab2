@@ -285,16 +285,17 @@ static const struct file_operations fops_counters = {
 	.owner = THIS_MODULE,
 };
 
+#define POWER_EVENT_BUF_SIZE 8192 // Arbitrary?, only used here.
 static int bes2600_power_busy_event_show(struct seq_file *seq, void *v)
 {
 	struct bes2600_common *hw_priv = seq->private;
 	char *buffer = NULL;
 
-	buffer = kmalloc(8192, GFP_KERNEL);
-	if(!buffer)
+	buffer = kmalloc(POWER_EVENT_BUF_SIZE, GFP_KERNEL);
+	if (!buffer)
 		return -ENOMEM;
 
-	if(bes2600_pwr_busy_event_dump(hw_priv, buffer, 8192) == 0) {
+	if (bes2600_pwr_busy_event_dump(hw_priv, buffer, POWER_EVENT_BUF_SIZE) == 0) {
 		seq_printf(seq, "%s", buffer);
 	} else {
 		return -EFBIG;
@@ -682,11 +683,11 @@ static ssize_t bes2600_hang_write(struct file *file,
 	if (copy_from_user(buf, user_buf, 1))
 		return -EFAULT;
 
-	if (priv->vif) {
-		bes2600_pm_stay_awake(&hw_priv->pm_state, 3*HZ);
-		ieee80211_driver_hang_notify(priv->vif, GFP_KERNEL);
-	} else
+	if (!hw_priv || !priv->vif) // Added hw_priv check
 		return -ENODEV;
+
+	bes2600_pm_stay_awake(&hw_priv->pm_state, 3*HZ);
+	ieee80211_driver_hang_notify(priv->vif, GFP_KERNEL);
 
 	return count;
 }
@@ -706,7 +707,7 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	struct bes2600_debug_priv *d;
 	char name[VIF_DEBUGFS_NAME_S];
 	static int entrycount=0;
-	printk(KERN_DEBUG "This function has been entered %i times before.\n", entrycount++);
+	printk(KERN_DEBUG "bes2600_debug_init_priv entered %i times before, vif_%d\n", entrycount++, priv->if_id);
 
 	if (WARN_ON(!hw_priv))
 		return ret;
@@ -715,19 +716,26 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 		return ret;
 
 	d = kzalloc(sizeof(struct bes2600_debug_priv), GFP_KERNEL);
-	priv->debug = d;
 	if (WARN_ON(!d))
 		return ret;
+	priv->debug = d; // Moved to avoid a leak.
 
 	memset(name, 0, VIF_DEBUGFS_NAME_S);
 	ret = snprintf(name, VIF_DEBUGFS_NAME_S, "vif_%d", priv->if_id);
+	if (ret < 0)
+		goto err;
+
 	struct dentry *dir = debugfs_lookup(name, hw_priv->debug->debugfs_phy);
 	if (dir) {
 		printk(KERN_DEBUG "vif_%d exists, reusing\n", priv->if_id);
 		d->debugfs_phy = dir;
 	} else {
 		d->debugfs_phy = debugfs_create_dir(name, hw_priv->debug->debugfs_phy);
-		if (IS_ERR(d->debugfs_phy)) goto err;
+		if (IS_ERR(d->debugfs_phy)) {
+			printk(KERN_DEBUG "vif_%d create dir error: %ld\n",
+				priv->if_id, PTR_ERR(d->debugfs_phy));
+			goto err;
+		}
 	}
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
@@ -736,9 +744,14 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 		goto err;
 #endif
 
-	if (!debugfs_create_file("status", S_IRUSR, d->debugfs_phy,
-			priv, &fops_status_priv))
+	struct dentry *status_file = debugfs_lookup("status", d->debugfs_phy);
+	if (status_file) {
+		printk(KERN_DEBUG "Status file already exists for vif_%d\n", priv->if_id);
+		dput(status_file);
+	} else if (!debugfs_create_file("status", S_IRUSR, d->debugfs_phy, priv, &fops_status_priv)) {
+		printk(KERN_DEBUG "Failed to create status file for vif_%d\n", priv->if_id);
 		goto err;
+	}
 
 	return 0;
 err:

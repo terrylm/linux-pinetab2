@@ -285,6 +285,9 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
+printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
+       vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
+
 #ifndef P2P_MULTIVIF
 	int i;
 
@@ -306,41 +309,64 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	priv->mode = vif->type;
 
 	spin_lock(&hw_priv->vif_list_lock);
+
 	if (atomic_read(&hw_priv->num_vifs) < CW12XX_MAX_VIFS) {
 #ifdef P2P_MULTIVIF
-	if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
-		if (hw_priv->vif_list[0]) {
-			bes_err("VIF if_id=0 already in use for addr[0]=%pM\n",
-				hw_priv->addresses[0].addr);
-			spin_unlock(&hw_priv->vif_list_lock);
-			up(&hw_priv->conf_lock);
-			return -EBUSY;
+		if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
+			if (hw_priv->vif_list[0]) {
+				bes_err("VIF if_id=0 already in use for addr[0]=%pM\n",
+					hw_priv->addresses[0].addr);
+				spin_unlock(&hw_priv->vif_list_lock);
+				up(&hw_priv->conf_lock);
+				return -EBUSY;
+			}
+			priv->if_id = 0;
+		} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr, ETH_ALEN)) {
+			if (hw_priv->vif_list[2]) {
+				bes_err("VIF if_id=2 already in use for addr[1]=%pM\n",
+					hw_priv->addresses[1].addr);
+				spin_unlock(&hw_priv->vif_list_lock);
+				up(&hw_priv->conf_lock);
+				return -EBUSY;
+			}
+			priv->if_id = 2;
+		} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr, ETH_ALEN)) {
+			if (hw_priv->vif_list[1]) {
+				bes_err("VIF if_id=1 already in use for addr[2]=%pM\n",
+					hw_priv->addresses[2].addr);
+				spin_unlock(&hw_priv->vif_list_lock);
+				up(&hw_priv->conf_lock);
+				return -EBUSY;
+			}
+			priv->if_id = 1;
+		} else {
+			static int vif_attempts;
+			if (vif_attempts++ > 3) {
+				bes_err("Too many VIF creation attempts (%d)\n", vif_attempts);
+				spin_unlock(&hw_priv->vif_list_lock);
+				up(&hw_priv->conf_lock);
+				return -EBUSY;
+			}
+			if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
+				bes_warn("Fixing VIF addr=%pM to addr[0]=%pM\n", vif->addr, hw_priv->addresses[0].addr);
+				if (hw_priv->vif_list[0]) {
+					bes_err("VIF if_id=0 already in use\n");
+					spin_unlock(&hw_priv->vif_list_lock);
+					up(&hw_priv->conf_lock);
+					return -EBUSY;
+				}
+				memcpy(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN);
+				priv->if_id = 0;
+			} else {
+				bes_err("No matching address for VIF addr=%pM\nPossible addresses are:\n", vif->addr);
+				for (int i = 0; i < 3; i++)
+					bes_err("Address %i = %pM\n", i, hw_priv->addresses[i].addr);
+
+				spin_unlock(&hw_priv->vif_list_lock);
+				up(&hw_priv->conf_lock);
+				return -EINVAL;
+			}
 		}
-		priv->if_id = 0;
-	} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr, ETH_ALEN)) {
-		if (hw_priv->vif_list[2]) {
-			bes_err("VIF if_id=2 already in use for addr[1]=%pM\n",
-				hw_priv->addresses[1].addr);
-			spin_unlock(&hw_priv->vif_list_lock);
-			up(&hw_priv->conf_lock);
-			return -EBUSY;
-		}
-		priv->if_id = 2;
-	} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr, ETH_ALEN)) {
-		if (hw_priv->vif_list[1]) {
-			bes_err("VIF if_id=1 already in use for addr[2]=%pM\n",
-				hw_priv->addresses[2].addr);
-			spin_unlock(&hw_priv->vif_list_lock);
-			up(&hw_priv->conf_lock);
-			return -EBUSY;
-		}
-		priv->if_id = 1;
-	} else {
-		bes_err("No matching address for VIF addr=%pM\n", vif->addr);
-		spin_unlock(&hw_priv->vif_list_lock);
-		up(&hw_priv->conf_lock);
-		return -EINVAL;
-	}
 
 #else
 		for (i = 0; i < CW12XX_MAX_VIFS; i++)
@@ -362,7 +388,6 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 		up(&hw_priv->conf_lock);
 		return -EOPNOTSUPP;
 	}
-	spin_unlock(&hw_priv->vif_list_lock);
 	/* TODO:COMBO :Check if MAC address matches the one expected by FW */
 	memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
 
@@ -374,6 +399,7 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	bes_devel("[STA] Interface ID:%d of type:%d added\n",
 		   priv->if_id, priv->mode);
 
+	spin_unlock(&hw_priv->vif_list_lock);
 	up(&hw_priv->conf_lock);
 
 	bes2600_vif_setup(priv);

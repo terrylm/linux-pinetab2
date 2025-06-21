@@ -387,7 +387,7 @@ struct bes2600_common {
 	struct workqueue_struct         *bh_workqueue;
 	struct work_struct              bh_work;
 
-	int				bh_error;
+	atomic_t			bh_error;
 	wait_queue_head_t		bh_wq;
 	wait_queue_head_t		bh_evt_wq;
 	int				buf_id_tx;	/* byte */

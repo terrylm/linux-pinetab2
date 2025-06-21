@@ -181,9 +181,9 @@ static int bes2600_status_show_common(struct seq_file *seq, void *v)
 		atomic_read(&hw_priv->bh_rx));
 	seq_printf(seq, "Pending TX: %d\n",
 		atomic_read(&hw_priv->bh_tx));
-	if (hw_priv->bh_error)
+	if (atomic_read(&hw_priv->bh_error))
 		seq_printf(seq, "BH errcode: %d\n",
-			hw_priv->bh_error);
+			atomic_read(&hw_priv->bh_error));
 	seq_printf(seq, "TX bufs:    %d x %d bytes\n",
 		hw_priv->wsm_caps.numInpChBufs,
 		hw_priv->wsm_caps.sizeInpChBuf);

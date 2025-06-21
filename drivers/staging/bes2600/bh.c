@@ -116,7 +116,7 @@ void bes2600_irq_handler(struct bes2600_common *hw_priv)
 		bes_warn("%s hw private data is null\n", __func__);
 		return;
 	}
-	if (hw_priv->bh_error) {
+	if (atomic_read(&hw_priv->bh_error)) {
 		bes_err("%s bh error\n", __func__);
 		return;
 	}
@@ -128,7 +128,7 @@ EXPORT_SYMBOL(bes2600_irq_handler);
 void bes2600_bh_wakeup(struct bes2600_common *hw_priv)
 {
 	bes_devel("[BH] wakeup.\n");
-	if (WARN_ON(hw_priv->bh_error))
+	if (WARN_ON(atomic_read(&hw_priv->bh_error)))
 		return;
 	if (atomic_add_return(1, &hw_priv->bh_tx) == 1)
 		wake_up(&hw_priv->bh_wq);
@@ -142,7 +142,7 @@ int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 	struct bes2600_vif *priv = NULL;
 #endif
 	bes_devel("[BH] suspend.\n");
-	if (hw_priv->bh_error) {
+	if (atomic_read(&hw_priv->bh_error)) {
 		wiphy_warn(hw_priv->hw->wiphy, "BH error -- can't suspend\n");
 		return -EINVAL;
 	}
@@ -159,7 +159,7 @@ int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 	atomic_set(&hw_priv->bh_suspend, BES2600_BH_SUSPEND);
 	wake_up(&hw_priv->bh_wq);
 	return wait_event_timeout(hw_priv->bh_evt_wq,
-		hw_priv->bh_error || (BES2600_BH_SUSPENDED == atomic_read(&hw_priv->bh_suspend)),
+		atomic_read(&hw_priv->bh_error) || (BES2600_BH_SUSPENDED == atomic_read(&hw_priv->bh_suspend)),
 		1 * HZ) ? 0 : -ETIMEDOUT;
 }
 EXPORT_SYMBOL(bes2600_bh_suspend);
@@ -171,14 +171,14 @@ int bes2600_bh_resume(struct bes2600_common *hw_priv)
 	struct bes2600_vif *priv = NULL;
 #endif
 	bes_devel("[BH] resume.\n");
-	if (hw_priv->bh_error) {
+	if (atomic_read(&hw_priv->bh_error)) {
 		wiphy_warn(hw_priv->hw->wiphy, "BH error -- can't resume\n");
 		return -EINVAL;
 	}
 	atomic_set(&hw_priv->bh_suspend, BES2600_BH_RESUME);
 	wake_up(&hw_priv->bh_wq);
 	int ret = wait_event_timeout(hw_priv->bh_evt_wq,
-		hw_priv->bh_error || (BES2600_BH_RESUMED == atomic_read(&hw_priv->bh_suspend)),
+		atomic_read(&hw_priv->bh_error) || (BES2600_BH_RESUMED == atomic_read(&hw_priv->bh_suspend)),
 		1 * HZ) ? 0 : -ETIMEDOUT;
 #ifdef MCAST_FWDING
 	bes2600_for_each_vif(hw_priv, priv, i) {
@@ -214,12 +214,12 @@ static int bes2600_bh_wait_event(struct bes2600_common *hw_priv, int *rx, int *t
 		*tx = atomic_xchg(&hw_priv->bh_tx, 0);
 		*term = atomic_xchg(&hw_priv->bh_term, 0);
 		*suspend = *tx ? 0 : atomic_read(&hw_priv->bh_suspend);
-		(*rx || *tx || *term || *suspend || hw_priv->bh_error);
+		(*rx || *tx || *term || *suspend || atomic_read(&hw_priv->bh_error));
 	}), timeout);
 
 	if (status < 0 && status != -ERESTARTSYS)
 		return status;
-	if (*term || hw_priv->bh_error)
+	if (*term || atomic_read(&hw_priv->bh_error))
 		return -EINVAL;
 	if (!status && hw_priv->hw_bufs_used) {
 		bes_err("Missed interrupt? (%d frames outstanding)\n", hw_priv->hw_bufs_used);
@@ -327,99 +327,117 @@ static int bes2600_bh(void *arg)
 	hw_priv->sbus_ops->unlock(hw_priv->sbus_priv);
 	bes_err("[BH] Fatal error, exiting.\n");
 	sdio_work_debug(hw_priv->sbus_priv);
-	hw_priv->bh_error = 1;
+	atomic_set(&hw_priv->bh_error, 1);
 	return ret;
 }
 
 static int bes2600_bh_rx_helper(struct bes2600_common *hw_priv, int *tx)
 {
-	struct sk_buff *skb = NULL;
-	struct wsm_hdr *wsm;
-	size_t wsm_len;
-	u16 wsm_id;
-	u8 wsm_seq;
-	u32 confirm_label = 0;
+    int ret = 0;
+    struct sk_buff *skb = NULL;
+    struct wsm_hdr *wsm;
+    size_t wsm_len;
+    u16 wsm_id;
+    u8 wsm_seq;
+    u32 confirm_label = 0;
 #if defined(BES_SDIO_RX_MULTIPLE_ENABLE)
-	skb = hw_priv->sbus_ops->pipe_read(hw_priv->sbus_priv);
-	if (!skb)
-		return 0;
+    skb = hw_priv->sbus_ops->pipe_read(hw_priv->sbus_priv);
+    if (!skb)
+        return 0;
 #else
-	u32 ctrl_reg = 0;
-	size_t read_len = 0, alloc_len;
-	u8 *data;
-	if (bes2600_bh_read_ctrl_reg(hw_priv, &ctrl_reg))
-		return -EIO;
-	read_len = ctrl_reg & BES_TX_NEXT_LEN_MASK;
-	if (!read_len)
-		return 0;
-	if (WARN_ON(read_len < sizeof(struct wsm_hdr) || read_len > EFFECTIVE_BUF_SIZE)) {
-		bes_err("Invalid read len: %zu (%04x)\n", read_len, ctrl_reg);
-		return -EINVAL;
-	}
-	alloc_len = hw_priv->sbus_ops->align_size(hw_priv->sbus_priv, read_len);
-	if (WARN_ON(alloc_len > EFFECTIVE_BUF_SIZE))
-		bes_devel("Read aligned len: %zu\n", alloc_len);
-	skb = dev_alloc_skb(alloc_len);
-	if (!skb)
-		return -ENOMEM;
-	skb_put(skb, read_len);
-	data = skb->data;
-	if (bes2600_data_read(hw_priv, data, alloc_len)) {
-		bes_err("RX read failed, len %zu\n", alloc_len);
-		dev_kfree_skb(skb);
-		return -EIO;
-	}
+    u32 ctrl_reg = 0;
+    size_t read_len = 0, alloc_len;
+    u8 *data;
+    if (bes2600_bh_read_ctrl_reg(hw_priv, &ctrl_reg)) {
+        ret = -EIO;
+        goto err;
+    }
+    read_len = ctrl_reg & BES_TX_NEXT_LEN_MASK;
+    if (!read_len)
+        return 0;
+    if (WARN_ON(read_len < sizeof(struct wsm_hdr) || read_len > EFFECTIVE_BUF_SIZE)) {
+        bes_err("Invalid read len: %zu (%04x)\n", read_len, ctrl_reg);
+        ret = -EINVAL;
+        goto err;
+    }
+    alloc_len = hw_priv->sbus_ops->align_size(hw_priv->sbus_priv, read_len);
+    if (WARN_ON(alloc_len > EFFECTIVE_BUF_SIZE))
+        bes_devel("Read aligned len: %zu\n", alloc_len);
+    skb = dev_alloc_skb(alloc_len);
+    if (!skb) {
+        ret = -ENOMEM;
+        goto err;
+    }
+    skb_put(skb, read_len);
+    data = skb->data;
+    if (bes2600_data_read(hw_priv, data, alloc_len)) {
+        bes_err("RX read failed, len %zu\n", alloc_len);
+        ret = -EIO;
+        goto err;
+    }
 #endif
-	wsm = (struct wsm_hdr *)skb->data;
-	wsm_len = __le16_to_cpu(wsm->len);
-	if (WARN_ON(wsm_len > skb->len)) {
-		bes_err("wsm_len err %zu %u\n", wsm_len, skb->len);
-		goto err;
-	}
-	if (hw_priv->wsm_enable_wsm_dumps)
-		print_hex_dump(KERN_DEBUG, "<-- ", DUMP_PREFIX_NONE, 16, 1, skb->data, wsm_len, false);
-	wsm_id = __le16_to_cpu(wsm->id) & 0xFFF;
-	wsm_seq = (__le16_to_cpu(wsm->id) >> 13) & 7;
-	bes_devel("[RX] wsm_id:0x%04x seq:%d\n", wsm_id, wsm_seq);
-	skb_trim(skb, wsm_len);
-	if (wsm_id == 0x0800) {
-		wsm_handle_exception(hw_priv, &skb->data[sizeof(*wsm)], wsm_len - sizeof(*wsm));
-		bes_err("WSM exception\n");
-		goto err;
-	}
-	if (wsm_seq != hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)]) {
-		bes_err("Seq error: %u != %u, id:0x%x\n", wsm_seq, hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)], wsm_id);
-		goto err;
-	}
-	bes2600_bh_parse_wakeup_event(hw_priv, skb);
-	hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)] = (wsm_seq + 1) & 7;
-	if (IS_DRIVER_TO_MCU_CMD(wsm_id))
-		confirm_label = __le32_to_cpu(((struct wsm_mcu_hdr *)wsm)->handle_label);
-	if (WSM_CONFIRM_CONDITION(wsm_id, confirm_label)) {
-		int rc = wsm_release_tx_buffer(hw_priv, 1);
-		bes2600_bh_dec_pending_count(hw_priv, WSM_TXRX_SEQ_IDX(wsm_id));
-		if (rc < 0) {
-			WARN_ON(rc);
-			goto err;
-		}
-		if (rc > 0)
-			*tx = 1;
-	}
-	if (wsm_handle_rx(hw_priv, wsm_id, wsm, &skb)) {
-		bes_err("wsm_handle_rx failed\n");
-		goto err;
-	}
-	if (skb)
-		dev_kfree_skb(skb);
+    wsm = (struct wsm_hdr *)skb->data;
+    wsm_len = __le16_to_cpu(wsm->len);
+    if (WARN_ON(wsm_len > skb->len)) {
+        bes_err("wsm_len err %zu %u\n", wsm_len, skb->len);
+        ret = -EINVAL;
+        goto err;
+    }
+    if (hw_priv->wsm_enable_wsm_dumps)
+        print_hex_dump(KERN_DEBUG, "<-- ", DUMP_PREFIX_NONE, 16, 1, skb->data, wsm_len, false);
+    wsm_id = __le16_to_cpu(wsm->id) & 0xFFF;
+    wsm_seq = (__le16_to_cpu(wsm->id) >> 13) & 7;
+    bes_devel("[RX] wsm_id:0x%04x seq:%d\n", wsm_id, wsm_seq);
+    skb_trim(skb, wsm_len);
+    if (wsm_id == 0x0800) {
+        wsm_handle_exception(hw_priv, &skb->data[sizeof(*wsm)], wsm_len - sizeof(*wsm));
+        bes_err("WSM exception\n");
+        ret = -EINVAL;
+        goto err;
+    }
+    if (wsm_seq != hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)]) {
+        bes_err("Seq error: %u != %u, id:0x%x\n", wsm_seq, hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)], wsm_id);
+        ret = -EINVAL;
+        goto err;
+    }
+    bes2600_bh_parse_wakeup_event(hw_priv, skb);
+    hw_priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)] = (wsm_seq + 1) & 7;
+    if (IS_DRIVER_TO_MCU_CMD(wsm_id))
+        confirm_label = __le32_to_cpu(((struct wsm_mcu_hdr *)wsm)->handle_label);
+    if (WSM_CONFIRM_CONDITION(wsm_id, confirm_label)) {
+        int rc = wsm_release_tx_buffer(hw_priv, 1);
+        bes2600_bh_dec_pending_count(hw_priv, WSM_TXRX_SEQ_IDX(wsm_id));
+        if (rc < 0) {
+            WARN_ON(rc);
+            ret = rc;
+            goto err;
+        }
+        if (rc > 0)
+            *tx = 1;
+    }
+    ret = wsm_handle_rx(hw_priv, wsm_id, wsm, &skb);
+    if (ret) {
+        bes_err("wsm_handle_rx failed, id:0x%.4X\n", wsm_id);
+        goto skip;
+    }
+    if (skb)
+        dev_kfree_skb(skb);
 #if defined(BES_SDIO_RX_MULTIPLE_ENABLE)
-	return 1; // Assume more data possible
+    return 1;
 #else
-	return 0; // Single read per cycle
+    return 0;
 #endif
+skip:
+    if (skb)
+        dev_kfree_skb(skb);
+    return 0;
 err:
-	if (skb)
-		dev_kfree_skb(skb);
-	return -EINVAL;
+    if (skb)
+        dev_kfree_skb(skb);
+    bes_err("[BH] RX failed: %d\n", ret);
+    atomic_set(&hw_priv->bh_error, 1);
+    wake_up(&hw_priv->bh_evt_wq);
+    return ret;
 }
 
 static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv, unsigned int *tx_burst)

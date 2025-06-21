@@ -1236,7 +1236,7 @@ int __bes2600_flush(struct bes2600_common *hw_priv, bool drop, int if_id)
 		__cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
 
 	/* clear tx queue directly if there is a bus error */
-	if (hw_priv->bh_error || bes2600_chrdev_is_bus_error())
+	if (atomic_read(&hw_priv->bh_error) || bes2600_chrdev_is_bus_error())
 		drop = true;
 
 	for (;;) {

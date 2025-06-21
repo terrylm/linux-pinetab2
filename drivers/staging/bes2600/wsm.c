@@ -1116,7 +1116,12 @@ static int wsm_handle_rx_confirm(struct bes2600_common *hw_priv, int id,
 		ret = wsm_driver_rf_cmd_confirm(hw_priv, wsm_arg, buf);
 		break;
 	default:
-		BUG_ON(1);
+		if (id == 0x0800)
+			wsm_handle_exception(hw_priv, buf->data, buf->end - buf->data);
+		else
+			bes_err("[WSM] Unknown id: 0x%.4X\n", id);
+		ret = -EINVAL;
+
 	}
 
 	spin_lock(&hw_priv->wsm_cmd.lock);
@@ -2013,124 +2018,124 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data, size_t *tx_len,
 
 void wsm_txed(struct bes2600_common *hw_priv, u8 *data)
 {
-    if (data == hw_priv->wsm_cmd.ptr) {
-        spin_lock(&hw_priv->wsm_cmd.lock);
-        hw_priv->wsm_cmd.ptr = NULL;
-        spin_unlock(&hw_priv->wsm_cmd.lock);
-    }
+	if (data == hw_priv->wsm_cmd.ptr) {
+		spin_lock(&hw_priv->wsm_cmd.lock);
+		hw_priv->wsm_cmd.ptr = NULL;
+		spin_unlock(&hw_priv->wsm_cmd.lock);
+	}
 }
 
 int wsm_set_probe_responder(struct bes2600_vif *priv, bool enable)
 {
-        struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+		struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 
-        priv->rx_filter.probeResponder = enable;
-        return wsm_set_rx_filter(hw_priv, &priv->rx_filter, priv->if_id);
+		priv->rx_filter.probeResponder = enable;
+		return wsm_set_rx_filter(hw_priv, &priv->rx_filter, priv->if_id);
 }
 
 int wsm_set_keepalive_filter(struct bes2600_vif *priv, bool enable)
 {
-        struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+		struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 
-        priv->rx_filter.keepalive = enable;
-        return wsm_set_rx_filter(hw_priv, &priv->rx_filter, priv->if_id);
+		priv->rx_filter.keepalive = enable;
+		return wsm_set_rx_filter(hw_priv, &priv->rx_filter, priv->if_id);
 }
 
 void wsm_lock_tx(struct bes2600_common *hw_priv)
 {
-        wsm_cmd_lock(hw_priv);
-        if (atomic_add_return(1, &hw_priv->tx_lock) == 1) {
-                if (wsm_flush_tx(hw_priv))
-                        bes_devel("[WSM] TX is locked.\n");
-        }
-        wsm_cmd_unlock(hw_priv);
+		wsm_cmd_lock(hw_priv);
+		if (atomic_add_return(1, &hw_priv->tx_lock) == 1) {
+				if (wsm_flush_tx(hw_priv))
+						bes_devel("[WSM] TX is locked.\n");
+		}
+		wsm_cmd_unlock(hw_priv);
 }
 
 void wsm_lock_tx_async(struct bes2600_common *hw_priv)
 {
-        if (atomic_add_return(1, &hw_priv->tx_lock) == 1)
-                bes_devel("[WSM] TX is locked (async).\n");
+		if (atomic_add_return(1, &hw_priv->tx_lock) == 1)
+				bes_devel("[WSM] TX is locked (async).\n");
 }
 
 void wsm_unlock_tx(struct bes2600_common *hw_priv)
 {
-        int tx_lock;
-        if (hw_priv->bh_error)
-                bes_err("fatal error occured, unlock is unsafe\n");
-        else {
-                tx_lock = atomic_sub_return(1, &hw_priv->tx_lock);
-                if (tx_lock < 0) {
-                        BUG_ON(1);
-                } else if (tx_lock == 0) {
-                        bes2600_bh_wakeup(hw_priv);
-                        bes_devel("[WSM] TX is unlocked.\n");
-                }
-        }
+		int tx_lock;
+		if (atomic_read(&hw_priv->bh_error))
+				bes_err("fatal error occured, unlock is unsafe\n");
+		else {
+				tx_lock = atomic_sub_return(1, &hw_priv->tx_lock);
+				if (tx_lock < 0) {
+						BUG_ON(1);
+				} else if (tx_lock == 0) {
+						bes2600_bh_wakeup(hw_priv);
+						bes_devel("[WSM] TX is unlocked.\n");
+				}
+		}
 }
 
 void wsm_vif_lock_tx(struct bes2600_vif *priv)
 {
-        struct bes2600_common *hw_priv = priv->hw_priv;
+		struct bes2600_common *hw_priv = priv->hw_priv;
 
-        wsm_cmd_lock(hw_priv);
-        if (atomic_add_return(1, &hw_priv->tx_lock) == 1) {
-                if (wsm_vif_flush_tx(priv))
-                        bes_devel("[WSM] TX is locked for"
-                                        " if_id %d.\n", priv->if_id);
+		wsm_cmd_lock(hw_priv);
+		if (atomic_add_return(1, &hw_priv->tx_lock) == 1) {
+				if (wsm_vif_flush_tx(priv))
+						bes_devel("[WSM] TX is locked for"
+										" if_id %d.\n", priv->if_id);
 		else
 			bes_devel("[WSM] TX is locked for if_id %d.\n", priv->if_id);
 
-        }
-        wsm_cmd_unlock(hw_priv);
+		}
+		wsm_cmd_unlock(hw_priv);
 }
 
 bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 {
-    struct bes2600_common *hw_priv = priv->hw_priv;
-    unsigned long timestamp = jiffies;
-    unsigned long timeout;
-    int i, if_id = priv->if_id;
-    BUG_ON(!atomic_read(&hw_priv->tx_lock));
-    if (!hw_priv->hw_bufs_used_vif[if_id])
-        return true;
-    if (hw_priv->bh_error) {
-        bes_err("[WSM] Fatal error occurred, will not flush TX.\n");
-        return false;
-    }
-    for (i = 0; i < 4; ++i)
-        bes2600_queue_get_xmit_timestamp(&hw_priv->tx_queue[i], &timestamp, if_id, 0xffffffff);
-    timeout = timestamp + WSM_CMD_LAST_CHANCE_TIMEOUT;
-    timeout = jiffies_to_msecs(time_after(timeout, jiffies) ? (timeout - jiffies) : (ULONG_MAX - jiffies + timeout));
-    if (wait_event_timeout(hw_priv->bh_evt_wq, !hw_priv->hw_bufs_used_vif[if_id], timeout) <= 0) {
-        bes2600_chrdev_wifi_force_close(hw_priv, true);
-        return false;
-    }
-    return true;
+	struct bes2600_common *hw_priv = priv->hw_priv;
+	unsigned long timestamp = jiffies;
+	unsigned long timeout;
+	int i, if_id = priv->if_id;
+	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	if (!hw_priv->hw_bufs_used_vif[if_id])
+		return true;
+	if (atomic_read(&hw_priv->bh_error)) {
+		bes_err("[WSM] Fatal error occurred, will not flush TX.\n");
+		return false;
+	}
+	for (i = 0; i < 4; ++i)
+		bes2600_queue_get_xmit_timestamp(&hw_priv->tx_queue[i], &timestamp, if_id, 0xffffffff);
+	timeout = timestamp + WSM_CMD_LAST_CHANCE_TIMEOUT;
+	timeout = jiffies_to_msecs(time_after(timeout, jiffies) ? (timeout - jiffies) : (ULONG_MAX - jiffies + timeout));
+	if (wait_event_timeout(hw_priv->bh_evt_wq, !hw_priv->hw_bufs_used_vif[if_id], timeout) <= 0) {
+		bes2600_chrdev_wifi_force_close(hw_priv, true);
+		return false;
+	}
+	return true;
 }
 
 bool wsm_flush_tx(struct bes2600_common *hw_priv)
 {
-    unsigned long timestamp = jiffies;
-    bool pending = false;
-    unsigned long timeout;
-    int i;
-    BUG_ON(!atomic_read(&hw_priv->tx_lock));
-    if (!hw_priv->hw_bufs_used)
-        return true;
-    if (hw_priv->bh_error) {
-        bes_err("[WSM] Fatal error occurred, will not flush TX.\n");
-        return false;
-    }
-    for (i = 0; i < 4; ++i)
-        pending |= bes2600_queue_get_xmit_timestamp(&hw_priv->tx_queue[i], &timestamp, CW12XX_ALL_IFS, 0xffffffff);
-    if (!pending)
-        return true;
-    timeout = timestamp + WSM_CMD_LAST_CHANCE_TIMEOUT;
-    timeout = jiffies_to_msecs(time_after(timeout, jiffies) ? (timeout - jiffies) : (ULONG_MAX - jiffies + timeout));
-    if (wait_event_timeout(hw_priv->bh_evt_wq, !hw_priv->hw_bufs_used, timeout) <= 0) {
-        bes2600_chrdev_wifi_force_close(hw_priv, true);
-        return false;
-    }
-    return true;
+	unsigned long timestamp = jiffies;
+	bool pending = false;
+	unsigned long timeout;
+	int i;
+	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	if (!hw_priv->hw_bufs_used)
+		return true;
+	if (atomic_read(&hw_priv->bh_error)) {
+		bes_err("[WSM] Fatal error occurred, will not flush TX.\n");
+		return false;
+	}
+	for (i = 0; i < 4; ++i)
+		pending |= bes2600_queue_get_xmit_timestamp(&hw_priv->tx_queue[i], &timestamp, CW12XX_ALL_IFS, 0xffffffff);
+	if (!pending)
+		return true;
+	timeout = timestamp + WSM_CMD_LAST_CHANCE_TIMEOUT;
+	timeout = jiffies_to_msecs(time_after(timeout, jiffies) ? (timeout - jiffies) : (ULONG_MAX - jiffies + timeout));
+	if (wait_event_timeout(hw_priv->bh_evt_wq, !hw_priv->hw_bufs_used, timeout) <= 0) {
+		bes2600_chrdev_wifi_force_close(hw_priv, true);
+		return false;
+	}
+	return true;
 }
 

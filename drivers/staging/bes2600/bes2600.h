@@ -56,6 +56,8 @@
 #include "bes_pwr.h"
 #include "tx_loop.h"
 #include "bes_log.h"
+#include "sbus.h"
+
 #ifdef CONFIG_BES2600_TESTMODE
 #include "bes_nl80211_testmode_msg.h"
 #endif /*CONFIG_BES2600_TESTMODE*/

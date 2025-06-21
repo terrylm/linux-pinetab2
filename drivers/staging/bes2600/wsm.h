@@ -2137,7 +2137,7 @@ struct wsm_cmd {
 /* WSM TX buffer access							*/
 
 int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
-	       size_t *tx_len, int *burst, int *vif_selected);
+	       size_t *tx_len, unsigned int *burst, int *vif_selected);
 void wsm_txed(struct bes2600_common *hw_priv, u8 *data);
 
 /* ******************************************************************** */

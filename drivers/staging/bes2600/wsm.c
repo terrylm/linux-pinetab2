@@ -99,9 +99,6 @@ static int wsm_cmd_send(struct bes2600_common *hw_priv,
 			struct wsm_buf *buf,
 			void *arg, u16 cmd, long tmo, int if_id);
 
-static struct bes2600_vif
-	*wsm_get_interface_for_tx(struct bes2600_common *hw_priv);
-
 static inline void wsm_cmd_lock(struct bes2600_common *hw_priv)
 {
 	bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_WSM_TX);
@@ -2799,261 +2796,6 @@ found:
 	return 0;
 }
 
-int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
-		   size_t *tx_len, int *burst, int *vif_selected)
-{
-	struct wsm_tx *wsm = NULL;
-	struct ieee80211_tx_info *tx_info;
-	struct bes2600_queue *queue = NULL;
-	int queue_num;
-	u32 tx_allowed_mask = 0;
-	struct bes2600_txpriv *txpriv = NULL;
-#ifdef P2P_MULTIVIF
-	int first = 1;
-#endif
-	/*
-	 * Count was intended as an input for wsm->more flag.
-	 * During implementation it was found that wsm->more
-	 * is not usable, see details above. It is kept just
-	 * in case you would like to try to implement it again.
-	 */
-	int count = 0;
-#ifdef P2P_MULTIVIF
-	int if_pending = CW12XX_MAX_VIFS - 1;
-#else
-	int if_pending = 1;
-#endif
-
-	/* More is used only for broadcasts. */
-	bool more = false;
-
-	count = bes2600_itp_get_tx(hw_priv, data, tx_len, burst);
-	if (count)
-		return count;
-
-	if (hw_priv->wsm_cmd.ptr) {
-		++count;
-		spin_lock(&hw_priv->wsm_cmd.lock);
-		BUG_ON(!hw_priv->wsm_cmd.ptr);
-		*data = hw_priv->wsm_cmd.ptr;
-		*tx_len = hw_priv->wsm_cmd.len;
-		*burst = 1;
-		*vif_selected = -1;
-		spin_unlock(&hw_priv->wsm_cmd.lock);
-	} else {
-		for (;;) {
-			int ret;
-			struct bes2600_vif *priv;
-#if 0
-			int num_pending_vif0, num_pending_vif1;
-#endif
-			if (atomic_add_return(0, &hw_priv->tx_lock))
-				break;
-			/* Keep one buffer reserved for commands. Note
-			   that, hw_bufs_used has already been incremented
-			   before reaching here. */
-			if (hw_priv->hw_bufs_used >=
-					hw_priv->wsm_caps.numInpChBufs)
-				break;
-#ifdef P2P_MULTIVIF
-			if (first) {
-				first = 0;
-				hw_priv->if_id_selected = 0;
-			}
-#endif
-			priv = wsm_get_interface_for_tx(hw_priv);
-			/* go to next interface ID to select next packet */
-#ifdef P2P_MULTIVIF
-			hw_priv->if_id_selected++;
-			if(hw_priv->if_id_selected > 2)
-				hw_priv->if_id_selected = 0;
-#else
-				hw_priv->if_id_selected ^= 1;
-#endif
-
-			/* There might be no interface before add_interface
-			 * call */
-			if (!priv) {
-				if (if_pending) {
-#ifdef P2P_MULTIVIF
-					if_pending--;
-#else
-					if_pending = 0;
-#endif
-					continue;
-				}
-				break;
-			}
-
-#if 0
-			if (((priv->if_id == 0) &&
-			(hw_priv->hw_bufs_used_vif[0] >=
-						CW12XX_FW_VIF0_THROTTLE)) ||
-			((priv->if_id == 1) &&
-			(hw_priv->hw_bufs_used_vif[1] >=
-						CW12XX_FW_VIF1_THROTTLE))) {
-				spin_unlock(&priv->vif_lock);
-				if (if_pending) {
-					if_pending = 0;
-					continue;
-				}
-				break;
-			}
-#endif
-
-			/* This can be removed probably: bes2600_vif will not
-			 * be in hw_priv->vif_list (as returned from
-			 * wsm_get_interface_for_tx) until it's fully
-			 * enabled, so statement above will take case of that*/
-			if (!atomic_read(&priv->enabled)) {
-				spin_unlock(&priv->vif_lock);
-				break;
-			}
-
-			/* TODO:COMBO: Find the next interface for which
-			* packet needs to be found */
-			spin_lock_bh(&priv->ps_state_lock);
-			ret = wsm_get_tx_queue_and_mask(priv, &queue,
-					&tx_allowed_mask, &more);
-			queue_num = queue - hw_priv->tx_queue;
-
-			if (priv->buffered_multicasts &&
-					(ret || !more) &&
-					(priv->tx_multicast ||
-					 !priv->sta_asleep_mask)) {
-				priv->buffered_multicasts = false;
-				if (priv->tx_multicast) {
-					priv->tx_multicast = false;
-					queue_work(hw_priv->workqueue,
-						&priv->multicast_stop_work);
-				}
-			}
-
-			spin_unlock_bh(&priv->ps_state_lock);
-
-			if (ret) {
-				spin_unlock(&priv->vif_lock);
-#ifdef P2P_MULTIVIF
-				if (if_pending) {
-#else
-				if (if_pending == 1) {
-#endif
-#ifdef P2P_MULTIVIF
-					if_pending--;
-#else
-					if_pending = 0;
-#endif
-					continue;
-				}
-				break;
-			}
-
-			if (bes2600_queue_get(queue,
-					priv->if_id,
-					tx_allowed_mask,
-					&wsm, &tx_info, &txpriv)) {
-				spin_unlock(&priv->vif_lock);
-				if_pending = 0;
-				continue;
-			}
-#ifndef P2P_MULTIVIF
-			{
-				struct ieee80211_hdr *hdr =
-				(struct ieee80211_hdr *)
-					&((u8 *)wsm)[txpriv->offset];
-
-				bes_devel("QGET-1 %x, off_id %d,"
-						   " if_id %d\n",
-						hdr->frame_control,
-						txpriv->offchannel_if_id,
-						priv->if_id);
-			}
-#endif
-			if (wsm_handle_tx_data(priv, wsm,
-					tx_info, txpriv, queue)) {
-				spin_unlock(&priv->vif_lock);
-				if_pending = 0;
-				continue;  /* Handled by WSM */
-			}
-
-			wsm->hdr.id &= __cpu_to_le16(
-					~WSM_TX_IF_ID(WSM_TX_IF_ID_MAX));
-#ifdef P2P_MULTIVIF
-			if (txpriv->raw_if_id)
-				wsm->hdr.id |= cpu_to_le16(
-					WSM_TX_IF_ID(txpriv->raw_if_id));
-#else
-			if (txpriv->offchannel_if_id)
-				wsm->hdr.id |= cpu_to_le16(
-					WSM_TX_IF_ID(txpriv->offchannel_if_id));
-#endif
-			else
-				wsm->hdr.id |= cpu_to_le16(
-					WSM_TX_IF_ID(priv->if_id));
-
-			*vif_selected = priv->if_id;
-#ifdef ROC_DEBUG
-			{
-				struct ieee80211_hdr *hdr =
-				(struct ieee80211_hdr *)
-					&((u8 *)wsm)[txpriv->offset];
-
-				bes_devel("QGET-2 %x, off_id %d,"
-						   " if_id %d\n",
-						hdr->frame_control,
-						txpriv->offchannel_if_id,
-						priv->if_id);
-			}
-#endif
-
-			priv->pspoll_mask &= ~BIT(txpriv->raw_link_id);
-
-			*data = (u8 *)wsm;
-			*tx_len = __le16_to_cpu(wsm->hdr.len);
-
-			/* allow bursting if txop is set */
-			if (priv->edca.params[queue_num].txOpLimit)
-				*burst = min(*burst,
-					(int)bes2600_queue_get_num_queued(priv,
-						queue, tx_allowed_mask) + 1);
-			else
-				*burst = 1;
-
-			/* store index of bursting queue */
-			if (*burst > 1)
-				hw_priv->tx_burst_idx = queue_num;
-			else
-				hw_priv->tx_burst_idx = -1;
-
-			if (more) {
-				struct ieee80211_hdr *hdr =
-					(struct ieee80211_hdr *)
-					&((u8 *)wsm)[txpriv->offset];
-				if(strstr(&priv->ssid[0], "6.1.12")) {
-					if(hdr->addr1[0] & 0x01 ) {
-						hdr->frame_control |=
-						cpu_to_le16(IEEE80211_FCTL_MOREDATA);
-					}
-				}
-				else {
-					/* more buffered multicast/broadcast frames
-					*  ==> set MoreData flag in IEEE 802.11 header
-					*  to inform PS STAs */
-					hdr->frame_control |=
-					cpu_to_le16(IEEE80211_FCTL_MOREDATA);
-				}
-			}
-			bes_devel("[WSM] >>> 0x%.4X (%lu) %p %c\n",
-				0x0004, (long unsigned)*tx_len, *data,
-				wsm->more ? 'M' : ' ');
-			++count;
-			spin_unlock(&priv->vif_lock);
-			break;
-		}
-	}
-
-	return count;
-}
 
 void wsm_txed(struct bes2600_common *hw_priv, u8 *data)
 {
@@ -3114,40 +2856,6 @@ static int wsm_buf_reserve(struct wsm_buf *buf, size_t extra_size)
 	}
 }
 
-static struct bes2600_vif
-	*wsm_get_interface_for_tx(struct bes2600_common *hw_priv)
-{
-	struct bes2600_vif *priv = NULL, *i_priv;
-	int i = hw_priv->if_id_selected;
-
-	if (is_hardware_cw1250(hw_priv) || 1 /*TODO:COMBO*/) {
-		spin_lock(&hw_priv->vif_list_lock);
-#if 0
-		bes2600_for_each_vif(hw_priv, i_priv, i) {
-			if (i_priv) {
-				priv = i_priv;
-				spin_lock(&priv->vif_lock);
-				break;
-			}
-		}
-#endif
-		i_priv = hw_priv->vif_list[i] ?
-			cw12xx_get_vif_from_ieee80211(hw_priv->vif_list[i]) : NULL;
-		if (i_priv) {
-			priv = i_priv;
-			spin_lock(&priv->vif_lock);
-		}
-		/* TODO:COMBO:
-		* Find next interface based on TX bitmap announced by the FW
-		* Find next interface based on load balancing */
-		spin_unlock(&hw_priv->vif_list_lock);
-	} else {
-		priv = cw12xx_hwpriv_to_vifpriv(hw_priv, 0);
-	}
-
-	return priv;
-}
-
 static inline int get_interface_id_scanning(struct bes2600_common *hw_priv)
 {
 	if (hw_priv->scan.req)
@@ -3156,4 +2864,178 @@ static inline int get_interface_id_scanning(struct bes2600_common *hw_priv)
 		return hw_priv->scan.if_id;
 	else
 		return -1;
+}
+
+/* Selects the next VIF for transmission, updating if_id_selected. Returns NULL if no VIF is available. */
+static struct bes2600_vif *wsm_select_vif(struct bes2600_common *hw_priv) {
+    struct bes2600_vif *priv = NULL;
+    int i = hw_priv->if_id_selected;
+    int num_vifs = CW12XX_MAX_VIFS; // From bes2600.h or similar
+
+    spin_lock(&hw_priv->vif_list_lock);
+    // Cycle through VIFs starting from if_id_selected
+    for (int j = 0; j < num_vifs; j++) {
+        i = (i + 1) % num_vifs; // Advance to next VIF
+        if (hw_priv->vif_list[i]) {
+            priv = cw12xx_get_vif_from_ieee80211(hw_priv->vif_list[i]);
+            if (priv && atomic_read(&priv->enabled)) {
+                hw_priv->if_id_selected = i; // Update selection
+                break;
+            }
+        }
+    }
+    spin_unlock(&hw_priv->vif_list_lock);
+
+    return priv;
+}
+
+/* Checks if transmission is allowed based on tx_lock and buffer usage. */
+static bool wsm_can_transmit(struct bes2600_common *hw_priv) {
+    if (atomic_read(&hw_priv->tx_lock)) {
+        return false; // TX is locked
+    }
+    if (hw_priv->hw_bufs_used >= hw_priv->wsm_caps.numInpChBufs) {
+        return false; // No buffers available
+    }
+    return true;
+}
+
+/* Selects a queue and TX mask for a VIF, returning 0 on success. */
+static int wsm_select_queue(struct bes2600_vif *priv, struct bes2600_queue **queue,
+                            u32 *tx_allowed_mask, bool *more) {
+    struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+    int ret;
+
+    spin_lock_bh(&priv->ps_state_lock);
+    ret = wsm_get_tx_queue_and_mask(priv, queue, tx_allowed_mask, more);
+    if (!ret && priv->buffered_multicasts && (!priv->tx_multicast || !priv->sta_asleep_mask)) {
+        priv->buffered_multicasts = false;
+        if (priv->tx_multicast) {
+            priv->tx_multicast = false;
+            queue_work(hw_priv->workqueue, &priv->multicast_stop_work);
+        }
+    }
+    spin_unlock_bh(&priv->ps_state_lock);
+
+    return ret;
+}
+
+/* Fetches a packet from the selected queue, handling TX data logic. */
+static int wsm_fetch_packet(struct bes2600_vif *priv, struct bes2600_queue *queue,
+                            u32 tx_allowed_mask, u8 **data, size_t *tx_len,
+                            int *vif_selected, unsigned int *burst) {
+    struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+    struct wsm_tx *wsm;
+    struct ieee80211_tx_info *tx_info;
+    struct bes2600_txpriv *txpriv;
+    struct ieee80211_hdr *hdr;
+    int queue_num = queue - hw_priv->tx_queue;
+    bool more = false;
+
+    spin_lock(&priv->vif_lock);
+    if (bes2600_queue_get(queue, priv->if_id, tx_allowed_mask, &wsm, &tx_info, &txpriv)) {
+        spin_unlock(&priv->vif_lock);
+        return 0; // No packet available
+    }
+
+    if (wsm_handle_tx_data(priv, wsm, tx_info, txpriv, queue)) {
+        spin_unlock(&priv->vif_lock);
+        return 0; // Packet handled (e.g., join, probe)
+    }
+
+    // Set interface ID in WSM header
+    wsm->hdr.id &= __cpu_to_le16(~WSM_TX_IF_ID(WSM_TX_IF_ID_MAX));
+    wsm->hdr.id |= cpu_to_le16(WSM_TX_IF_ID(txpriv->raw_if_id ? txpriv->raw_if_id : priv->if_id));
+
+    *vif_selected = priv->if_id;
+    *data = (u8 *)wsm;
+    *tx_len = __le16_to_cpu(wsm->hdr.len);
+
+    // Handle bursting
+    if (priv->edca.params[queue_num].txOpLimit) {
+        *burst = min(*burst, bes2600_queue_get_num_queued(priv, queue, tx_allowed_mask) + 1);
+    } else {
+        *burst = 1;
+    }
+    hw_priv->tx_burst_idx = (*burst > 1) ? queue_num : -1;
+
+    // Set MoreData flag if needed
+    if (more) {
+        hdr = (struct ieee80211_hdr *)&((u8 *)wsm)[txpriv->offset];
+        if (strstr(&priv->ssid[0], "6.1.12") && (hdr->addr1[0] & 0x01)) {
+            hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_MOREDATA);
+        } else {
+            hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_MOREDATA);
+        }
+    }
+
+    priv->pspoll_mask &= ~BIT(txpriv->raw_link_id);
+    spin_unlock(&priv->vif_lock);
+
+    return 1; // Packet fetched
+}
+
+/* Handles command buffer transmission if present. */
+static int wsm_handle_cmd(struct bes2600_common *hw_priv, u8 **data, size_t *tx_len,
+                          int *burst, int *vif_selected) {
+    spin_lock(&hw_priv->wsm_cmd.lock);
+    if (hw_priv->wsm_cmd.ptr) {
+        *data = hw_priv->wsm_cmd.ptr;
+        *tx_len = hw_priv->wsm_cmd.len;
+        *burst = 1;
+        *vif_selected = -1;
+        spin_unlock(&hw_priv->wsm_cmd.lock);
+        return 1;
+    }
+    spin_unlock(&hw_priv->wsm_cmd.lock);
+    return 0;
+}
+
+/* Main function to get a packet for transmission. */
+int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data, size_t *tx_len,
+               unsigned int *burst, int *vif_selected) {
+    struct bes2600_vif *priv;
+    struct bes2600_queue *queue;
+    u32 tx_allowed_mask;
+    bool more;
+    int count = 0;
+    int num_vifs = CW12XX_MAX_VIFS; // From bes2600.h or similar
+
+    // Check ITP (Interrupt Tasklet Packet) first
+    count = bes2600_itp_get_tx(hw_priv, data, tx_len, burst);
+    if (count) {
+        return count;
+    }
+
+    // Handle command buffer if present
+    count = wsm_handle_cmd(hw_priv, data, tx_len, burst, vif_selected);
+    if (count) {
+        return count;
+    }
+
+    // Iterate through VIFs to find a packet
+    for (int i = 0; i < num_vifs; i++) {
+        if (!wsm_can_transmit(hw_priv)) {
+            break; // TX locked or no buffers
+        }
+
+        priv = wsm_select_vif(hw_priv);
+        if (!priv) {
+            break; // No enabled VIFs
+        }
+
+        // Select queue and TX mask
+        if (wsm_select_queue(priv, &queue, &tx_allowed_mask, &more)) {
+            continue; // No queue available
+        }
+
+        // Fetch packet from queue
+        count = wsm_fetch_packet(priv, queue, tx_allowed_mask, data, tx_len,
+                                 vif_selected, burst);
+        if (count) {
+            break; // Packet found
+        }
+    }
+
+    return count;
 }

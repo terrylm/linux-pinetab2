@@ -1664,11 +1664,17 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 	buf.data = buf.begin + sizeof(struct wsm_hdr);
 	buf.end = buf.begin + __le16_to_cpu(wsm->len);
 
+	bes_info("[WSM] Raw ID: 0x%.4X, len: %d\n", id, __le16_to_cpu(wsm->len)); // Debug raw ID
 	id = WSM_MSG_ID_GET(id);
+	bes_info("[WSM] Parsed ID: 0x%.4X\n", id); // Debug parsed ID
 	if (id & 0x0400) {
 		ret = wsm_handle_rx_confirm(hw_priv, id, NULL, &buf, interface_link_id);
 	} else {
 		switch (id) {
+		case 0x0801:
+			bes_info("[WSM] Ignoring unknown message ID: 0x%.4X, len: %d\n", id, __le16_to_cpu(wsm->len));
+			print_hex_dump(KERN_DEBUG, "[WSM] Unknown msg: ", DUMP_PREFIX_OFFSET, 16, 1, buf.data, buf.end - buf.data, false);
+			return 0;
 		case 0x0804:
 			ret = wsm_handle_rx_indication(hw_priv, interface_link_id, &buf, skb_p);
 			break;

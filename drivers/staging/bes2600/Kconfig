@@ -59,6 +59,14 @@ config BES2600_DEBUGFS
 	bool "Expose driver internals to DebugFS (DEVELOPMENT)"
 	default y
 
+config BES2600_ENABLE_DEVEL_LOGS
+    bool "Enable development debug logs (DEVELOPMENT)"
+    default n
+    help
+        Enable detailed debug logging for the BES2600 driver using bes_devel().
+        This increases log verbosity for development and debugging.
+        If unsure, say N.
+
 config BES2600_BH_DEBUG
 	bool "Enable low-level device communication logs (DEVELOPMENT)"
 

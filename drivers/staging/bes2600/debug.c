@@ -70,17 +70,17 @@ static const char *bes2600_debug_mode(int mode)
 }
 
 static void bes2600_queue_status_show(struct seq_file *seq,
-				     struct bes2600_queue *q)
+				 struct bes2600_queue *q)
 {
 	int i, if_id;
-	seq_printf(seq, "Queue       %d:\n", (int)q->queue_id);
+	seq_printf(seq, "Queue		 %d:\n", (int)q->queue_id);
 	seq_printf(seq, "  capacity: %ld\n", (long)q->capacity);
-	seq_printf(seq, "  queued:   %ld\n", (long)q->num_queued);
+	seq_printf(seq, "  queued:	 %ld\n", (long)q->num_queued);
 	seq_printf(seq, "  pending:  %ld\n", (long)q->num_pending);
-	seq_printf(seq, "  sent:     %ld\n", (long)q->num_sent);
-	seq_printf(seq, "  locked:   %s\n", q->tx_locked_cnt ? "yes" : "no");
+	seq_printf(seq, "  sent:	 %ld\n", (long)q->num_sent);
+	seq_printf(seq, "  locked:	 %s\n", q->tx_locked_cnt ? "yes" : "no");
 	seq_printf(seq, "  overfull: %s\n", q->overfull ? "yes" : "no");
-	seq_puts(seq,   "  link map: 0-> ");
+	seq_puts(seq,	"  link map: 0-> ");
 	for (if_id = 0; if_id < CW12XX_MAX_VIFS; if_id++) {
 		for (i = 0; i < q->stats->map_capacity; ++i)
 			seq_printf(seq, "%.2d ", q->link_map_cache[if_id][i]);
@@ -122,24 +122,27 @@ static int bes2600_status_show_common(struct seq_file *seq, void *v)
 		ba_avg_rx = ba_acc_rx / ba_cnt_rx;
 	spin_unlock_bh(&hw_priv->ba_lock);
 
-	seq_puts(seq,   "BES2600 Wireless LAN driver status\n");
-	seq_printf(seq, "Hardware:   %d.%d\n",
+	seq_puts(seq,	"BES2600 Wireless LAN driver status\n");
+	seq_printf(seq, "Hardware:	 %d.%d\n",
 		hw_priv->wsm_caps.hardwareId,
 		hw_priv->wsm_caps.hardwareSubId);
-	seq_printf(seq, "Firmware:   %s %d.%d\n",
+	seq_printf(seq, "Firmware:	 %s %d.%d\n",
 		bes2600_debug_fw_types[hw_priv->wsm_caps.firmwareType],
 		hw_priv->wsm_caps.firmwareVersion,
 		hw_priv->wsm_caps.firmwareBuildNumber);
-	seq_printf(seq, "FW API:     %d\n",
+	seq_printf(seq, "FW API:	 %d\n",
 		hw_priv->wsm_caps.firmwareApiVer);
-	seq_printf(seq, "FW caps:    0x%.4X\n",
+	seq_printf(seq, "FW caps:	 0x%.4X\n",
 		hw_priv->wsm_caps.firmwareCap);
-	if (hw_priv->channel)
-		seq_printf(seq, "Channel:    %d%s\n",
+	if (hw_priv->channel) /* Added NULL check */
+		seq_printf(seq, "Channel:	 %d%s\n",
 			hw_priv->channel->hw_value,
 			hw_priv->channel_switch_in_progress ?
 			" (switching)" : "");
-	seq_printf(seq, "HT:         %s\n",
+	else
+		seq_puts(seq, "Channel:    unset\n");
+
+	seq_printf(seq, "HT:		 %s\n",
 		bes2600_is_ht(&hw_priv->ht_info) ? "on" : "off");
 	if (bes2600_is_ht(&hw_priv->ht_info)) {
 		seq_printf(seq, "Greenfield: %s\n",
@@ -153,9 +156,9 @@ static int bes2600_status_show_common(struct seq_file *seq, void *v)
 		++i;
 	spin_unlock_bh(&hw_priv->tx_policy_cache.lock);
 	seq_printf(seq, "RC in use:  %d\n", i);
-	seq_printf(seq, "BA stat:    %d, %d (%d)\n",
+	seq_printf(seq, "BA stat:	 %d, %d (%d)\n",
 		ba_cnt, ba_acc, ba_avg);
-	seq_printf(seq, "BA RX stat:    %d, %d (%d)\n",
+	seq_printf(seq, "BA RX stat:	%d, %d (%d)\n",
 		ba_cnt_rx, ba_acc_rx, ba_avg_rx);
 	seq_printf(seq, "Block ACK:  %s\n", ba_ena ? "on" : "off");
 
@@ -164,11 +167,11 @@ static int bes2600_status_show_common(struct seq_file *seq, void *v)
 		bes2600_queue_status_show(seq, &hw_priv->tx_queue[i]);
 		seq_puts(seq, "\n");
 	}
-	seq_printf(seq, "TX burst:   %d\n",
+	seq_printf(seq, "TX burst:	 %d\n",
 		d->tx_burst);
-	seq_printf(seq, "RX burst:   %d\n",
+	seq_printf(seq, "RX burst:	 %d\n",
 		d->rx_burst);
-	seq_printf(seq, "TX miss:    %d\n",
+	seq_printf(seq, "TX miss:	 %d\n",
 		d->tx_cache_miss);
 	seq_printf(seq, "Long retr:  %d\n",
 		hw_priv->long_frame_max_tx_count);
@@ -184,30 +187,30 @@ static int bes2600_status_show_common(struct seq_file *seq, void *v)
 	if (atomic_read(&hw_priv->bh_error))
 		seq_printf(seq, "BH errcode: %d\n",
 			atomic_read(&hw_priv->bh_error));
-	seq_printf(seq, "TX bufs:    %d x %d bytes\n",
+	seq_printf(seq, "TX bufs:	 %d x %d bytes\n",
 		hw_priv->wsm_caps.numInpChBufs,
 		hw_priv->wsm_caps.sizeInpChBuf);
 	seq_printf(seq, "Used bufs:  %d\n",
 		hw_priv->hw_bufs_used);
-	seq_printf(seq, "Device:     %s\n",
+	seq_printf(seq, "Device:	 %s\n",
 		bes2600_pwr_device_is_idle(hw_priv) ? "alseep" : "awake");
 
 	spin_lock(&hw_priv->wsm_cmd.lock);
 	seq_printf(seq, "WSM status: %s\n",
 		hw_priv->wsm_cmd.done ? "idle" : "active");
-	seq_printf(seq, "WSM cmd:    0x%.4X (%ld bytes)\n",
+	seq_printf(seq, "WSM cmd:	 0x%.4X (%ld bytes)\n",
 		hw_priv->wsm_cmd.cmd, (long)hw_priv->wsm_cmd.len);
 	seq_printf(seq, "WSM retval: %d\n",
 		hw_priv->wsm_cmd.ret);
 	spin_unlock(&hw_priv->wsm_cmd.lock);
 
-	seq_printf(seq, "Datapath:   %s\n",
+	seq_printf(seq, "Datapath:	 %s\n",
 		atomic_read(&hw_priv->tx_lock) ? "locked" : "unlocked");
 	if (atomic_read(&hw_priv->tx_lock))
 		seq_printf(seq, "TXlock cnt: %d\n",
 			atomic_read(&hw_priv->tx_lock));
 
-	seq_printf(seq, "Scan:       %s\n",
+	seq_printf(seq, "Scan:		 %s\n",
 		atomic_read(&hw_priv->scan.in_progress) ? "active" : "idle");
 
 	return 0;
@@ -247,23 +250,23 @@ static int bes2600_counters_show(struct seq_file *seq, void *v)
 	PUT_COUNTER("\t\t", TxPackets);
 	PUT_COUNTER("\t\t", RxPackets);
 	PUT_COUNTER("\t\t", RxPacketErrors);
-	PUT_COUNTER("\t",   RxDecryptionFailures);
+	PUT_COUNTER("\t",	RxDecryptionFailures);
 	PUT_COUNTER("\t\t", RxMicFailures);
-	PUT_COUNTER("\t",   RxNoKeyFailures);
-	PUT_COUNTER("\t",   TxMulticastFrames);
-	PUT_COUNTER("\t",   TxFramesSuccess);
-	PUT_COUNTER("\t",   TxFrameFailures);
-	PUT_COUNTER("\t",   TxFramesRetried);
-	PUT_COUNTER("\t",   TxFramesMultiRetried);
-	PUT_COUNTER("\t",   RxFrameDuplicates);
+	PUT_COUNTER("\t",	RxNoKeyFailures);
+	PUT_COUNTER("\t",	TxMulticastFrames);
+	PUT_COUNTER("\t",	TxFramesSuccess);
+	PUT_COUNTER("\t",	TxFrameFailures);
+	PUT_COUNTER("\t",	TxFramesRetried);
+	PUT_COUNTER("\t",	TxFramesMultiRetried);
+	PUT_COUNTER("\t",	RxFrameDuplicates);
 	PUT_COUNTER("\t\t", RtsSuccess);
 	PUT_COUNTER("\t\t", RtsFailures);
 	PUT_COUNTER("\t\t", AckFailures);
-	PUT_COUNTER("\t",   RxMulticastFrames);
-	PUT_COUNTER("\t",   RxFramesSuccess);
-	PUT_COUNTER("\t",   RxCMACICVErrors);
+	PUT_COUNTER("\t",	RxMulticastFrames);
+	PUT_COUNTER("\t",	RxFramesSuccess);
+	PUT_COUNTER("\t",	RxCMACICVErrors);
 	PUT_COUNTER("\t\t", RxCMACReplays);
-	PUT_COUNTER("\t",   RxMgmtCCMPReplays);
+	PUT_COUNTER("\t",	RxMgmtCCMPReplays);
 
 #undef PUT_COUNTER
 #undef CAT_STR
@@ -290,6 +293,7 @@ static int bes2600_power_busy_event_show(struct seq_file *seq, void *v)
 {
 	struct bes2600_common *hw_priv = seq->private;
 	char *buffer = NULL;
+	int ret = 0;
 
 	buffer = kmalloc(POWER_EVENT_BUF_SIZE, GFP_KERNEL);
 	if (!buffer)
@@ -298,12 +302,11 @@ static int bes2600_power_busy_event_show(struct seq_file *seq, void *v)
 	if (bes2600_pwr_busy_event_dump(hw_priv, buffer, POWER_EVENT_BUF_SIZE) == 0) {
 		seq_printf(seq, "%s", buffer);
 	} else {
-		return -EFBIG;
+		ret = -EFBIG;
 	}
 
-	kfree(buffer);
-
-	return 0;
+	kfree(buffer); /* Moved to free on error */
+	return ret;
 }
 
 static int bes2600_power_busy_open(struct inode *inode, struct file *file)
@@ -450,8 +453,7 @@ static ssize_t bes2600_dpd_log_read(struct file *file,
 		size = sizeof(empty);
 	}
 
-	return simple_read_from_buffer(user_buf, count, ppos,
-	                               data, size);
+	return simple_read_from_buffer(user_buf, count, ppos, data, size);
 }
 
 static const struct file_operations dpd_log_dump = {
@@ -538,19 +540,19 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 	struct bes2600_vif *priv = seq->private;
 	struct bes2600_debug_priv *d = priv->debug;
 
-	seq_printf(seq, "Mode:       %s%s\n",
+	seq_printf(seq, "Mode:		 %s%s\n",
 		bes2600_debug_mode(priv->mode),
 		priv->listening ? " (listening)" : "");
-	seq_printf(seq, "Assoc:      %s\n",
+	seq_printf(seq, "Assoc:		 %s\n",
 		bes2600_debug_join_status[priv->join_status]);
 	if (priv->rx_filter.promiscuous)
-		seq_puts(seq,   "Filter:     promisc\n");
+		seq_puts(seq,	"Filter:	 promisc\n");
 	else if (priv->rx_filter.fcs)
-		seq_puts(seq,   "Filter:     fcs\n");
+		seq_puts(seq,	"Filter:	 fcs\n");
 	if (priv->rx_filter.bssid)
-		seq_puts(seq,   "Filter:     bssid\n");
+		seq_puts(seq,	"Filter:	 bssid\n");
 	if (priv->bf_control.bcn_count)
-		seq_puts(seq,   "Filter:     beacons\n");
+		seq_puts(seq,	"Filter:	 beacons\n");
 
 	if (priv->enable_beacon ||
 			priv->mode == NL80211_IFTYPE_AP ||
@@ -565,11 +567,11 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 			priv->mode == NL80211_IFTYPE_ADHOC ||
 			priv->mode == NL80211_IFTYPE_MESH_POINT ||
 			priv->mode == NL80211_IFTYPE_P2P_GO)
-		seq_printf(seq, "SSID:       %.*s\n",
+		seq_printf(seq, "SSID:		 %.*s\n",
 			(int)priv->ssid_length, priv->ssid);
 
 	for (i = 0; i < 4; ++i) {
-		seq_printf(seq, "EDCA(%d):    %d, %d, %d, %d, %d\n", i,
+		seq_printf(seq, "EDCA(%d):	  %d, %d, %d, %d, %d\n", i,
 			priv->edca.params[i].cwMin,
 			priv->edca.params[i].cwMax,
 			priv->edca.params[i].aifns,
@@ -589,18 +591,18 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 			pmMode = "dynamic";
 			break;
 		}
-		seq_printf(seq, "Preamble:   %s\n",
+		seq_printf(seq, "Preamble:	 %s\n",
 			bes2600_debug_preamble[
 			priv->association_mode.preambleType]);
 		seq_printf(seq, "AMPDU spcn: %d\n",
 			priv->association_mode.mpduStartSpacing);
 		seq_printf(seq, "Basic rate: 0x%.8X\n",
 			le32_to_cpu(priv->association_mode.basicRateSet));
-		seq_printf(seq, "Bss lost:   %d beacons\n",
+		seq_printf(seq, "Bss lost:	 %d beacons\n",
 			priv->bss_params.beaconLostCount);
-		seq_printf(seq, "AID:        %d\n",
+		seq_printf(seq, "AID:		 %d\n",
 			priv->bss_params.aid);
-		seq_printf(seq, "Rates:      0x%.8X\n",
+		seq_printf(seq, "Rates:		 0x%.8X\n",
 			priv->bss_params.operationalRateSet);
 		seq_printf(seq, "Powersave:  %s\n", pmMode);
 	}
@@ -610,12 +612,12 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 		priv->cqm_rssi_hyst);
 	seq_printf(seq, "TXFL thold: %d\n",
 		priv->cqm_tx_failure_thold);
-	seq_printf(seq, "Linkloss:   %d\n",
+	seq_printf(seq, "Linkloss:	 %d\n",
 		priv->cqm_link_loss_count);
-	seq_printf(seq, "Bcnloss:    %d\n",
+	seq_printf(seq, "Bcnloss:	 %d\n",
 		priv->cqm_beacon_loss_count);
 
-	bes2600_debug_print_map(seq, priv, "Link map:   ",
+	bes2600_debug_print_map(seq, priv, "Link map:	",
 		priv->link_id_map);
 	bes2600_debug_print_map(seq, priv, "Asleep map: ",
 		priv->sta_asleep_mask);
@@ -626,7 +628,7 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 
 	for (i = 0; i < CW1250_MAX_STA_IN_AP_MODE; ++i) {
 		if (priv->link_id_db[i].status) {
-			seq_printf(seq, "Link %d:     %s, %pM\n",
+			seq_printf(seq, "Link %d:	  %s, %pM\n",
 				i + 1, bes2600_debug_link_id[
 				priv->link_id_db[i].status],
 				priv->link_id_db[i].mac);
@@ -638,19 +640,19 @@ static int bes2600_status_show_priv(struct seq_file *seq, void *v)
 	seq_printf(seq, "Powermgmt:  %s\n",
 		priv->powersave_enabled ? "on" : "off");
 
-	seq_printf(seq, "TXed:       %d\n",
+	seq_printf(seq, "TXed:		 %d\n",
 		d->tx);
-	seq_printf(seq, "AGG TXed:   %d\n",
+	seq_printf(seq, "AGG TXed:	 %d\n",
 		d->tx_agg);
 	seq_printf(seq, "MULTI TXed: %d (%d)\n",
 		d->tx_multi, d->tx_multi_frames);
-	seq_printf(seq, "RXed:       %d\n",
+	seq_printf(seq, "RXed:		 %d\n",
 		d->rx);
-	seq_printf(seq, "AGG RXed:   %d\n",
+	seq_printf(seq, "AGG RXed:	 %d\n",
 		d->rx_agg);
-	seq_printf(seq, "TX align:   %d\n",
+	seq_printf(seq, "TX align:	 %d\n",
 		d->tx_align);
-	seq_printf(seq, "TX TTL:     %d\n",
+	seq_printf(seq, "TX TTL:	 %d\n",
 		d->tx_ttl);
 	return 0;
 }
@@ -718,7 +720,6 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	d = kzalloc(sizeof(struct bes2600_debug_priv), GFP_KERNEL);
 	if (WARN_ON(!d))
 		return ret;
-	priv->debug = d; // Moved to avoid a leak.
 
 	memset(name, 0, VIF_DEBUGFS_NAME_S);
 	ret = snprintf(name, VIF_DEBUGFS_NAME_S, "vif_%d", priv->if_id);
@@ -753,13 +754,12 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 		goto err;
 	}
 
+	priv->debug = d; /* Moved after debugfs init */
 	return 0;
 err:
-	priv->debug = NULL;
 	debugfs_remove_recursive(d->debugfs_phy);
 	kfree(d);
 	return ret;
-
 }
 
 void bes2600_debug_release_priv(struct bes2600_vif *priv)
@@ -774,9 +774,14 @@ void bes2600_debug_release_priv(struct bes2600_vif *priv)
 
 int bes2600_print_fw_version(struct bes2600_common *hw_priv, u8* buf, size_t len)
 {
-	return snprintf(buf, len, "%s %d.%d",
+	int ret;
+	/* Ensure buffer is large enough for max firmware type length + version */
+	if (len < strlen(bes2600_debug_fw_types[hw_priv->wsm_caps.firmwareType]) + 12) /* Added length check */
+		return -ENOSPC;
+	ret = snprintf(buf, len, "%s %d.%d",
 			bes2600_debug_fw_types[hw_priv->wsm_caps.firmwareType],
 			hw_priv->wsm_caps.firmwareVersion,
 			hw_priv->wsm_caps.firmwareBuildNumber);
+	return ret >= len ? -ENOSPC : ret;
 }
 #endif

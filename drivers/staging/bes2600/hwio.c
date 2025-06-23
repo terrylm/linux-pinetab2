@@ -20,13 +20,14 @@
 #define SPI_REG_ADDR_TO_SDIO(spi_reg_addr) ((spi_reg_addr) << 2)
 #define SDIO_ADDR17BIT(buf_id, mpf, rfu, reg_id_ofs) \
 				((((buf_id)    & 0x1F) << 7) \
-				| (((mpf)        & 1) << 6) \
-				| (((rfu)        & 1) << 5) \
+				| (((mpf)	 & 1) << 6) \
+				| (((rfu)	 & 1) << 5) \
 				| (((reg_id_ofs) & 0x1F) << 0))
 #define MAX_RETRY		3
 
 static struct sbus_ops *bes2600_subs_ops = NULL;
 static struct sbus_priv *bes2600_sbus_priv = NULL;
+static bool bes2600_initialized = false; /* Added for initialization protection */
 
 static int __bes2600_reg_read(u16 addr, void *buf, size_t buf_len, int buf_id)
 {
@@ -84,8 +85,13 @@ static inline int __bes2600_reg_write_32(u16 addr, u32 val)
 
 void bes2600_reg_set_object(struct sbus_ops *ops, struct sbus_priv *priv)
 {
+	if (bes2600_initialized) {
+		bes_err("%s: Already initialized, ignoring new settings.\n", __func__);
+		return;
+	}
 	bes2600_subs_ops = ops;
 	bes2600_sbus_priv = priv;
+	bes2600_initialized = true;
 }
 
 int bes2600_reg_read(u32 addr, void *buf, size_t buf_len)
@@ -115,14 +121,14 @@ int bes2600_data_read(void *buf, size_t buf_len)
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 #ifndef CONFIG_BES2600_WLAN_BES
 	{
-		int buf_id_rx = hw_priv->buf_id_rx;
+		int buf_id_rx = bes2600_sbus_priv->buf_id_rx; /* Fixed hw_priv to bes2600_sbus_priv */
 		while (retry <= MAX_RETRY) {
-			ret = __bes2600_reg_read(hw_priv,
+			ret = __bes2600_reg_read(bes2600_sbus_priv, /* Fixed hw_priv */
 					ST90TDS_IN_OUT_QUEUE_REG_ID, buf,
 					buf_len, buf_id_rx + 1);
 			if (!ret) {
 				buf_id_rx = (buf_id_rx + 1) & 3;
-				hw_priv->buf_id_rx = buf_id_rx;
+				bes2600_sbus_priv->buf_id_rx = buf_id_rx; /* Fixed hw_priv */
 				break;
 			} else {
 				retry++;
@@ -130,18 +136,26 @@ int bes2600_data_read(void *buf, size_t buf_len)
 				bes_err("%s,error :[%d]\n", __func__, ret);
 			}
 		}
+		if (retry > MAX_RETRY) {
+			bes_err("%s: Max retries exceeded\n", __func__);
+			ret = -EIO; /* Kernel-specific error code */
+		}
 	}
 #else
 	while (retry <= MAX_RETRY) {
 		ret = bes2600_subs_ops->sbus_memcpy_fromio(bes2600_sbus_priv,
 				BES_TX_DATA_ADDR, buf, buf_len);
 		if (ret) {
-			retry ++;
+			retry++;
 			mdelay(1);
 			bes_err("%s error :[%d]\n", __func__, ret);
 		} else {
 			break;
 		}
+	}
+	if (retry > MAX_RETRY) {
+		bes_err("%s: Max retries exceeded\n", __func__);
+		ret = -EIO; /* Kernel-specific error code */
 	}
 #endif
 	bes2600_subs_ops->unlock(bes2600_sbus_priv);
@@ -157,20 +171,24 @@ int bes2600_data_write(const void *buf, size_t buf_len)
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 #ifndef CONFIG_BES2600_WLAN_BES
 	{
-		int buf_id_tx = hw_priv->buf_id_tx;
+		int buf_id_tx = bes2600_sbus_priv->buf_id_tx; /* Fixed hw_priv to bes2600_sbus_priv */
 		while (retry <= MAX_RETRY) {
-			ret = __bes2600_reg_write(hw_priv,
+			ret = __bes2600_reg_write(bes2600_sbus_priv, /* Fixed hw_priv */
 					ST90TDS_IN_OUT_QUEUE_REG_ID, buf,
 					buf_len, buf_id_tx);
 			if (!ret) {
 				buf_id_tx = (buf_id_tx + 1) & 31;
-				hw_priv->buf_id_tx = buf_id_tx;
+				bes2600_sbus_priv->buf_id_tx = buf_id_tx; /* Fixed hw_priv */
 				break;
 			} else {
 				retry++;
 				mdelay(1);
 				bes_err("%s,error :[%d]\n", __func__, ret);
 			}
+		}
+		if (retry > MAX_RETRY) {
+			bes_err("%s: Max retries exceeded\n", __func__);
+			ret = -EIO; /* Kernel-specific error code */
 		}
 	}
 #else
@@ -183,6 +201,10 @@ int bes2600_data_write(const void *buf, size_t buf_len)
 		} else {
 			break;
 		}
+	}
+	if (retry > MAX_RETRY) {
+		bes_err("%s: Max retries exceeded\n", __func__);
+		ret = -EIO; /* Kernel-specific error code */
 	}
 #endif
 	bes2600_subs_ops->unlock(bes2600_sbus_priv);
@@ -287,40 +309,40 @@ out:
 #if defined(BES2600_DETECTION_LOGIC)
 int bes2600_ahb_write(u32 addr, const void *buf, size_t buf_len)
 {
-        int ret;
+	int ret;
 	bes2600_info(BES2600_DBG_SBUS,"%s: ENTER\n",__func__);
-        if ((buf_len / 2) >= 0x1000) {
-                bes2600_dbg(BES2600_DBG_SBUS,
-                                "%s: Can't wrire more than 0xfff words.\n",
-                                __func__);
-                WARN_ON(1);
+	if ((buf_len / 2) >= 0x1000) {
+		bes2600_dbg(BES2600_DBG_SBUS,
+				"%s: Can't wrire more than 0xfff words.\n",
+				__func__);
+		WARN_ON(1);
 		bes2600_info(BES2600_DBG_SBUS, "%s:EXIT (1) \n",__func__);
-                return -EINVAL;
-        }
+		return -EINVAL;
+	}
 
-        bes2600_subs_ops->lock(bes2600_sbus_priv);
+	bes2600_subs_ops->lock(bes2600_sbus_priv);
 
-        /* Write address */
-        ret = __bes2600_reg_write_32(priv, ST90TDS_SRAM_BASE_ADDR_REG_ID, addr);
-        if (ret < 0) {
-                bes2600_dbg(BES2600_DBG_SBUS,
-                                "%s: Can't write address register.\n",
-                                __func__);
-                goto out;
-        }
+	/* Write address */
+	ret = __bes2600_reg_write_32(ST90TDS_SRAM_BASE_ADDR_REG_ID, addr);
+	if (ret < 0) {
+		bes2600_dbg(BES2600_DBG_SBUS,
+				"%s: Can't write address register.\n",
+				__func__);
+		goto out;
+	}
 
-        /* Write data port */
-        ret = __bes2600_reg_write(priv, ST90TDS_AHB_DPORT_REG_ID,
-                                        buf, buf_len, 0);
-        if (ret < 0) {
-                bes2600_dbg(BES2600_DBG_SBUS, "%s: Can't write data port.\n",
-                                __func__);
-                goto out;
-        }
+	/* Write data port */
+	ret = __bes2600_reg_write(ST90TDS_AHB_DPORT_REG_ID,
+					buf, buf_len, 0);
+	if (ret < 0) {
+		bes2600_dbg(BES2600_DBG_SBUS, "%s: Can't write data port.\n",
+				__func__);
+		goto out;
+	}
 
 out:
-        bes2600_subs_ops->unlock(priv->bes2600_sbus_priv);
-        return ret;
+	bes2600_subs_ops->unlock(bes2600_sbus_priv); /* Fixed priv->bes2600_sbus_priv to bes2600_sbus_priv */
+	return ret;
 }
 #endif
 

@@ -37,24 +37,24 @@ void bes_parse_fw_info(const u8 *data, u32 data_len, u32 *load_addr, u32 *crc32)
 
 	//read entry,param,sp,exec_addr
 	memcpy((u8 *)buffer, (u8 *)data, sizeof(exec_struct));
-	exec_struct.entry       = ((struct exec_struct_t *)buffer)->entry;//PC
-	exec_struct.param       = ((struct exec_struct_t *)buffer)->param;
-	exec_struct.sp          = ((struct exec_struct_t *)buffer)->sp;
-	exec_struct.exec_addr   = ((struct exec_struct_t *)buffer)->exec_addr;//load addr
+	exec_struct.entry		= ((struct exec_struct_t *)buffer)->entry;//PC
+	exec_struct.param		= ((struct exec_struct_t *)buffer)->param;
+	exec_struct.sp			= ((struct exec_struct_t *)buffer)->sp;
+	exec_struct.exec_addr	= ((struct exec_struct_t *)buffer)->exec_addr;//load addr
 
 
 #ifdef BES_CRC32_DOUBLE_CHECK
 	bes_devel("crc32 %x(le) %x(be) %x(bes)\n", crc_le, crc_be, crc_bes);
 #else
-	bes_devel("crc32                :0x%08X\n", crc_le);
+	bes_devel("crc32				:0x%08X\n", crc_le);
 #endif
-	bes_devel("exec_struct.entry    :0x%08X\n", exec_struct.entry);
-	bes_devel("exec_struct.param    :0x%08X\n", exec_struct.param);
-	bes_devel("exec_struct.sp       :0x%08X\n", exec_struct.sp);
+	bes_devel("exec_struct.entry	:0x%08X\n", exec_struct.entry);
+	bes_devel("exec_struct.param	:0x%08X\n", exec_struct.param);
+	bes_devel("exec_struct.sp		:0x%08X\n", exec_struct.sp);
 	bes_devel("exec_struct.exec_addr:0x%08X\n", exec_struct.exec_addr);
 
 	exec_addr_last4byte = (*((u32 *)(data + data_len - 4)));
-	bes_devel("exec_addr_last4byte  :0x%08X\n", exec_addr_last4byte);
+	bes_devel("exec_addr_last4byte	:0x%08X\n", exec_addr_last4byte);
 	if ((!exec_struct.exec_addr) || (exec_struct.exec_addr != exec_addr_last4byte && exec_addr_last4byte)) {
 		exec_struct.exec_addr = exec_addr_last4byte;
 		bes_devel("exec_addr_last4byte covered exec_struct.exec_addr\n");
@@ -102,23 +102,23 @@ int bes_frame_rsp_check(void *rsp, u8 frame_num)
 
 const u8* bes2600_get_firmware_version_info(const u8 *data, u32 count)
 {
-        int i = 0;
-        const u8 *tmp_ptr = NULL;
-        const char month[12][4] = {
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-        };
+	int i = 0;
+	const u8 *tmp_ptr = NULL;
+	const char month[12][4] = {
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+	};
 
-        if(!data || count < 4)
-                return NULL;
+	if(!data || count < 4)
+		return NULL;
 
-        for(tmp_ptr = data + count - 3; tmp_ptr > data; tmp_ptr -= 1) {
-                for(i = 0; i < 12; i++) {
-                        if(memcmp(tmp_ptr, month[i], 3) == 0) {
-                                return tmp_ptr;
-                        }
-                }
-        }
+	for(tmp_ptr = data + count - 3; tmp_ptr > data; tmp_ptr -= 1) {
+		for(i = 0; i < 12; i++) {
+			if(memcmp(tmp_ptr, month[i], 3) == 0) {
+				return tmp_ptr;
+			}
+		}
+	}
 
-        return NULL;
+	return NULL;
 }

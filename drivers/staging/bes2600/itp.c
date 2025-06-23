@@ -29,7 +29,7 @@ static void bes2600_itp_rx_stats(struct bes2600_common *priv);
 static void bes2600_itp_rx_reset(struct bes2600_common *priv);
 static void bes2600_itp_tx_stop(struct bes2600_common *priv);
 static void bes2600_itp_handle(struct bes2600_common *priv,
-			      struct sk_buff *skb);
+			  struct sk_buff *skb);
 static void bes2600_itp_err(struct bes2600_common *priv,
 			   int err,
 			   int arg);
@@ -42,16 +42,22 @@ static ssize_t bes2600_itp_read(struct file *file,
 	struct bes2600_itp *itp = &priv->debug->itp;
 	struct sk_buff *skb;
 	int ret;
+	unsigned long flags;
 
-	if (skb_queue_empty(&itp->log_queue))
+	spin_lock_irqsave(&itp->tx_lock, flags);
+	if (skb_queue_empty(&itp->log_queue)) {
+		spin_unlock_irqrestore(&itp->tx_lock, flags);
 		return 0;
+	}
 
 	skb = skb_dequeue(&itp->log_queue);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
+
 	ret = copy_to_user(user_buf, skb->data, skb->len);
 	*ppos += skb->len;
 	skb->data[skb->len] = 0;
 	bes2600_dbg(BES2600_DBG_ITP, "[ITP] >>> %s", skb->data);
-	consume_skb(skb);
+	kfree_skb(skb); /* Fixed consume_skb to kfree_skb */
 
 	return skb->len - ret;
 }
@@ -76,7 +82,7 @@ static ssize_t bes2600_itp_write(struct file *file,
 	skb->data[count] = 0;
 
 	bes2600_itp_handle(priv, skb);
-	consume_skb(skb);
+	kfree_skb(skb); /* Fixed consume_skb to kfree_skb */
 	return count;
 }
 
@@ -85,11 +91,14 @@ static unsigned int bes2600_itp_poll(struct file *file, poll_table *wait)
 	struct bes2600_common *priv = file->private_data;
 	struct bes2600_itp *itp = &priv->debug->itp;
 	unsigned int mask = 0;
+	unsigned long flags;
 
 	poll_wait(file, &itp->read_wait, wait);
 
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	if (!skb_queue_empty(&itp->log_queue))
 		mask |= POLLIN | POLLRDNORM;
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 
 	mask |= POLLOUT | POLLWRNORM;
 
@@ -172,7 +181,7 @@ static void bes2600_itp_fill_pattern(u8 *data, int size,
 static void bes2600_itp_tx_work(struct work_struct *work)
 {
 	struct bes2600_itp *itp = container_of(work, struct bes2600_itp,
-		    tx_work.work);
+		tx_work.work);
 	struct bes2600_common *priv = itp->priv;
 	atomic_set(&priv->bh_tx, 1);
 	wake_up(&priv->bh_wq);
@@ -181,7 +190,7 @@ static void bes2600_itp_tx_work(struct work_struct *work)
 static void bes2600_itp_tx_finish(struct work_struct *work)
 {
 	struct bes2600_itp *itp = container_of(work, struct bes2600_itp,
-		    tx_finish.work);
+		tx_finish.work);
 	__bes2600_itp_tx_stop(itp->priv);
 }
 
@@ -263,10 +272,14 @@ bool bes2600_is_itp(struct bes2600_common *priv)
 static void bes2600_itp_rx_reset(struct bes2600_common *priv)
 {
 	struct bes2600_itp *itp = &priv->debug->itp;
+	unsigned long flags;
+
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	itp->rx_cnt = 0;
 	itp->rx_rssi = 0;
 	itp->rx_rssi_max = -1000;
 	itp->rx_rssi_min = 1000;
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 }
 
 static void bes2600_itp_rx_start(struct bes2600_common *priv)
@@ -298,12 +311,14 @@ static void bes2600_itp_rx_stats(struct bes2600_common *priv)
 	char buf[128];
 	int len, ret;
 	struct wsm_counters_table counters;
+	unsigned long flags;
 
 	ret = wsm_get_counters_table(priv, &counters);
 
 	if (ret)
 		bes2600_itp_err(priv, -EBUSY, 20);
 
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	if (!itp->rx_cnt)
 		len = snprintf(buf, sizeof(buf), "1,0,0,0,0,%d\n",
 				counters.countRxPacketErrors);
@@ -315,12 +330,14 @@ static void bes2600_itp_rx_stats(struct bes2600_common *priv)
 			counters.countRxPacketErrors);
 
 	if (len <= 0) {
+		spin_unlock_irqrestore(&itp->tx_lock, flags);
 		bes2600_itp_err(priv, -EBUSY, 21);
 		return;
 	}
 
 	skb = dev_alloc_skb(len);
 	if (!skb) {
+		spin_unlock_irqrestore(&itp->tx_lock, flags);
 		bes2600_itp_err(priv, -ENOMEM, 22);
 		return;
 	}
@@ -335,6 +352,7 @@ static void bes2600_itp_rx_stats(struct bes2600_common *priv)
 
 	memcpy(skb->data, buf, len);
 	skb_queue_tail(&itp->log_queue, skb);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 	wake_up(&itp->read_wait);
 }
 
@@ -349,6 +367,12 @@ static void bes2600_itp_tx_start(struct bes2600_common *priv)
 	};
 	int len;
 	u8 da_addr[6] = ITP_DEFAULT_DA_ADDR;
+	unsigned long flags;
+
+	if (!priv->vif) { /* Added NULL check */
+		bes2600_itp_err(priv, -EINVAL, 50);
+		return;
+	}
 
 	/* Rates index 4 and 5 are not supported */
 	if (itp->rate > 3)
@@ -402,24 +426,26 @@ static void bes2600_itp_tx_start(struct bes2600_common *priv)
 	wsm_set_bssid_filtering(priv, false);
 	bes2600_enable_listening(priv, priv->channel);
 
-	spin_lock_bh(&itp->tx_lock);
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	atomic_set(&itp->test_mode, TEST_MODE_TX_TEST);
 	atomic_set(&itp->awaiting_confirm, 0);
 	atomic_set(&itp->stop_tx, 0);
 	atomic_set(&priv->bh_tx, 1);
 	ktime_get_ts(&itp->last_sent);
 	wake_up(&priv->bh_wq);
-	spin_unlock_bh(&itp->tx_lock);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 }
 
 void __bes2600_itp_tx_stop(struct bes2600_common *priv)
 {
 	struct bes2600_itp *itp = &priv->debug->itp;
-	spin_lock_bh(&itp->tx_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	kfree(itp->data);
 	itp->data = NULL;
 	atomic_set(&itp->test_mode, TEST_MODE_NO_TEST);
-	spin_unlock_bh(&itp->tx_lock);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 }
 
 static void bes2600_itp_tx_stop(struct bes2600_common *priv)
@@ -443,6 +469,8 @@ static void bes2600_itp_get_version(struct bes2600_common *priv,
 	char buf[ITP_BUF_SIZE];
 	size_t size = 0;
 	int len;
+	unsigned long flags;
+
 	bes2600_dbg(BES2600_DBG_ITP, "[ITP] print %s version\n", type == ITP_CHIP_ID ?
 			"chip" : "firmware");
 
@@ -496,7 +524,9 @@ static void bes2600_itp_get_version(struct bes2600_common *priv,
 	skb_put(skb, size);
 
 	memcpy(skb->data, buf, size);
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	skb_queue_tail(&itp->log_queue, skb);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 	wake_up(&itp->read_wait);
 }
 
@@ -507,16 +537,17 @@ int bes2600_itp_get_tx(struct bes2600_common *priv, u8 **data,
 	struct wsm_tx *tx;
 	struct timespec now;
 	int time_left_us;
+	unsigned long flags;
 
 	if (!priv->debug)
 		return 0;
 
-	itp	= &priv->debug->itp;
+	itp = &priv->debug->itp;
 
 	if (!itp)
 		return 0;
 
-	spin_lock_bh(&itp->tx_lock);
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	if (atomic_read(&itp->test_mode) != TEST_MODE_TX_TEST)
 		goto out;
 
@@ -571,11 +602,11 @@ int bes2600_itp_get_tx(struct bes2600_common *priv, u8 **data,
 	atomic_set(&priv->bh_tx, 1);
 	ktime_get_ts(&itp->last_sent);
 	atomic_add(1, &itp->awaiting_confirm);
-	spin_unlock_bh(&itp->tx_lock);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 	return 1;
 
 out:
-	spin_unlock_bh(&itp->tx_lock);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 	return 0;
 }
 
@@ -584,6 +615,7 @@ bool bes2600_itp_rxed(struct bes2600_common *priv, struct sk_buff *skb)
 	struct bes2600_itp *itp = &priv->debug->itp;
 	struct ieee80211_rx_status *rx = IEEE80211_SKB_RXCB(skb);
 	int signal;
+	unsigned long flags;
 
 	if (atomic_read(&itp->test_mode) != TEST_MODE_RX_TEST)
 		return bes2600_is_itp(priv);
@@ -591,12 +623,14 @@ bool bes2600_itp_rxed(struct bes2600_common *priv, struct sk_buff *skb)
 		return true;
 
 	signal = rx->signal;
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	itp->rx_cnt++;
 	itp->rx_rssi += signal;
 	if (itp->rx_rssi_min > rx->signal)
 		itp->rx_rssi_min = rx->signal;
 	if (itp->rx_rssi_max < rx->signal)
 		itp->rx_rssi_max = rx->signal;
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 
 	return true;
 }
@@ -618,7 +652,7 @@ bool bes2600_itp_tx_running(struct bes2600_common *priv)
 }
 
 static void bes2600_itp_handle(struct bes2600_common *priv,
-			      struct sk_buff *skb)
+			  struct sk_buff *skb)
 {
 	struct bes2600_itp *itp = &priv->debug->itp;
 	const struct wiphy *wiphy = priv->hw->wiphy;
@@ -698,7 +732,7 @@ static void bes2600_itp_handle(struct bes2600_common *priv,
 				itp->hdr_len)
 			bes2600_itp_err(priv, -EINVAL, 8);
 		else {
-		    bes2600_itp_tx_start(priv);
+			bes2600_itp_tx_start(priv);
 		}
 		break;
 	case 5:
@@ -717,10 +751,10 @@ static void bes2600_itp_err(struct bes2600_common *priv,
 	struct bes2600_itp *itp = &priv->debug->itp;
 	struct sk_buff *skb;
 	static char buf[255];
-	int len;
+	int len, sym_len;
+	unsigned long flags;
 
-	len = snprintf(buf, sizeof(buf), "%d,%d\n",
-		err, arg);
+	len = snprintf(buf, sizeof(buf), "%d,%d\n", err, arg);
 	if (len <= 0)
 		return;
 
@@ -732,13 +766,13 @@ static void bes2600_itp_err(struct bes2600_common *priv,
 	skb_put(skb, len);
 
 	memcpy(skb->data, buf, len);
+	spin_lock_irqsave(&itp->tx_lock, flags);
 	skb_queue_tail(&itp->log_queue, skb);
+	spin_unlock_irqrestore(&itp->tx_lock, flags);
 	wake_up(&itp->read_wait);
 
-	len = sprint_symbol(buf,
-			(unsigned long)__builtin_return_address(0));
-	if (len <= 0)
+	sym_len = sprint_symbol(buf, (unsigned long)__builtin_return_address(0));
+	if (sym_len <= 0 || len + sym_len >= sizeof(buf)) /* Prevent buffer overflow */
 		return;
-	bes2600_dbg(BES2600_DBG_ITP, "[ITP] error %d,%d from %s\n",
-			err, arg, buf);
+	bes2600_dbg(BES2600_DBG_ITP, "[ITP] error %d,%d from %s\n", err, arg, buf);
 }

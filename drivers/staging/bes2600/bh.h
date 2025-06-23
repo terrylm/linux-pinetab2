@@ -19,9 +19,10 @@
 #define SDIO_BLOCK_SIZE (528)
 
 #define KEY_FRAME_SW_RETRY
-#ifdef KEY_FRAME_SW_RETRY
-#define CW1200_MAX_SW_RETRY_CNT (2)
+#ifdef  KEY_FRAME_SW_RETRY
+#define CW1200_MAX_SW_RETRY_CNT		(2)
 #endif
+
 
 int bes2600_register_bh(struct bes2600_common *hw_priv);
 void bes2600_unregister_bh(struct bes2600_common *hw_priv);
@@ -30,18 +31,18 @@ void bes2600_bh_wakeup(struct bes2600_common *hw_priv);
 int bes2600_bh_suspend(struct bes2600_common *hw_priv);
 int bes2600_bh_resume(struct bes2600_common *hw_priv);
 /* Must be called from BH thread. */
-void bes2600_enable_powersave(struct bes2600_vif *priv, bool enable);
+void bes2600_enable_powersave(struct bes2600_vif *priv,
+			     bool enable);
 int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count);
-int wsm_release_vif_tx_buffer(struct bes2600_common *hw_priv, int if_id, int count);
-#ifdef MCAST_FWDING
-int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count);
-#endif
-#ifdef KEY_FRAME_SW_RETRY
-int bes2600_bh_sw_process(struct bes2600_common *hw_priv, struct wsm_tx_confirm *tx_confirm);
-#endif
+int wsm_release_vif_tx_buffer(struct bes2600_common *hw_priv, int if_id,
+				int count);
+int bes2600_bh_sw_process(struct bes2600_common *hw_priv,
+			 struct wsm_tx_confirm *tx_confirm);
+
 void bes2600_bh_inc_pending_count(struct bes2600_common *hw_priv, int idx);
 void bes2600_bh_dec_pending_count(struct bes2600_common *hw_priv, int idx);
-void bes2600_bh_mcu_active_monitor(struct timer_list *t);
-void bes2600_bh_lmac_active_monitor(struct timer_list *t);
+
+void bes2600_bh_mcu_active_monitor(struct timer_list* t);
+void bes2600_bh_lmac_active_monitor(struct timer_list* t);
 
 #endif /* BES2600_BH_H */

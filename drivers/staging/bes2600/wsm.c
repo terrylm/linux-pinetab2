@@ -1888,7 +1888,7 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 
 	bes2600_bh_wakeup(hw_priv);
 
-	if (unlikely(&hw_priv->bh_error)) {
+	if (unlikely(atomic_read(&hw_priv->bh_error))) {
 		/* Do not wait for timeout if BH is dead. Exit immediately. */
 		ret = 0;
 	} else {
@@ -1939,7 +1939,7 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		}
 
 		/* Kill BH thread to report the error to the top layer. */
-		//hw_priv->bh_error = 1;
+		//atomic_set(&hw_priv->bh_error, 1);
 		wake_up(&hw_priv->bh_wq);
 		ret = -ETIMEDOUT;
 	} else {
@@ -2004,7 +2004,7 @@ bool wsm_flush_tx(struct bes2600_common *hw_priv)
 	if (!hw_priv->hw_bufs_used)
 		return true;
 
-	if (&hw_priv->bh_error) {
+	if (atomic_read(&hw_priv->bh_error)) {
 		/* In case of failure do not wait for magic. */
 		bes_err("[WSM] Fatal error occured, "
 				"will not flush TX.\n");
@@ -2052,7 +2052,7 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 	if (!hw_priv->hw_bufs_used_vif[priv->if_id])
 		return true;
 
-	if (&hw_priv->bh_error) {
+	if (atomic_read(&hw_priv->bh_error)) {
 		/* In case of failure do not wait for magic. */
 		bes_err( "[WSM] Fatal error occured, "
 				"will not flush TX.\n");
@@ -2092,7 +2092,7 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 void wsm_unlock_tx(struct bes2600_common *hw_priv)
 {
 	int tx_lock;
-	if (&hw_priv->bh_error)
+	if (atomic_read(&hw_priv->bh_error))
 		bes_err("fatal error occured, unlock is unsafe\n");
 	else {
 		tx_lock = atomic_sub_return(1, &hw_priv->tx_lock);

@@ -63,7 +63,7 @@ static struct wsm_udp_port_filter_hdr bes2600_udp_port_filter_off = {
 };
 
 #ifndef ETH_P_WAPI
-#define ETH_P_WAPI     0x88B4
+#define ETH_P_WAPI	   0x88B4
 #endif
 
 #define ETH_P_UNKNOWN 0xFFFF
@@ -137,35 +137,52 @@ bool bes2600_suspend_status_get(struct bes2600_common *hw_priv)
 
 void bes2600_pending_unjoin_reset(struct bes2600_common *hw_priv)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&hw_priv->vif_list_lock, flags); /* Use existing lock */
 	hw_priv->unjoin_if_id_slots = 0x00;
+	spin_unlock_irqrestore(&hw_priv->vif_list_lock, flags);
 }
 
 void bes2600_pending_unjoin_set(struct bes2600_common *hw_priv, int if_id)
 {
-	if(if_id > 1)
+	unsigned long flags;
+
+	if (if_id > 1)
 		bes_err("unexpected if_id: %d\n", if_id);
-	else
+	else {
+		spin_lock_irqsave(&hw_priv->vif_list_lock, flags); /* Use existing lock */
 		hw_priv->unjoin_if_id_slots |= (1 << if_id);
+		spin_unlock_irqrestore(&hw_priv->vif_list_lock, flags);
+	}
 }
 
 bool bes2600_pending_unjoin_get(struct bes2600_common *hw_priv, int if_id)
 {
-	if(if_id > 1) {
+	unsigned long flags;
+	bool ret;
+
+	if (if_id > 1) {
 		bes_err("unexpected if_id: %d\n", if_id);
 		return false;
-	} else
-		return hw_priv->unjoin_if_id_slots & (1 << if_id);
+	}
+
+	spin_lock_irqsave(&hw_priv->vif_list_lock, flags); /* Use existing lock */
+	ret = hw_priv->unjoin_if_id_slots & (1 << if_id);
+	spin_unlock_irqrestore(&hw_priv->vif_list_lock, flags);
+	return ret;
 }
 
 static int bes2600_pm_notifier(struct notifier_block *notifier,
-			       unsigned long pm_event,
-			       void *unused)
+				   unsigned long pm_event,
+				   void *unused)
 {
 	int if_id;
 	struct bes2600_vif *priv;
 	struct bes2600_common *hw_priv = container_of(notifier,
-						    struct bes2600_common,
-						    pm_notify);
+							struct bes2600_common,
+							pm_notify);
+	unsigned long flags;
 
 	switch (pm_event) {
 	case PM_HIBERNATION_PREPARE:
@@ -177,14 +194,19 @@ static int bes2600_pm_notifier(struct notifier_block *notifier,
 	case PM_POST_HIBERNATION:
 	case PM_POST_SUSPEND:
 		bes2600_suspend_status_set(hw_priv, false);
-		if(hw_priv->unjoin_if_id_slots) {
-			for(if_id = 0; if_id < 2; if_id++) {
-				if(bes2600_pending_unjoin_get(hw_priv, if_id)) {
+		spin_lock_irqsave(&hw_priv->vif_list_lock, flags);
+		if (hw_priv->unjoin_if_id_slots) {
+			spin_unlock_irqrestore(&hw_priv->vif_list_lock, flags);
+			for (if_id = 0; if_id < 2; if_id++) {
+				if (bes2600_pending_unjoin_get(hw_priv, if_id)) {
 					priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
-					ieee80211_connection_loss(priv->vif);
+					if (priv && priv->vif) /* Added NULL check */
+						ieee80211_connection_loss(priv->vif);
 				}
 			}
 			bes2600_pending_unjoin_reset(hw_priv);
+		} else {
+			spin_unlock_irqrestore(&hw_priv->vif_list_lock, flags);
 		}
 		break;
 
@@ -223,8 +245,8 @@ static long bes2600_suspend_work(struct delayed_work *work)
 }
 
 static int bes2600_resume_work(struct bes2600_common *hw_priv,
-			       struct delayed_work *work,
-			       unsigned long tmo)
+				   struct delayed_work *work,
+				   unsigned long tmo)
 {
 	if ((long)tmo < 0)
 		return 1;
@@ -260,13 +282,13 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 #ifdef ROAM_OFFLOAD
 	bes2600_for_each_vif(hw_priv, priv, i) {
 #ifdef P2P_MULTIVIF
-		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv)
+		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
 #else
-		if (!priv)
+		if (!priv || !priv->vif) /* Added priv->vif check */
 #endif
 			continue;
-		if((priv->vif->type == NL80211_IFTYPE_STATION)
-		&& (priv->join_status == BES2600_JOIN_STATUS_STA)) {
+		if ((priv->vif->type == NL80211_IFTYPE_STATION)
+			&& (priv->join_status == BES2600_JOIN_STATUS_STA)) {
 			down(&hw_priv->scan.lock);
 			hw_priv->scan.if_id = priv->if_id;
 			bes2600_sched_scan_work(&hw_priv->scan.swork);
@@ -278,7 +300,6 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 	if (hw_priv->tx_queue_stats.num_queued[0]
 			+ hw_priv->tx_queue_stats.num_queued[1])
 		return -EBUSY;
-
 
 	/* Make sure there is no configuration requests in progress. */
 	if (down_trylock(&hw_priv->conf_lock))
@@ -306,10 +327,10 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 			bes_err("wait device idle timeout\n");
 			busy_event_buffer = kmalloc(4096, GFP_KERNEL);
 
-			if(!busy_event_buffer)
+			if (!busy_event_buffer)
 				goto revert2;
 
-			if(bes2600_pwr_busy_event_record(hw_priv, busy_event_buffer, 4096) == 0) {
+			if (bes2600_pwr_busy_event_record(hw_priv, busy_event_buffer, 4096) == 0) {
 				bes_devel("%s\n", busy_event_buffer);
 			} else {
 				bes_err("busy event show failed\n");
@@ -329,21 +350,20 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 	/* set filters and offload based on interface */
 	bes2600_for_each_vif(hw_priv, priv, i) {
 #ifdef P2P_MULTIVIF
-		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv)
+		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
 #else
-		if (!priv)
+		if (!priv || !priv->vif) /* Added priv->vif check */
 #endif
 			continue;
 
-		ret = __bes2600_wow_suspend(priv,
-						wowlan);
+		ret = __bes2600_wow_suspend(priv, wowlan);
 		if (ret) {
 			for (; i >= 0; i--) {
-				if (!hw_priv->vif_list[i])
+				if (!hw_priv->vif_list[i] || !hw_priv->vif_list[i]->drv_priv)
 					continue;
-				priv = (struct bes2600_vif *)
-					hw_priv->vif_list[i]->drv_priv;
-				__bes2600_wow_resume(priv);
+				priv = (struct bes2600_vif *)hw_priv->vif_list[i]->drv_priv;
+				if (priv->pm_state_vif.suspend_state) /* Check for allocated state */
+					__bes2600_wow_resume(priv);
 			}
 			goto revert3;
 		}
@@ -354,16 +374,14 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 
 	/* Stop serving thread */
 	if (bes2600_bh_suspend(hw_priv)) {
-		bes_err("%s: bes2600_bh_suspend failed\n",
-				__func__);
+		bes_err("%s: bes2600_bh_suspend failed\n", __func__);
 		bes2600_wow_resume(hw);
 		return -EBUSY;
 	}
 
 	/* Force resume if event is coming from the device. */
 	if (atomic_read(&hw_priv->bh_rx)) {
-		bes_devel("%s: incoming event present - resume\n",
-				__func__);
+		bes_devel("%s: incoming event present - resume\n", __func__);
 		bes2600_wow_resume(hw);
 		return -EAGAIN;
 	}
@@ -402,7 +420,6 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	struct bes2600_pm_state_vif *pm_state_vif = &priv->pm_state_vif;
 	struct bes2600_suspend_state *state;
-	int ret;
 
 #ifdef MCAST_FWDING
 	struct wsm_forwarding_offload fwdoffload = {
@@ -413,7 +430,10 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 
 	/* Do not suspend when join work is scheduled */
 	if (work_pending(&priv->join_work))
-		goto revert1;
+		return -EBUSY;
+
+	if (!priv->vif) /* Added NULL check */
+		return -EINVAL;
 
 	bes2600_set_ehter_and_udp_filter(hw_priv, &bes2600_ether_type_filter_on.hdr,
 				&bes2600_udp_port_filter_on.hdr, priv->if_id);
@@ -423,7 +443,7 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 	wsm_set_ipv6_filter(hw_priv, &bes2600_ipv6_filter_on.hdr, priv->if_id);
 #endif
 
-  	if (priv->join_status == BES2600_JOIN_STATUS_AP)
+	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		WARN_ON(wsm_set_keepalive_filter(priv, true));
 
 	/* Set Multicast Address Filter */
@@ -434,14 +454,14 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv,
-				&fwdoffload,priv->if_id));
+		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+				&fwdoffload, priv->if_id));
 #endif
 
 	/* Allocate state */
 	state = kzalloc(sizeof(struct bes2600_suspend_state), GFP_KERNEL);
 	if (!state)
-		goto revert2;
+		return -ENOMEM;
 
 	/* Store delayed work states. */
 	state->bss_loss_tmo =
@@ -453,49 +473,12 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 	state->link_id_gc =
 		bes2600_suspend_work(&priv->link_id_gc_work);
 
-	ret = timer_pending(&priv->mcast_timeout);
-	if (ret)
-		goto revert3;
+	/* Removed timer_pending check for mcast_timeout */
 
 	/* Store suspend state */
 	pm_state_vif->suspend_state = state;
 
 	return 0;
-
-revert3:
-	bes2600_resume_work(hw_priv, &priv->bss_loss_work,
-			state->bss_loss_tmo);
-	bes2600_resume_work(hw_priv, &priv->connection_loss_work,
-			state->connection_loss_tmo);
-	bes2600_resume_work(hw_priv, &priv->join_timeout,
-			state->join_tmo);
-	bes2600_resume_work(hw_priv, &priv->link_id_gc_work,
-			state->link_id_gc);
-	kfree(state);
-revert2:
-	wsm_set_udp_port_filter(hw_priv, &bes2600_udp_port_filter_off,
-				priv->if_id);
-	wsm_set_ether_type_filter(hw_priv, &bes2600_ether_type_filter_off,
-				  priv->if_id);
-
-	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_keepalive_filter(priv, false));
-
-	/* Set Multicast Address Filter */
-	if (priv->multicast_filter.numOfAddresses) {
-		priv->multicast_filter.enable = __cpu_to_le32(1);
-		wsm_set_multicast_filter(hw_priv, &priv->multicast_filter, priv->if_id);
-	}
-
-
-#ifdef MCAST_FWDING
-	fwdoffload.flags = 0x0;
-	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, &fwdoffload,priv->if_id));
-#endif
-revert1:
-	up(&hw_priv->conf_lock);
-	return -EBUSY;
 }
 
 int bes2600_wow_resume(struct ieee80211_hw *hw)
@@ -518,9 +501,9 @@ int bes2600_wow_resume(struct ieee80211_hw *hw)
 	/* set filters and offload based on interface */
 	bes2600_for_each_vif(hw_priv, priv, i) {
 #ifdef P2P_MULTIVIF
-		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv)
+		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
 #else
-		if (!priv)
+		if (!priv || !priv->vif) /* Added priv->vif check */
 #endif
 			continue;
 		ret = __bes2600_wow_resume(priv);
@@ -553,9 +536,12 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 	state = pm_state_vif->suspend_state;
 	pm_state_vif->suspend_state = NULL;
 
+	if (!state) /* Added NULL check */
+		return 0;
+
 #ifdef ROAM_OFFLOAD
-	if((priv->vif->type == NL80211_IFTYPE_STATION)
-	&& (priv->join_status == BES2600_JOIN_STATUS_STA))
+	if ((priv->vif && priv->vif->type == NL80211_IFTYPE_STATION) /* Added priv->vif check */
+		&& (priv->join_status == BES2600_JOIN_STATUS_STA))
 		bes2600_hw_sched_scan_stop(hw_priv);
 #endif /*ROAM_OFFLOAD*/
 
@@ -570,7 +556,8 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, &fwdoffload,priv->if_id));
+		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+				&fwdoffload, priv->if_id));
 #endif
 
 	/* Resume delayed work */

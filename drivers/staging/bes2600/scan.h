@@ -52,13 +52,16 @@ int bes2600_hw_sched_scan_start(struct ieee80211_hw *hw,
 			struct ieee80211_vif *vif,
 			struct cfg80211_sched_scan_request *req,
 			struct ieee80211_sched_scan_ies *ies);
+
 void bes2600_hw_sched_scan_stop(struct bes2600_common *priv);
 void bes2600_sched_scan_work(struct work_struct *work);
 #endif /*ROAM_OFFLOAD*/
+
 void bes2600_scan_work(struct work_struct *work);
 void bes2600_scan_timeout(struct work_struct *work);
 void bes2600_scan_complete_cb(struct bes2600_common *priv,
-				struct wsm_scan_complete *arg);
+			struct wsm_scan_complete *arg);
+
 void bes2600_cancel_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
 
 /* ******************************************************************** */

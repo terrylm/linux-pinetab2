@@ -34,7 +34,7 @@ extern void sdio_work_debug(struct sbus_priv *self);
 #define DOWNLOAD_BLOCK_SIZE_WR	(0x1000 - 4)
 /* an SPI message cannot be bigger than (2"12-1)*2 bytes
  * "*2" to cvt to bytes */
-#define MAX_SZ_RD_WR_BUFFERS	(DOWNLOAD_BLOCK_SIZE_WR*2)
+#define MAX_SZ_RD_WR_BUFFERS	(DOWNLOAD_BLOCK_SIZE_WR * 2)
 #define PIGGYBACK_CTRL_REG	(2)
 #define EFFECTIVE_BUF_SIZE	(MAX_SZ_RD_WR_BUFFERS - PIGGYBACK_CTRL_REG)
 
@@ -65,8 +65,7 @@ int bes2600_register_bh(struct bes2600_common *hw_priv)
 	int err = 0;
 	/* Realtime workqueue */
 	hw_priv->bh_workqueue = alloc_workqueue("bes2600_bh",
-				WQ_MEM_RECLAIM | WQ_HIGHPRI
-				| WQ_CPU_INTENSIVE, 1);
+		WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_CPU_INTENSIVE, 1);
 
 	if (!hw_priv->bh_workqueue)
 		return -ENOMEM;
@@ -86,6 +85,7 @@ int bes2600_register_bh(struct bes2600_common *hw_priv)
 	atomic_set(&hw_priv->bh_tx, 0);
 	atomic_set(&hw_priv->bh_term, 0);
 	atomic_set(&hw_priv->bh_suspend, BES2600_BH_RESUMED);
+	atomic_set(&hw_priv->bh_error, 0);
 	hw_priv->buf_id_tx = 0;
 	hw_priv->buf_id_rx = 0;
 	init_waitqueue_head(&hw_priv->bh_wq);
@@ -104,19 +104,16 @@ void bes2600_unregister_bh(struct bes2600_common *hw_priv)
 
 	atomic_add(1, &hw_priv->bh_term);
 	wake_up(&hw_priv->bh_wq);
-
 	flush_workqueue(hw_priv->bh_workqueue);
-
 	destroy_workqueue(hw_priv->bh_workqueue);
 	hw_priv->bh_workqueue = NULL;
-
 	bes_devel("[BH] unregistered.\n");
 }
 
 void bes2600_irq_handler(struct bes2600_common *hw_priv)
 {
 	bes_devel("[BH] irq.\n");
-	if(!hw_priv) {
+	if (!hw_priv) {
 		bes_warn("%s hw private data is null\n", __func__);
 		return;
 	}
@@ -145,7 +142,7 @@ EXPORT_SYMBOL(bes2600_bh_wakeup);
 int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 {
 #ifdef MCAST_FWDING
-	int i =0;
+	int i = 0;
 	struct bes2600_vif *priv = NULL;
 #endif
 
@@ -156,13 +153,12 @@ int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 	}
 
 #ifdef MCAST_FWDING
- 	bes2600_for_each_vif(hw_priv, priv, i) {
+	bes2600_for_each_vif(hw_priv, priv, i) {
 		if (!priv)
 			continue;
-		if ( (priv->multicast_filter.enable)
-			&& (priv->join_status == BES2600_JOIN_STATUS_AP) ) {
-			wsm_release_buffer_to_fw(priv,
-				(hw_priv->wsm_caps.numInpChBufs - 1));
+		if (priv->multicast_filter.enable
+			&& priv->join_status == BES2600_JOIN_STATUS_AP) {
+			wsm_release_buffer_to_fw(priv, hw_priv->wsm_caps.numInpChBufs - 1);
 			break;
 		}
 	}
@@ -170,9 +166,10 @@ int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 
 	atomic_set(&hw_priv->bh_suspend, BES2600_BH_SUSPEND);
 	wake_up(&hw_priv->bh_wq);
-	return wait_event_timeout(hw_priv->bh_evt_wq, atomic_read(&hw_priv->bh_error) ||
+	return wait_event_timeout(hw_priv->bh_evt_wq,
+		atomic_read(&hw_priv->bh_error) ||
 		(BES2600_BH_SUSPENDED == atomic_read(&hw_priv->bh_suspend)),
-		 1 * HZ) ? 0 : -ETIMEDOUT;
+		1 * HZ) ? 0 : -ETIMEDOUT;
 }
 EXPORT_SYMBOL(bes2600_bh_suspend);
 
@@ -181,7 +178,7 @@ int bes2600_bh_resume(struct bes2600_common *hw_priv)
 	int ret;
 
 #ifdef MCAST_FWDING
-	int i =0;
+	int i = 0;
 	struct bes2600_vif *priv = NULL;
 #endif
 
@@ -201,11 +198,10 @@ int bes2600_bh_resume(struct bes2600_common *hw_priv)
 	bes2600_for_each_vif(hw_priv, priv, i) {
 		if (!priv)
 			continue;
-		if ((priv->join_status == BES2600_JOIN_STATUS_AP)
-				&& (priv->multicast_filter.enable)) {
+		if (priv->join_status == BES2600_JOIN_STATUS_AP && priv->multicast_filter.enable) {
 			u8 count = 0;
 			WARN_ON(wsm_request_buffer_request(priv, &count));
-			bes_devel("[BH] BH resume. Reclaim Buff %d \n",count);
+			bes_devel("[BH] BH resume. Reclaim Buff %d\n", count);
 			break;
 		}
 	}
@@ -217,7 +213,7 @@ EXPORT_SYMBOL(bes2600_bh_resume);
 
 static inline void wsm_alloc_tx_buffer(struct bes2600_common *hw_priv)
 {
-	++hw_priv->hw_bufs_used;
+	++hw_priv->hw_bufs_used; /* Protected by tx_lock in bes2600_tx */
 }
 
 int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count)
@@ -243,8 +239,7 @@ int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count)
 }
 EXPORT_SYMBOL(wsm_release_tx_buffer);
 
-int wsm_release_vif_tx_buffer(struct bes2600_common *hw_priv, int if_id,
-				int count)
+int wsm_release_vif_tx_buffer(struct bes2600_common *hw_priv, int if_id, int count)
 {
 	int ret = 0;
 
@@ -267,11 +262,9 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 	struct wsm_hdr *wsm;
 	struct bes2600_common *hw_priv = priv->hw_priv;
 
-#if 1
-	if (priv->join_status != BES2600_JOIN_STATUS_AP) {
+	if (priv->join_status != BES2600_JOIN_STATUS_AP)
 		return 0;
-	}
-#endif
+
 	bes_devel("Rel buffer to FW %d, %d\n", count, hw_priv->hw_bufs_used);
 
 	for (i = 0; i < count; i++) {
@@ -287,16 +280,13 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 			wsm = (struct wsm_hdr *)buf->begin;
 			BUG_ON(buf_len < sizeof(*wsm));
 
-			wsm->id &= __cpu_to_le32(
-				~WSM_TX_SEQ(WSM_TX_SEQ_MAX));
-			wsm->id |= cpu_to_le32(
-				WSM_TX_SEQ(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]));
+			wsm->id &= __cpu_to_le32(~WSM_TX_SEQ(WSM_TX_SEQ_MAX));
+			wsm->id |= cpu_to_le32(WSM_TX_SEQ(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]));
 
 			bes_devel("REL %d\n", hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]);
-			if (WARN_ON(bes2600_data_write(hw_priv,
-				buf->begin, buf_len))) {
+			if (WARN_ON(bes2600_data_write(hw_priv, buf->begin, buf_len)))
 				break;
-			}
+
 			hw_priv->buf_released = 1;
 			hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)] =
 				(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)] + 1) & WSM_TX_SEQ_MAX;
@@ -304,9 +294,8 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 			break;
 	}
 
-	if (i == count) {
+	if (i == count)
 		return 0;
-	}
 
 	/* Should not be here */
 	bes_devel("[BH] Less HW buf %d,%d.\n", hw_priv->hw_bufs_used,
@@ -396,14 +385,13 @@ static int bes2600_device_wakeup(struct bes2600_common *hw_priv)
 #endif
 
 /* Must be called from BH thraed. */
-void bes2600_enable_powersave(struct bes2600_vif *priv,
-			     bool enable)
+void bes2600_enable_powersave(struct bes2600_vif *priv, bool enable)
 {
-	bes_devel("[BH] Powerave is %s.\n", enable ? "enabled" : "disabled");
+	bes_devel("[BH] Powersave is %s.\n", enable ? "enabled" : "disabled");
 	priv->powersave_enabled = enable;
 }
 
-#if 0
+#if 0 /* Not used ELSE used. #if 0 */
 #define INTERRUPT_WORKAROUND
 static int bes2600_bh(void *arg)
 {
@@ -529,7 +517,7 @@ static int bes2600_bh(void *arg)
 			 * interrupt loss. */
 			timeout = timestamp +
 					WSM_CMD_LAST_CHANCE_TIMEOUT +
-					1 * HZ  -
+					1 * HZ	-
 					jiffies;
 
 			/* And terminate BH tread if the frame is "stuck" */
@@ -674,7 +662,7 @@ rx:
 			}
 #endif /* CONFIG_BES2600_WSM_DUMPS */
 
-			wsm_id  = __le32_to_cpu(wsm->id) & 0xFFF;
+			wsm_id	= __le32_to_cpu(wsm->id) & 0xFFF;
 			wsm_seq = (__le32_to_cpu(wsm->id) >> 13) & 7;
 
 			skb_trim(skb_rx, wsm_len);
@@ -781,7 +769,7 @@ tx:
 #endif /* CONFIG_BES2600_NON_POWER_OF_TWO_BLOCKSIZES */
 
 				/* Check if not exceeding BES2600
-				    capabilities */
+					capabilities */
 				if (WARN_ON_ONCE(tx_len > EFFECTIVE_BUF_SIZE))
 					bes_devel("Write aligned len: %d\n", tx_len);
 
@@ -791,7 +779,7 @@ tx:
 						hw_priv->wsm_tx_seq));
 
 				if (WARN_ON(bes2600_data_write(hw_priv,
-				    data, tx_len))) {
+					data, tx_len))) {
 					wsm_release_tx_buffer(hw_priv, 1);
 					break;
 				}
@@ -871,7 +859,7 @@ tx:
 	}
 	return 0;
 }
-#else
+#else /* Not used ELSE used. #if 0 */
 
 extern int bes2600_bh_read_ctrl_reg(struct bes2600_common *priv, u32 *ctrl_reg);
 
@@ -924,7 +912,7 @@ static void bes2600_bh_parse_wakeup_event(struct bes2600_common *hw_priv, struct
 	bool set_wakeup_reason_later = false;
 
 	if (hw_priv->sbus_ops->wakeup_source &&
-	    hw_priv->sbus_ops->wakeup_source(hw_priv->sbus_priv)) {
+		hw_priv->sbus_ops->wakeup_source(hw_priv->sbus_priv)) {
 		if (wsm_id == 0x0804) {
 			u8 *data_ptr = (u8 *)&wsm[1];
 			u8 *i80211_ptr = data_ptr + 28/* radio header */;
@@ -989,7 +977,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 		return 0; /* No more work */
 
 	if (WARN_ON((read_len < sizeof(struct wsm_hdr)) ||
-		    (read_len > EFFECTIVE_BUF_SIZE))) {
+			(read_len > EFFECTIVE_BUF_SIZE))) {
 		bes_err("Invalid read len: %zu (%04x)\n", read_len, ctrl_reg);
 		goto err;
 	}
@@ -1051,7 +1039,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 	if (priv->wsm_enable_wsm_dumps)
 		print_hex_dump(KERN_DEBUG, "<-- ", DUMP_PREFIX_NONE, 16, 1, skb->data, wsm_len, false);
 
-	wsm_id  = __le16_to_cpu(wsm->id) & 0xFFF;
+	wsm_id	= __le16_to_cpu(wsm->id) & 0xFFF;
 	wsm_seq = (__le16_to_cpu(wsm->id) >> 13) & 7;
 	bes_devel("bes2600_bh_rx_helper wsm_id:0x%04x seq:%d\n", wsm_id, wsm_seq);
 
@@ -1059,8 +1047,8 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 
 	if (wsm_id == 0x0800) {
 		wsm_handle_exception(priv,
-				     &skb->data[sizeof(*wsm)],
-				     wsm_len - sizeof(*wsm));
+					 &skb->data[sizeof(*wsm)],
+					 wsm_len - sizeof(*wsm));
 		bes_err("wsm exception\n");
 		goto err;
 	} else if ((wsm_seq != priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)])) {
@@ -1108,8 +1096,8 @@ err:
 }
 
 static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
-			       int *pending_tx,
-			       int *tx_burst)
+				   int *pending_tx,
+				   int *tx_burst)
 {
 	size_t tx_len;
 	u8 *data;
@@ -1164,9 +1152,9 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 
 	if (hw_priv->wsm_enable_wsm_dumps)
 		print_hex_dump_bytes("--> ",
-				     DUMP_PREFIX_NONE,
-				     data,
-				     __le16_to_cpu(wsm->len));
+					 DUMP_PREFIX_NONE,
+					 data,
+					 __le16_to_cpu(wsm->len));
 
 	wsm_txed(hw_priv, data);
 
@@ -1292,7 +1280,7 @@ int bes2600_bh_sw_process(struct bes2600_common *hw_priv,
 void bes2600_bh_inc_pending_count(struct bes2600_common *hw_priv, int idx)
 {
 	struct timer_list *timer = (idx == 0) ? &hw_priv->lmac_mon_timer
-	                                      : &hw_priv->mcu_mon_timer;
+										  : &hw_priv->mcu_mon_timer;
 
 	if (hw_priv->wsm_tx_pending[idx]++ == 0) {
 		bes_devel("start timer in tx, idx:%d\n", idx);
@@ -1303,7 +1291,7 @@ void bes2600_bh_inc_pending_count(struct bes2600_common *hw_priv, int idx)
 void bes2600_bh_dec_pending_count(struct bes2600_common *hw_priv, int idx)
 {
 	struct timer_list *timer = (idx == 0) ? &hw_priv->lmac_mon_timer
-	                                      : &hw_priv->mcu_mon_timer;
+										  : &hw_priv->mcu_mon_timer;
 
 	if (hw_priv->wsm_tx_pending[idx] == 0) {
 		bes_err("tx pending count error, idx:%d\n", idx);
@@ -1354,8 +1342,8 @@ static int bes2600_bh(void *arg)
 		tx_cont = 0;
 
 		if (!hw_priv->hw_bufs_used &&
-		    !bes2600_pwr_device_is_idle(hw_priv) &&
-		    !atomic_read(&hw_priv->recent_scan) &&
+			!bes2600_pwr_device_is_idle(hw_priv) &&
+			!atomic_read(&hw_priv->recent_scan) &&
 			bes2600_chrdev_is_signal_mode()) {
 			status = 5 * HZ;
 		} else if (hw_priv->hw_bufs_used) {
@@ -1376,10 +1364,10 @@ static int bes2600_bh(void *arg)
 
 		/* Did an error occur? */
 		if ((status < 0 && status != -ERESTARTSYS) ||
-		    term || atomic_read(&hw_priv->bh_error)) {
+			term || atomic_read(&hw_priv->bh_error)) {
 			break;
 		}
-		if (!status) {  /* wait_event timed out */
+		if (!status) {	/* wait_event timed out */
 			#ifdef CONFIG_BES2600_WLAN_BES
 			unsigned long timestamp = jiffies;
 			long timeout;
@@ -1407,7 +1395,7 @@ static int bes2600_bh(void *arg)
 				 */
 				timeout = timestamp +
 					WSM_CMD_LAST_CHANCE_TIMEOUT +
-					1 * HZ  -
+					1 * HZ	-
 					jiffies;
 
 				/* And terminate BH thread if the frame is "stuck" */
@@ -1542,4 +1530,4 @@ static int bes2600_bh(void *arg)
 	}
 	return 0;
 }
-#endif
+#endif /* Not used ELSE used. #if 0 */

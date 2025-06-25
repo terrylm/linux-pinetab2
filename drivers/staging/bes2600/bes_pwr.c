@@ -36,6 +36,7 @@ static void bes2600_dump_power_busy_event(struct bes2600_pwr_t *bes_pwr, char* l
 	const int all_bufer_len = single_buffer_len * 3;
 
 	bes_devel("power busy event dump at %s\n", location);
+	if (!bes_pwr) return;
 
 	async_dump_str = kzalloc(all_bufer_len, GFP_ATOMIC);
 	if(async_dump_str == NULL) {
@@ -955,6 +956,9 @@ int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event)
 	bool need_wait = false;
 	unsigned long flags;
 
+	if (!hw_priv || !&hw_priv->bes_power)
+		return -EINVAL;
+
 	if(atomic_read(&hw_priv->bes_power.dev_state) == 0) {
 	       return -1;
 	}
@@ -1059,6 +1063,8 @@ int bes2600_pwr_set_busy_event_with_timeout(struct bes2600_common *hw_priv, u32 
 	bool need_lock = false;
 	bool need_wait = false;
 	unsigned long flags;
+
+	if (!hw_priv || !&hw_priv->bes_power) return -EINVAL;
 
 	if(atomic_read(&hw_priv->bes_power.dev_state) == 0) {
 		return -1;

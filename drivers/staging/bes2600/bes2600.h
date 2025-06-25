@@ -42,8 +42,8 @@
 #endif
 #define CW12XX_MAX_QUEUE_SZ		(128)
 
-#define IEEE80211_FCTL_WEP      0x4000
-#define IEEE80211_QOS_DATAGRP   0x0080
+#define IEEE80211_FCTL_WEP		0x4000
+#define IEEE80211_QOS_DATAGRP	0x0080
 #define WSM_KEY_MAX_IDX		20
 
 #include "queue.h"
@@ -94,8 +94,8 @@
 
 #define BES2600_MAX_TID			(8)
 
-#define BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID         (0x3F)
-#define BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID         (0x3F)
+#define BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID		 (0x3F)
+#define BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID		 (0x3F)
 #define BES2600_RX_BLOCK_ACK_ENABLED_FOR_BE_TID \
 	(BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID & 0x01)
 #define BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID	(0)
@@ -111,8 +111,8 @@
 #define BES2600_SCAN_BAND_5G 0X2000
 #endif /*ROAM_OFFLOAD*/
 
-#define IEEE80211_FCTL_WEP      0x4000
-#define IEEE80211_QOS_DATAGRP   0x0080
+#define IEEE80211_FCTL_WEP		0x4000
+#define IEEE80211_QOS_DATAGRP	0x0080
 #ifdef CONFIG_BES2600_TESTMODE
 #define BES2600_SCAN_MEASUREMENT_PASSIVE (0)
 #define BES2600_SCAN_MEASUREMENT_ACTIVE  (1)
@@ -128,7 +128,7 @@
 #define BSS_LOSS_CFM_THR	1
 #define BSS_LOSS_CFM_INV	200
 #else
-#define BSS_LOSS_CFM_INV  	0
+#define BSS_LOSS_CFM_INV	0
 #endif
 
 /* Please keep order */
@@ -214,7 +214,7 @@ struct bes2600_tsm_info {
  *
  */
 struct bes2600_start_stop_tsm {
-	u8 start;       /*1: To start, 0: To stop*/
+	u8 start;		/*1: To start, 0: To stop*/
 	u8 up;
 	u16 packetization_delay;
 };
@@ -231,7 +231,7 @@ struct bes2600_start_stop_tsm {
 #define AES_IV_LEN				(16)
 #define NUM_IP_FRAMES			8
 #define TCP_PROTO				6
-#define UDP_PROTO 				17
+#define UDP_PROTO				17
 
 #define KLV_VENDOR_DEFAULT		0
 #define KLV_VENDOR_XM			1
@@ -315,7 +315,9 @@ struct bes2600_common {
 	struct ieee80211_hw		*hw;
 	struct mac_address		addresses[CW12XX_MAX_VIFS];
 
-	/*Will be a pointer to a list of VIFs - Dynamically allocated */
+	/* Will be a pointer to a list of VIFs - Dynamically allocated */
+	/* Must be protected by vif_list_lock. Initialize before use. */
+	/* Ensure vif_list_lock is acquired/released in same function. */
 	struct ieee80211_vif		*vif_list[CW12XX_MAX_VIFS];
 	atomic_t			num_vifs;
 	atomic_t			netdevice_start;
@@ -366,7 +368,7 @@ struct bes2600_common {
 	struct timer_list		ba_timer;/*TODO: Same as above */
 	spinlock_t			ba_lock; /*TODO: Same as above */
 	bool				ba_ena; /*TODO: Same as above */
-	struct work_struct              ba_work; /*TODO: Same as above */
+	struct work_struct				ba_work; /*TODO: Same as above */
 	bool				is_BT_Present;
 	bool				is_go_thru_go_neg;
 	u8				conf_listen_interval;
@@ -384,8 +386,8 @@ struct bes2600_common {
 	struct notifier_block		pm_notify;
 #endif
 
-	struct workqueue_struct         *bh_workqueue;
-	struct work_struct              bh_work;
+	struct workqueue_struct			*bh_workqueue;
+	struct work_struct				bh_work;
 
 	atomic_t			bh_error;
 	wait_queue_head_t		bh_wq;
@@ -411,12 +413,13 @@ struct bes2600_common {
 	struct wsm_cmd			wsm_cmd;
 	wait_queue_head_t		wsm_cmd_wq;
 	wait_queue_head_t		wsm_startup_done;
+	/* Must initialize wsm_cbc before use to avoid null dereference. */
 	struct wsm_cbc			wsm_cbc;
 	atomic_t			tx_lock;
 	u32				pending_frame_id;
 #ifdef CONFIG_BES2600_TESTMODE
 	/* Device Power Range */
-	struct wsm_tx_power_range       txPowerRange[2];
+	struct wsm_tx_power_range		txPowerRange[2];
 	/* Advance Scan */
 	struct advance_scan_elems	advanceScanElems;
 	bool				enable_advance_scan;
@@ -461,7 +464,7 @@ struct bes2600_common {
 	struct semaphore		wsm_oper_lock;
 	struct delayed_work		rem_chan_timeout;
 	MIB_TXRX_OPT_PARAM		txrx_opt_param;
-	u32 					rtsvalue;
+	u32						rtsvalue;
 	spinlock_t				rtsvalue_lock;
 	struct timer_list		txrx_opt_timer;
 	struct work_struct		dynamic_opt_txrx_work;
@@ -485,9 +488,9 @@ struct bes2600_common {
 	u8				num_2g_channels;
 	u8				num_5g_channels;
 	struct wsm_scan_ch		scan_channels[48];
-	struct sk_buff 			*beacon;
-	struct sk_buff 			*beacon_bkp;
-	struct bes2600_testframe 	testframe;
+	struct sk_buff			*beacon;
+	struct sk_buff			*beacon_bkp;
+	struct bes2600_testframe	testframe;
 #endif /*ROAM_OFFLOAD*/
 #ifdef CONFIG_BES2600_TESTMODE
 	struct bes2600_testframe test_frame;
@@ -496,16 +499,16 @@ struct bes2600_common {
 	spinlock_t			tsm_lock;
 	struct bes2600_start_stop_tsm	start_stop_tsm;
 #endif /* CONFIG_BES2600_TESTMODE */
-	u8      connected_sta_cnt;
-	u16     vif0_throttle;
-	u16     vif1_throttle;
-	int     scan_switch_if_id;
+	u8		connected_sta_cnt;
+	u16		vif0_throttle;
+	u16		vif1_throttle;
+	int		scan_switch_if_id;
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
-	int     last_ins_wapi_usk_id;
-	int     last_del_wapi_usk_id;
+	int		last_ins_wapi_usk_id;
+	int		last_del_wapi_usk_id;
 #endif
 #ifdef CONFIG_BES2600_TESTMODE
-	struct semaphore        vendor_rf_cmd_replay_sema;
+	struct semaphore		vendor_rf_cmd_replay_sema;
 #endif
 
 	/* member for coexistence */
@@ -566,9 +569,9 @@ struct bes2600_vif {
 	bool				has_multicast_subscription;
 	struct wsm_broadcast_addr_filter	broadcast_filter;
 	bool				disable_beacon_filter;
-	struct wsm_arp_ipv4_filter      filter4;
+	struct wsm_arp_ipv4_filter		filter4;
 #ifdef IPV6_FILTERING
-	struct wsm_ndp_ipv6_filter 	filter6;
+	struct wsm_ndp_ipv6_filter	filter6;
 #endif /*IPV6_FILTERING*/
 	struct work_struct		update_filtering_work;
 	struct work_struct		set_beacon_wakeup_period_work;
@@ -595,8 +598,8 @@ struct bes2600_vif {
 	/* Security */
 	s8			wep_default_key_id;
 	struct work_struct	wep_key_work;
-        unsigned long           rx_timestamp;
-        u32                     cipherType;
+		unsigned long			rx_timestamp;
+		u32						cipherType;
 
 
 	/* AP powersave */
@@ -643,9 +646,9 @@ struct bes2600_vif {
 	u8			action_linkid;
 #endif
 	bool			htcap;
-#ifdef  AP_HT_CAP_UPDATE
-        u16                     ht_info;
-        struct work_struct      ht_info_update_work;
+#ifdef	AP_HT_CAP_UPDATE
+		u16						ht_info;
+		struct work_struct		ht_info_update_work;
 #endif
 	bool pmf;
 
@@ -693,7 +696,7 @@ struct bes2600_common *cw12xx_vifpriv_to_hwpriv(struct bes2600_vif *priv)
 static inline
 struct bes2600_vif *cw12xx_get_vif_from_ieee80211(struct ieee80211_vif *vif)
 {
-	return  (struct bes2600_vif *)vif->drv_priv;
+	return	(struct bes2600_vif *)vif->drv_priv;
 }
 
 static inline
@@ -722,7 +725,7 @@ struct bes2600_vif *cw12xx_hwpriv_to_vifpriv(struct bes2600_common *hw_priv,
 
 static inline
 struct bes2600_vif *__cw12xx_hwpriv_to_vifpriv(struct bes2600_common *hw_priv,
-					      int if_id)
+						  int if_id)
 {
 	WARN_ON((-1 == if_id) || (if_id > CW12XX_MAX_VIFS));
 	/* TODO:COMBO: During scanning frames can be received
@@ -776,8 +779,8 @@ struct ipv4_addr_info {
 /* tcp keep alive test period */
 struct MIB_TCP_KEEP_ALIVE_PERIOD {
 	u16 TcpKeepAlivePeriod; /* in seconds */
-	u8  EncrType; /* (ex. WSM_KEY_TYPE_WEP_DEFAULT) */
-	u8  Reserved;
+	u8	EncrType; /* (ex. WSM_KEY_TYPE_WEP_DEFAULT) */
+	u8	Reserved;
 };
 
 #ifdef VENDOR_XM_KEEPALIVE
@@ -790,17 +793,17 @@ void bes2600_get_keepalive_info(struct bes2600_common *hw_priv, struct ip_alive_
 #endif
 
 int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
-					    struct bes2600_vif *priv,
-					    struct ip_alive_cfg *tac,
-					    u16 idx);
+						struct bes2600_vif *priv,
+						struct ip_alive_cfg *tac,
+						u16 idx);
 
 int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
-					    struct bes2600_vif *priv,
-					    u8 stream_idx);
+						struct bes2600_vif *priv,
+						u8 stream_idx);
 
 int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
-					    struct bes2600_vif *priv,
-					    u16 period_in_s);
+						struct bes2600_vif *priv,
+						u16 period_in_s);
 int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_id);
 #endif /* CONFIG_BES2600_KEEP_ALIVE */
 
@@ -815,9 +818,9 @@ struct ipv6_addr_info {
 
 /* interfaces for the drivers */
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,
-		      struct sbus_priv *sbus,
-		      struct device *pdev,
-		      struct bes2600_common **pself);
+			  struct sbus_priv *sbus,
+			  struct device *pdev,
+			  struct bes2600_common **pself);
 void bes2600_core_release(struct bes2600_common *self);
 
 static inline void bes2600_tx_queues_lock(struct bes2600_common *hw_priv)
@@ -835,20 +838,20 @@ static inline void bes2600_tx_queues_unlock(struct bes2600_common *hw_priv)
 }
 
 /* Datastructure for LLC-SNAP HDR */
-#define P80211_OUI_LEN  3
+#define P80211_OUI_LEN	3
 
 struct ieee80211_snap_hdr {
-        u8    dsap;   /* always 0xAA */
-        u8    ssap;   /* always 0xAA */
-        u8    ctrl;   /* always 0x03 */
-        u8    oui[P80211_OUI_LEN];    /* organizational universal id */
+		u8	  dsap;   /* always 0xAA */
+		u8	  ssap;   /* always 0xAA */
+		u8	  ctrl;   /* always 0x03 */
+		u8	  oui[P80211_OUI_LEN];	  /* organizational universal id */
 } __packed;
 
 #define bes2600_for_each_vif(_hw_priv, _priv, _i)			\
 for (									\
 	_i = 0;								\
 	(_i < CW12XX_MAX_VIFS) && \
-	(_priv = hw_priv->vif_list[_i] ? 				\
+	(_priv = hw_priv->vif_list[_i] ?				\
 	cw12xx_get_vif_from_ieee80211(hw_priv->vif_list[_i]) : NULL);	\
 	_i++								\
 )

@@ -54,6 +54,7 @@ u8* bes2600_factory_get_file_buffer(void)
 
 	file_buffer = kmalloc(FACTORY_MAX_SIZE, GFP_KERNEL);
 	if (!file_buffer) {
+		bes_err("%s: Failed to allocate file buffer\n", __func__);
 		return NULL;
 	}
 
@@ -79,17 +80,18 @@ static inline uint32_t factory_crc32(const uint8_t *data, uint32_t len)
 static int bes2600_factory_head_info_check(struct factory_t *factory_data)
 {
 	if (!factory_data) {
-		bes_err("%s NULL pointer err\n", __func__);
-		return -1;
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
 	}
 
 	if (factory_data->head.magic != NVREC_DEV_MAGIC) {
+		bes_err("%s: Invalid magic 0x%x\n", __func__, factory_data->head.magic);
 		return -EBADMSG;
 	}
 
 	if ((factory_data->head.version < NVREC_MINI_VERSION) ||
 		(factory_data->head.version > NVREC_CURRENT_VERSION)) {
-		bes_err("factory version error:%d", factory_data->head.version);
+		bes_err("%s: Invalid version %d\n", __func__, factory_data->head.version);
 		return -EBADMSG;
 	}
 
@@ -100,25 +102,24 @@ static int bes2600_factory_crc_check(struct factory_t *factory_data)
 {
 #ifdef FACTORY_CRC_CHECK
 	u32 cal_crc = 0;
-	u32 crc_len = sizeof(factory_data_t);
+	u32 crc_len = sizeof(struct factory_data_t); /* Fixed type */
 #ifndef STANDARD_FACTORY_EFUSE_FLAG
 	crc_len = (crc_len - sizeof(u16) + 3) & (~0x3);
 #endif
 
 	if (!factory_data) {
-		bes_err("%s NULL pointer err \n", __func__);
-		return -1;
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
 	}
 
-	cal_crc = factory_crc32((uint8_t *)(&(factory_data->data)), crc_len);
+	cal_crc = factory_crc32((uint8_t *)(&factory_data->data), crc_len);
 	if (factory_data->head.crc != cal_crc) {
-		bes_err(ES2600_DBG_CHARDEV,
-			"bes2600 factory check failed, calc_crc:0x%08x factory_crc: 0x%08x\n",
-			cal_crc, factory_data->head.crc);
-		return -1;
+		bes_err(BES2600_DBG_CHARDEV,
+			"%s: CRC mismatch, calc_crc:0x%08x factory_crc:0x%08x\n",
+			__func__, cal_crc, factory_data->head.crc);
+		return -EINVAL;
 	}
 	return 0;
-
 #else
 	return 0;
 #endif
@@ -130,9 +131,9 @@ static int bes2600_factory_crc_check(struct factory_t *factory_data)
  * @buffer:	storage of read data
  *
  * The maximum file length allowed is 600 bytes.
- * This function does not do crc verification to take into 
+ * This function does not do crc verification to take into
  * account different storage requirements.
- * 
+ *
  * Return: length on success, negative error code otherwise.
  */
 static int factory_section_read_file(char *path, void *buffer)
@@ -141,23 +142,23 @@ static int factory_section_read_file(char *path, void *buffer)
 	struct file *fp;
 
 	if (!path || !buffer) {
-		bes_err("%s NULL pointer err\n", __func__);
-		return -1;
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
 	}
 
-	bes_devel("reading %s \n", path);
+	bes_devel("%s: reading %s\n", __func__, path);
 
-	fp = filp_open(path, O_RDONLY, 0); //S_IRUSR
+	fp = filp_open(path, O_RDONLY, 0); /* S_IRUSR */
 	if (IS_ERR(fp)) {
-		bes_devel("BES2600 : can't open %s\n",path);
-		return -1;
+		bes_devel("%s: can't open %s\n", __func__, path);
+		return -ENOENT;
 	}
 
 	if (fp->f_inode->i_size <= 0 || fp->f_inode->i_size > FACTORY_MAX_SIZE) {
-		bes_err(			"bes2600_factory.txt size check failed, read_size: %lld max_size: %d\n",
-			fp->f_inode->i_size, FACTORY_MAX_SIZE);
+		bes_err("%s: file size check failed, read_size:%lld max_size:%d\n",
+			__func__, fp->f_inode->i_size, FACTORY_MAX_SIZE);
 		filp_close(fp, NULL);
-		return -1;
+		return -EINVAL;
 	}
 
 	ret = kernel_read(fp, buffer, fp->f_inode->i_size, &fp->f_pos);
@@ -165,8 +166,9 @@ static int factory_section_read_file(char *path, void *buffer)
 	filp_close(fp, NULL);
 
 	if (ret != fp->f_inode->i_size) {
-		bes_err("bes2600_factory.txt read fail\n");
-		ret = -1;
+		bes_err("%s: read failed, ret:%d expected:%lld\n",
+			__func__, ret, fp->f_inode->i_size);
+		return -EIO;
 	}
 
 	return ret;
@@ -185,17 +187,23 @@ static int factory_section_write_file(char *path, void *buffer, int size)
 	int ret = 0;
 	struct file *fp;
 
-	bes_devel("writing %s \n", path);
+	bes_devel("%s: writing %s\n", __func__, path);
 
 	fp = filp_open(path, O_TRUNC | O_CREAT | O_RDWR, S_IRUSR);
 	if (IS_ERR(fp)) {
-		bes_devel("BES2600 : can't open %s\n",path);
-		return -1;
+		bes_devel("%s: can't open %s\n", __func__, path);
+		return -ENOENT;
 	}
 
 	ret = kernel_write(fp, buffer, size, &fp->f_pos);
 
-	filp_close(fp,NULL);
+	filp_close(fp, NULL);
+
+	if (ret != size) {
+		bes_err("%s: write failed, ret:%d expected:%d\n",
+			__func__, ret, size);
+		return -EIO;
+	}
 
 	return ret;
 }
@@ -205,8 +213,8 @@ static inline int factory_parse(uint8_t *source_buf, struct factory_t *factory)
 	int ret = 0;
 
 	if (!source_buf || !factory) {
-		bes_err("%s NULL pointer err\n", __func__);
-		return -1;
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
 	}
 
 	ret = sscanf(source_buf, STANDARD_FACTORY,
@@ -250,22 +258,22 @@ static inline int factory_parse(uint8_t *source_buf, struct factory_t *factory)
 	factory->data.select_efuse = 0;
 #endif
 
-	if (ret != FACTORY_MEMBER_NUM)
-	{
-		bes_err("bes2600_factory.txt parse fail\n");
-		return -1;
+	if (ret != FACTORY_MEMBER_NUM) {
+		bes_err("%s: parse failed, ret:%d expected:%d\n",
+			__func__, ret, FACTORY_MEMBER_NUM);
+		return -EINVAL;
 	}
 
-	return ret;
+	return 0;
 }
 
-static int factory_section_read_and_check_file(u8 *file_buf, char* path)
+static int factory_section_read_and_check_file(u8 *file_buf, char *path)
 {
 	int ret = 0;
 
 	if (!file_buf || !path) {
-		bes_err("%s NULL pointer err\n", __func__);
-		return -1;
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
 	}
 
 	ret = factory_section_read_file(path, file_buf);
@@ -287,7 +295,7 @@ static int factory_section_read_and_check_file(u8 *file_buf, char* path)
 
 	factory_p = &factory_cali_data;
 
-	bes_devel("open wifi factory section success");
+	bes_devel("%s: open wifi factory section success\n", __func__);
 
 	return 0;
 }
@@ -298,7 +306,7 @@ static void factory_section_wifi_tx_power_check(struct factory_t *factory_data)
 	bool inval_v = false;
 
 	if (!factory_data)
-		return ;
+		return;
 
 	/* only check cali channel, 11n ch1, ch7, ch13 */
 	for (i = 0; i < ARRAY_SIZE(factory_data->data.tx_power_ch); ++i) {
@@ -309,13 +317,11 @@ static void factory_section_wifi_tx_power_check(struct factory_t *factory_data)
 	}
 
 	if (inval_v)
-		bes_warn("tx_power_ch_2g cali, inval calibration value\n");
+		bes_warn("%s: tx_power_ch_2g cali, invalid calibration value\n", __func__);
 	print_hex_dump(KERN_DEBUG,
 		"tx_power_ch_2g dump", DUMP_PREFIX_NONE, 16, 1,
 		factory_data->data.tx_power_ch, sizeof(factory_data->data.tx_power_ch), false);
-
 }
-
 
 static void factory_section_wifi_tx_power_5G_check(struct factory_t *factory_data)
 {
@@ -323,7 +329,7 @@ static void factory_section_wifi_tx_power_5G_check(struct factory_t *factory_dat
 	bool inval_v = false;
 
 	if (!factory_data)
-		return ;
+		return;
 
 	/* only check cali channel */
 	for (i = 0; i < ARRAY_SIZE(factory_data->data.tx_power_ch_5G); ++i) {
@@ -334,27 +340,25 @@ static void factory_section_wifi_tx_power_5G_check(struct factory_t *factory_dat
 	}
 
 	if (inval_v)
-		bes_warn("tx_power_ch_5g cali, inval calibration value\n");
+		bes_warn("%s: tx_power_ch_5g cali, invalid calibration value\n", __func__);
 	print_hex_dump(KERN_DEBUG,
 		"tx_power_ch_5g dump", DUMP_PREFIX_NONE, 16, 1,
-		factory_data->data.tx_power_ch, sizeof(factory_data->data.tx_power_ch), false);
-
+		factory_data->data.tx_power_ch_5G, sizeof(factory_data->data.tx_power_ch_5G), false);
 }
 
 static void factory_section_wifi_freq_cali_check(struct factory_t *factory_data)
 {
 	if (!factory_data)
-		return ;
+		return;
 
 	if (factory_data->data.freq_cal == 0x0 ||
 		factory_data->data.freq_cal > 0x1ff) {
-			bes_warn("freq cali, inval calibration value\n");
-		}
+		bes_warn("%s: freq cali, invalid calibration value\n", __func__);
+	}
 
 	print_hex_dump(KERN_DEBUG,
-		"wifi freq cali dump dump: ", DUMP_PREFIX_NONE, 16, 1,
+		"wifi freq cali dump: ", DUMP_PREFIX_NONE, 16, 1,
 		&factory_data->data.freq_cal, sizeof(factory_data->data.freq_cal), false);
-
 }
 
 static void factory_section_bt_tx_power_check(struct factory_t *factory_data)
@@ -363,7 +367,7 @@ static void factory_section_bt_tx_power_check(struct factory_t *factory_data)
 	bool inval_v = false;
 
 	if (!factory_data)
-		return ;
+		return;
 
 	/* bt only check bdr & edr power, (bdr/edr: div, powerlevel) */
 	for (i = 0; i < ARRAY_SIZE(factory_data->data.bt_tx_power) - 1; i += 2) {
@@ -378,19 +382,19 @@ static void factory_section_bt_tx_power_check(struct factory_t *factory_data)
 	}
 
 	if (inval_v)
-		bes_warn("bt tx power cali, inval calibration value\n");
+		bes_warn("%s: bt tx power cali, invalid calibration value\n", __func__);
 	print_hex_dump(KERN_DEBUG,
 		"bt tx power cali dump: ", DUMP_PREFIX_NONE, 16, 1,
 		factory_data->data.bt_tx_power, sizeof(factory_data->data.bt_tx_power), false);
-
 }
 
 void factory_little_endian_cvrt(u8 *data)
 {
 	int i;
 	struct factory_t *trans_data = NULL;
+
 	if (!data)
-		return ;
+		return;
 
 	trans_data = (struct factory_t *)data;
 
@@ -415,15 +419,14 @@ void factory_little_endian_cvrt(u8 *data)
 	TRANS_LE16(trans_data->data.tx_power_flags_5G);
 	TRANS_LE16(trans_data->data.temperature_5G);
 	TRANS_LE16(trans_data->data.select_efuse);
-
 }
 
-void bes2600_factory_data_check(u8* data)
+void bes2600_factory_data_check(u8 *data)
 {
 	struct factory_t *factory_data = NULL;
 
 	if (!data)
-		return ;
+		return;
 
 	factory_data = (struct factory_t *)data;
 
@@ -434,8 +437,7 @@ void bes2600_factory_data_check(u8* data)
 
 	/* In order to support manual value change, recalculate crc before sending */
 	factory_data->head.crc =
-		factory_crc32((uint8_t *)(&(factory_data->data)), sizeof(factory_data_t));
-
+		factory_crc32((uint8_t *)(&factory_data->data), sizeof(factory_data_t));
 }
 
 /*
@@ -446,7 +448,7 @@ u8* bes2600_get_factory_cali_data(u8 *file_buffer, u32 *data_len, char *path)
 	u8 *ret_p = NULL;
 
 	if (!file_buffer || !path || !data_len) {
-		bes_err("%s NULL pointer\n", __func__);
+		bes_err("%s: NULL pointer\n", __func__);
 		return NULL;
 	}
 
@@ -455,12 +457,13 @@ u8* bes2600_get_factory_cali_data(u8 *file_buffer, u32 *data_len, char *path)
 
 	*data_len = sizeof(struct factory_t);
 	if (factory_section_read_and_check_file(file_buffer, path) < 0) {
-		bes_err("read and check %s error\n", path);
+		bes_err("%s: read and check %s error\n", __func__, path);
 		*data_len = 0;
 		return NULL;
 	}
 
 	if (!factory_p) {
+		bes_err("%s: factory_p is NULL after read\n", __func__);
 		*data_len = 0;
 		return NULL;
 	}
@@ -485,7 +488,7 @@ static bool bes2600_factory_file_status_read(u8 *file_buffer)
 #ifdef FACTORY_SAVE_MULTI_PATH
 	factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_PATH);
 	if (!factory_temp) {
-		bes_warn("get factory cali from first path fali\n");
+		bes_warn("%s: get factory cali from first path failed\n", __func__);
 		factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_DEFAULT_PATH);
 		/* clear the flag of the file in the default path, and then create a new file */
 		if (factory_temp) {
@@ -498,7 +501,7 @@ static bool bes2600_factory_file_status_read(u8 *file_buffer)
 	factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_PATH);
 #endif
 	if (!factory_temp) {
-		bes_warn("get factory data fali, check whether the file exists\n");
+		bes_warn("%s: get factory data failed, check whether the file exists\n", __func__);
 		ret = false;
 	}
 
@@ -511,8 +514,10 @@ static int bes2600_factory_cali_file_hdr_fill(struct factory_t **factory_head)
 	u16 tx_power_type = 0xff;
 	int i;
 
-	if (!factory_head)
-		return -1;
+	if (!factory_head) {
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
+	}
 
 	*factory_head = &factory_cali_data;
 	memset(*factory_head, 0, sizeof(struct factory_t));
@@ -541,7 +546,6 @@ static int bes2600_factory_cali_file_hdr_fill(struct factory_t **factory_head)
 	return 0;
 }
 
-
 int16_t bes2600_wifi_power_cali_table_write(struct wifi_power_cali_save_t *data_cali)
 {
 	u16 mode, band, ch, power_cali, bandwidth;
@@ -555,8 +559,11 @@ int16_t bes2600_wifi_power_cali_table_write(struct wifi_power_cali_save_t *data_
 		return -FACTORY_GET_INPUT_NULL_POINTER;
 	}
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
@@ -569,10 +576,18 @@ int16_t bes2600_wifi_power_cali_table_write(struct wifi_power_cali_save_t *data_
 		factory_power_p = factory_p;
 	} else {
 		if (bes2600_factory_cali_file_hdr_fill(&factory_power_p)) {
-			bes_warn("%s, create bes2600_factory.txt fail.", __func__);
+			bes_warn("%s: create bes2600_factory.txt failed\n", __func__);
+			bes2600_factory_unlock();
 			ret = -FACTORY_FACTORY_TXT_CREATE_FAIL;
 			goto err;
 		}
+	}
+
+	if (!factory_power_p) {
+		bes_err("%s: factory_power_p is NULL\n", __func__);
+		bes2600_factory_unlock();
+		ret = -ENOENT;
+		goto err;
 	}
 
 	mode = data_cali->mode;
@@ -581,21 +596,24 @@ int16_t bes2600_wifi_power_cali_table_write(struct wifi_power_cali_save_t *data_
 	ch = data_cali->ch;
 	power_cali = data_cali->power_cali;
 
-	bes_devel("%s: mode = %u, bandwidth = %u,, band = %u, ch = %u, power_cali = 0x%04x\n",
-				__func__, mode, bandwidth, band, ch, power_cali);
+	bes_devel("%s: mode=%u, bandwidth=%u, band=%u, ch=%u, power_cali=0x%04x\n",
+		  __func__, mode, bandwidth, band, ch, power_cali);
 
 	/* only in 802.11n 20M msc7 mode, the power calibration value is saved */
 	if (bandwidth != 0 || mode != WIFI_RF_11N_MODE) {
+		bes_err("%s: invalid mode or bandwidth\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_MODE_ERR;
 		goto err;
 	}
 
 	/* powerlevel value range: 0 ~ 0x3fff */
 	if (power_cali == 0 || power_cali > 0x3fff) {
+		bes_err("%s: invalid power_cali value:0x%x\n", __func__, power_cali);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_POWER_ERR;
 		goto err;
 	}
-
 
 	if (band == BAND_2G4) {
 		switch (ch) {
@@ -609,96 +627,72 @@ int16_t bes2600_wifi_power_cali_table_write(struct wifi_power_cali_save_t *data_
 			power_index = 2;
 			break;
 		default:
+			bes_err("%s: invalid 2.4G channel:%u\n", __func__, ch);
+			bes2600_factory_unlock();
 			ret = -FACTORY_SAVE_CH_ERR;
 			goto err;
-			break;
 		}
 		factory_power_p->data.tx_power_ch[power_index] = power_cali;
 	} else if (band == BAND_5G) {
 		switch (ch) {
-		case 36:
-		case 38:
-		case 40:
+		case 36: case 38: case 40:
 			power_index = 0;
 			break;
-		case 44:
-		case 46:
-		case 48:
+		case 44: case 46: case 48:
 			power_index = 1;
 			break;
-		case 52:
-		case 54:
-		case 56:
+		case 52: case 54: case 56:
 			power_index = 2;
 			break;
-		case 60:
-		case 62:
-		case 64:
+		case 60: case 62: case 64:
 			power_index = 3;
 			break;
-		case 100:
-		case 102:
-		case 104:
+		case 100: case 102: case 104:
 			power_index = 4;
 			break;
-		case 108:
-		case 110:
-		case 112:
+		case 108: case 110: case 112:
 			power_index = 5;
 			break;
-		case 116:
-		case 114:
-		case 120:
+		case 116: case 114: case 120:
 			power_index = 6;
 			break;
-		case 124:
-		case 126:
-		case 128:
+		case 124: case 126: case 128:
 			power_index = 7;
 			break;
-		case 132:
-		case 134:
-		case 136:
+		case 132: case 134: case 136:
 			power_index = 8;
 			break;
-		case 140:
-		case 142:
-		case 144:
+		case 140: case 142: case 144:
 			power_index = 9;
 			break;
-		case 149:
-		case 151:
-		case 153:
+		case 149: case 151: case 153:
 			power_index = 10;
 			break;
-		case 157:
-		case 159:
-		case 161:
+		case 157: case 159: case 161:
 			power_index = 11;
 			break;
-		case 165:
-		case 169:
+		case 165: case 169:
 			power_index = 12;
 			break;
 		default:
+			bes_err("%s: invalid 5G channel:%u\n", __func__, ch);
+			bes2600_factory_unlock();
 			ret = -FACTORY_SAVE_CH_ERR;
 			goto err;
-			break;
 		}
 		factory_power_p->data.tx_power_ch_5G[power_index] = power_cali;
 	}
 
-	/* save to file */
 	if (bes2600_wifi_cali_table_save(file_buffer, factory_power_p)) {
+		bes_err("%s: save to file failed\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_WRITE_ERR;
 		goto err;
 	}
 
 err:
 	bes2600_factory_free_file_buffer(file_buffer);
-	bes2600_factory_unlock();
 	return ret;
-
 }
 
 int16_t bes2600_wifi_cali_freq_write(struct wifi_freq_cali_t *data_cali)
@@ -713,8 +707,11 @@ int16_t bes2600_wifi_cali_freq_write(struct wifi_freq_cali_t *data_cali)
 		return -FACTORY_GET_INPUT_NULL_POINTER;
 	}
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
@@ -727,10 +724,18 @@ int16_t bes2600_wifi_cali_freq_write(struct wifi_freq_cali_t *data_cali)
 		factory_freq_p = factory_p;
 	} else {
 		if (bes2600_factory_cali_file_hdr_fill(&factory_freq_p)) {
-			bes_warn("%s, create bes2600_factory.txt fail.", __func__);
+			bes_warn("%s: create bes2600_factory.txt failed\n", __func__);
+			bes2600_factory_unlock();
 			ret = -FACTORY_FACTORY_TXT_CREATE_FAIL;
 			goto err;
 		}
+	}
+
+	if (!factory_freq_p) {
+		bes_err("%s: factory_freq_p is NULL\n", __func__);
+		bes2600_factory_unlock();
+		ret = -ENOENT;
+		goto err;
 	}
 
 	freq_cali = data_cali->freq_cali;
@@ -738,23 +743,25 @@ int16_t bes2600_wifi_cali_freq_write(struct wifi_freq_cali_t *data_cali)
 
 	/* freqOffset value range: 0 ~ 0x1ff */
 	if (freq_cali == 0 || freq_cali > 0x1ff) {
+		bes_err("%s: invalid freq_cali value:0x%x\n", __func__, freq_cali);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_FREQ_ERR;
 		goto err;
 	}
 
 	factory_freq_p->data.freq_cal = freq_cali;
 	factory_freq_p->data.freq_cal_flags = (u8)(data_cali->cali_flag);
-	bes_devel("%s: freq_cali = 0x%04x\n", __func__, data_cali->freq_cali);
+	bes_devel("%s: freq_cali=0x%04x\n", __func__, data_cali->freq_cali);
 
-	/* save to file */
 	if (bes2600_wifi_cali_table_save(file_buffer, factory_freq_p)) {
+		bes_err("%s: save to file failed\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_WRITE_ERR;
 		goto err;
 	}
 
 err:
 	bes2600_factory_free_file_buffer(file_buffer);
-	bes2600_factory_unlock();
 	return ret;
 }
 
@@ -765,8 +772,11 @@ int16_t bes2600_select_efuse_flag_write(uint16_t select_efuse_flag)
 	u8 *file_buffer = NULL;
 	int16_t ret = 0;
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
@@ -779,24 +789,33 @@ int16_t bes2600_select_efuse_flag_write(uint16_t select_efuse_flag)
 		factory_flag_p = factory_p;
 	} else {
 		if (bes2600_factory_cali_file_hdr_fill(&factory_flag_p)) {
-			bes_warn("%s, create bes2600_factory.txt fail.", __func__);
+			bes_warn("%s: create bes2600_factory.txt failed\n", __func__);
+			bes2600_factory_unlock();
 			ret = -FACTORY_FACTORY_TXT_CREATE_FAIL;
 			goto err;
 		}
 	}
 
+	if (!factory_flag_p) {
+		bes_err("%s: factory_flag_p is NULL\n", __func__);
+		bes2600_factory_unlock();
+		ret = -ENOENT;
+		goto err;
+	}
+
 	factory_flag_p->data.select_efuse = select_efuse_flag;
-	bes_devel("%s: select_efuse = %x\n", __func__, select_efuse_flag);
+	bes_devel("%s: select_efuse=0x%x\n", __func__, select_efuse_flag);
 
 	/* save to file */
 	if (bes2600_wifi_cali_table_save(file_buffer, factory_flag_p)) {
+		bes_err("%s: save to file failed\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_WRITE_ERR;
 		goto err;
 	}
 
 err:
 	bes2600_factory_free_file_buffer(file_buffer);
-	bes2600_factory_unlock();
 	return ret;
 }
 #endif
@@ -819,15 +838,19 @@ int16_t vendor_set_power_cali_flag(struct wifi_power_cali_flag_t *cali_flag)
 		return -FACTORY_SET_POWER_CALI_FLAG_ERR;
 	}
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
 	if (bes2600_factory_file_status_read(file_buffer)) {
 		factory_power_flag_p = factory_p;
 	} else {
-		bes_warn("%s: factory cali data is not exist\n", __func__);
+		bes_warn("%s: factory cali data does not exist\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SAVE_FILE_NOT_EXIST;
 		goto err;
 	}
@@ -840,55 +863,70 @@ int16_t vendor_set_power_cali_flag(struct wifi_power_cali_flag_t *cali_flag)
 
 	/* save to file */
 	if (bes2600_wifi_cali_table_save(file_buffer, factory_power_flag_p)) {
+		bes_err("%s: save to file failed\n", __func__);
+		bes2600_factory_unlock();
 		ret = -FACTORY_SET_POWER_CALI_FLAG_ERR;
 		goto err;
 	}
 
 err:
 	bes2600_factory_free_file_buffer(file_buffer);
-	bes2600_factory_unlock();
 	return ret;
-
 }
 
 static inline int factory_build(uint8_t *dest_buf, struct factory_t *factory)
 {
-	return snprintf(dest_buf, FACTORY_MAX_SIZE, STANDARD_FACTORY,\
-		factory->head.magic,\
-		factory->head.version,\
-		factory->head.crc,\
-		factory->data.iQ_offset,\
-		factory->data.freq_cal,\
-		factory->data.freq_cal_flags,\
-		factory->data.tx_power_ch[0],\
-		factory->data.tx_power_ch[1],\
-		factory->data.tx_power_ch[2],\
-		factory->data.tx_power_type,\
-		factory->data.temperature,\
-		factory->data.tx_power_ch_5G[0],\
-		factory->data.tx_power_ch_5G[1],\
-		factory->data.tx_power_ch_5G[2],\
-		factory->data.tx_power_ch_5G[3],\
-		factory->data.tx_power_ch_5G[4],\
-		factory->data.tx_power_ch_5G[5],\
-		factory->data.tx_power_ch_5G[6],\
-		factory->data.tx_power_ch_5G[7],\
-		factory->data.tx_power_ch_5G[8],\
-		factory->data.tx_power_ch_5G[9],\
-		factory->data.tx_power_ch_5G[10],\
-		factory->data.tx_power_ch_5G[11],\
-		factory->data.tx_power_ch_5G[12],\
-		factory->data.tx_power_flags_5G,\
-		factory->data.temperature_5G,\
-		factory->data.bt_tx_power[0],\
-		factory->data.bt_tx_power[1],\
-		factory->data.bt_tx_power[2],\
+	int ret;
+
+	if (!dest_buf || !factory) {
+		bes_err("%s: NULL pointer\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = snprintf(dest_buf, FACTORY_MAX_SIZE, STANDARD_FACTORY,
+		factory->head.magic,
+		factory->head.version,
+		factory->head.crc,
+		factory->data.iQ_offset,
+		factory->data.freq_cal,
+		factory->data.freq_cal_flags,
+		factory->data.tx_power_ch[0],
+		factory->data.tx_power_ch[1],
+		factory->data.tx_power_ch[2],
+		factory->data.tx_power_type,
+		factory->data.temperature,
+		factory->data.tx_power_ch_5G[0],
+		factory->data.tx_power_ch_5G[1],
+		factory->data.tx_power_ch_5G[2],
+		factory->data.tx_power_ch_5G[3],
+		factory->data.tx_power_ch_5G[4],
+		factory->data.tx_power_ch_5G[5],
+		factory->data.tx_power_ch_5G[6],
+		factory->data.tx_power_ch_5G[7],
+		factory->data.tx_power_ch_5G[8],
+		factory->data.tx_power_ch_5G[9],
+		factory->data.tx_power_ch_5G[10],
+		factory->data.tx_power_ch_5G[11],
+		factory->data.tx_power_ch_5G[12],
+		factory->data.tx_power_flags_5G,
+		factory->data.temperature_5G,
+		factory->data.bt_tx_power[0],
+		factory->data.bt_tx_power[1],
+		factory->data.bt_tx_power[2],
 		factory->data.bt_tx_power[3]
 #ifdef STANDARD_FACTORY_EFUSE_FLAG
-		,factory->data.select_efuse);
+		, factory->data.select_efuse);
 #else
 		);
 #endif
+
+	if (ret < 0 || ret >= FACTORY_MAX_SIZE) {
+		bes_err("%s: snprintf failed, ret:%d max_size:%d\n",
+			__func__, ret, FACTORY_MAX_SIZE);
+		return -EOVERFLOW;
+	}
+
+	return ret;
 }
 
 static int bes2600_wifi_cali_table_save(u8 *file_buffer, struct factory_t *factory_save_p)
@@ -900,27 +938,31 @@ static int bes2600_wifi_cali_table_save(u8 *file_buffer, struct factory_t *facto
 	crc_len = (crc_len - sizeof(u16) + 3) & (~0x3);
 #endif
 
-	bes_devel("enter %s\n", __func__);
+	bes_devel("%s: enter\n", __func__);
 
 	if (!file_buffer) {
+		bes_err("%s: file_buffer is NULL\n", __func__);
 		return -ENOMEM;
 	}
 
 	if (!factory_save_p) {
+		bes_err("%s: factory_save_p is NULL\n", __func__);
+		bes2600_factory_free_file_buffer(file_buffer);
 		return -ENOENT;
 	}
+
+	factory_save_p->head.crc =
+		factory_crc32((uint8_t *)(&factory_save_p->data), crc_len);
 
 	/* All initialized to space */
 	memset(file_buffer, 32, FACTORY_MAX_SIZE);
 	file_buffer[FACTORY_MAX_SIZE - 1] = '\n';
 
-	factory_save_p->head.crc =
-		factory_crc32((uint8_t *)(&(factory_save_p->data)), crc_len);
-
 	w_size = factory_build(file_buffer, factory_save_p);
 
 	if (w_size < 0 || w_size > FACTORY_MAX_SIZE) {
-		bes_err("%s: build failed! ret = %d.", __func__, ret);
+		bes_err("%s: build failed, ret:%d\n", __func__, w_size);
+		bes2600_factory_free_file_buffer(file_buffer);
 		return -ETXTBSY;
 	}
 
@@ -931,69 +973,95 @@ static int bes2600_wifi_cali_table_save(u8 *file_buffer, struct factory_t *facto
 #else
 	ret = factory_section_write_file(FACTORY_PATH, file_buffer, w_size);
 #endif
-	if(ret < 0) {
-		bes_err("%s: write failed! ret = %d.", __func__, ret);
+	if (ret < 0) {
+		bes_err("%s: write failed, ret:%d\n", __func__, ret);
+		bes2600_factory_free_file_buffer(file_buffer);
 		return ret;
 	}
 
+	bes2600_factory_free_file_buffer(file_buffer);
 	return 0;
 }
 
 int16_t vendor_get_power_cali(struct wifi_get_power_cali_t *power_cali)
 {
 	u8 *file_buffer = NULL;
-	int16_t ret = 0;
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
 	if (!power_cali) {
-		ret = -FACTORY_GET_INPUT_NULL_POINTER;
-		goto err;
+		bes_err("%s: power_cali is NULL\n", __func__);
+		bes2600_factory_unlock();
+		bes2600_factory_free_file_buffer(file_buffer);
+		return -FACTORY_GET_INPUT_NULL_POINTER;
 	}
 
 	if (!bes2600_factory_file_status_read(file_buffer)) {
-		ret = -FACTORY_SAVE_FILE_NOT_EXIST;
-		goto err;
+		bes_err("%s: factory file does not exist\n", __func__);
+		bes2600_factory_unlock();
+		bes2600_factory_free_file_buffer(file_buffer);
+		factory_p = NULL;
+		return -FACTORY_SAVE_FILE_NOT_EXIST;
+	}
+
+	if (!factory_p) {
+		bes_err("%s: factory_p is NULL\n", __func__);
+		bes2600_factory_unlock();
+		bes2600_factory_free_file_buffer(file_buffer);
+		return -ENOENT;
 	}
 
 	memcpy(power_cali->tx_power_ch, factory_p->data.tx_power_ch, sizeof(power_cali->tx_power_ch));
 	memcpy(power_cali->tx_power_ch_5G, factory_p->data.tx_power_ch_5G, sizeof(power_cali->tx_power_ch_5G));
 
-err:
 	bes2600_factory_free_file_buffer(file_buffer);
 	bes2600_factory_unlock();
-	return ret;
+	return 0;
 }
-
 
 int16_t vendor_get_freq_cali(struct wifi_freq_cali_t *vendor_freq)
 {
 	u8 *file_buffer = NULL;
-	int16_t ret = 0;
 
-	if (!vendor_freq)
+	if (!vendor_freq) {
+		bes_err("%s: vendor_freq is NULL\n", __func__);
 		return -FACTORY_GET_INPUT_NULL_POINTER;
+	}
 
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -FACTORY_GET_INPUT_NULL_POINTER;
+	file_buffer = bes2600_factory_get_file_buffer();
+	if (!file_buffer) {
+		bes_err("%s: failed to allocate file buffer\n", __func__);
+		return -ENOMEM;
+	}
 
 	bes2600_factory_lock();
 
 	if (!bes2600_factory_file_status_read(file_buffer)) {
-		ret = -FACTORY_SAVE_FILE_NOT_EXIST;
-		goto err;
+		bes_err("%s: factory file does not exist\n", __func__);
+		bes2600_factory_unlock();
+		bes2600_factory_free_file_buffer(file_buffer);
+		factory_p = NULL;
+		return -FACTORY_SAVE_FILE_NOT_EXIST;
+	}
+
+	if (!factory_p) {
+		bes_err("%s: factory_p is NULL\n", __func__);
+		bes2600_factory_unlock();
+		bes2600_factory_free_file_buffer(file_buffer);
+		return -ENOENT;
 	}
 
 	vendor_freq->status = 0;
 	vendor_freq->freq_cali = factory_p->data.freq_cal;
 	vendor_freq->cali_flag = factory_p->data.freq_cal_flags;
 
-err:
 	bes2600_factory_free_file_buffer(file_buffer);
 	bes2600_factory_unlock();
-	return ret;
+	return 0;
 }
-

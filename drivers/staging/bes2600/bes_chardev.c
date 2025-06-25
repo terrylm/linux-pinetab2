@@ -105,8 +105,8 @@ static bool bes2600_bootup_end(void)
 
 	spin_lock(&bes2600_cdev.status_lock);
 	end = (bes2600_cdev.bus_probe == BES2600_BUS_PROBE_TIMEOUT ||
-	       bes2600_cdev.sbus_priv != NULL ||
-	       bes2600_cdev.bus_error);
+		   bes2600_cdev.sbus_priv != NULL ||
+		   bes2600_cdev.bus_error);
 	spin_unlock(&bes2600_cdev.status_lock);
 
 	return end;
@@ -408,7 +408,7 @@ static int bes2600_op_wifi_bt_on_off(const char *str)
 		}
 	}
 
-	if (!ret && bes2600_chrdev_check_system_close())
+	if (!ret && bes2600_cdev.sbus_ops && bes2600_cdev.sbus_priv && bes2600_chrdev_check_system_close())
 		ret = bes2600_chrdev_do_system_close(bes2600_cdev.sbus_ops,
 						bes2600_cdev.sbus_priv);
 
@@ -456,7 +456,7 @@ static int bes2600_op_change_fw_type(const char *str)
 
 	/* close wifi net device */
 	if (bes2600_cdev.sbus_priv
-	    && bes2600_is_net_dev_created(bes2600_cdev.sbus_priv)) {
+		&& bes2600_is_net_dev_created(bes2600_cdev.sbus_priv)) {
 		bes2600_unregister_net_dev(bes2600_cdev.sbus_priv);
 	}
 
@@ -568,13 +568,13 @@ int bes2600_load_uevent(char *env[])
 
 static struct bes2600_op_map bes2600_op_map_tab[] ={
 	/*op			op_len	handler				*/
-	{"P2P_SET_NOA", 	11,	bes2600_op_default_handler},
-	{"P2P_SET_PS", 		10,	bes2600_op_default_handler},
-	{"SET_AP_WPS_P2P_IE",	17, 	bes2600_op_default_handler},
-	{"LINKSPEED", 		9,	bes2600_op_default_handler},
+	{"P2P_SET_NOA",		11,	bes2600_op_default_handler},
+	{"P2P_SET_PS",		10,	bes2600_op_default_handler},
+	{"SET_AP_WPS_P2P_IE",	17,		bes2600_op_default_handler},
+	{"LINKSPEED",		9,	bes2600_op_default_handler},
 	{"RSSI",		4,	bes2600_op_default_handler},
-	{"GETBAND", 		7,	bes2600_op_default_handler},
-	{"WLS_BATCHING", 	12,	bes2600_op_default_handler},
+	{"GETBAND",			7,	bes2600_op_default_handler},
+	{"WLS_BATCHING",	12,	bes2600_op_default_handler},
 	{"MACADDR",		7,	bes2600_op_default_handler},
 	{"RXFILTER-START",	14,	bes2600_op_default_handler},
 	{"RXFILTER-STOP",	13,	bes2600_op_default_handler},
@@ -585,10 +585,10 @@ static struct bes2600_op_map bes2600_op_map_tab[] ={
 	{"BTCOEXSCAN-STOP",	15,	bes2600_op_default_handler},
 	{"SETSUSPENDMODE",	14,	bes2600_op_default_handler},
 	{"COUNTRY",		7,	bes2600_op_default_handler},
-	{"WIFI_ON", 		7,	bes2600_op_wifi_bt_on_off},
-	{"WIFI_OFF", 		8,	bes2600_op_wifi_bt_on_off},
-	{"BT_ON", 		5,	bes2600_op_wifi_bt_on_off},
-	{"BT_OFF", 		6,	bes2600_op_wifi_bt_on_off},
+	{"WIFI_ON",			7,	bes2600_op_wifi_bt_on_off},
+	{"WIFI_OFF",		8,	bes2600_op_wifi_bt_on_off},
+	{"BT_ON",		5,	bes2600_op_wifi_bt_on_off},
+	{"BT_OFF",		6,	bes2600_op_wifi_bt_on_off},
 	{"CHANGE_FW_TYPE",	14,	bes2600_op_change_fw_type},
 	{"BT_WAKEUP",		9,	bes2600_op_bt_wakeup},
 	{"BT_SLEEP",		8,	bes2600_op_bt_sleep},
@@ -614,11 +614,11 @@ static int bes2600_chrdev_open(struct inode *inode, struct file *filp)
 	bes_devel("bes2600 char device is opened\n");
 	atomic_inc(&bes2600_cdev.num_proc);
 
-        return 0;
+		return 0;
 }
 
 static ssize_t bes2600_chrdev_read(struct file *file, char __user *user_buf,
-			     size_t count, loff_t *ppos)
+				 size_t count, loff_t *ppos)
 {
 	char buf[64] = {0};
 	unsigned int len;
@@ -632,7 +632,7 @@ static ssize_t bes2600_chrdev_read(struct file *file, char __user *user_buf,
 			WARN_ON(status <= 0);
 		}
 		len = sprintf(buf, "wakeup_reason: %u, src_port: %u\n",
-		              bes2600_cdev.wakeup_state, bes2600_cdev.src_port);
+					  bes2600_cdev.wakeup_state, bes2600_cdev.src_port);
 		break;
 	default:
 		len = sprintf(buf, "dpd_calied:%d wifi_opened:%d bt_opened:%d fw_type:%d\n",
@@ -665,8 +665,13 @@ static ssize_t bes2600_chrdev_write(struct file *file,
 	/* copy content from user space to kernel */
 	/* message format:"ifname:wlanx cmd:xxx arg1 arg2 ..." */
 	buf = kmalloc(count + 1, GFP_KERNEL);
-	if (copy_from_user(buf, user_buf, count))
-		return -EFAULT;
+	if (!buf)
+			return -ENOMEM;
+
+	if (copy_from_user(buf, user_buf, count)) {
+			kfree(buf);
+			return -EFAULT;
+	}
 
 	/* add terminal character */
 	buf[count] = '\0';
@@ -841,7 +846,7 @@ const u8* bes2600_chrdev_get_dpd_data(u32 *len)
 	if (!bes2600_cdev.dpd_calied && bes2600_cdev.no_dpd) {
 		/* read dpd data from file that stores factory dpd calibration data */
 		if ((bes2600_chrdev_read_and_check_dpd_data(BES2600_DPD_GOLDEN_PATH,
-		   	&bes2600_cdev.dpd_data, &bes2600_cdev.dpd_len) < 0) &&
+			&bes2600_cdev.dpd_data, &bes2600_cdev.dpd_len) < 0) &&
 		   (bes2600_chrdev_read_and_check_dpd_data(BES2600_DEFAULT_DPD_PATH,
 			&bes2600_cdev.dpd_data, &bes2600_cdev.dpd_len) < 0)) {
 			bes_err("%s read dpd data fail\n", __func__);
@@ -1162,6 +1167,7 @@ void bes2600_chrdev_wifi_force_close(struct bes2600_common *hw_priv, bool halt_d
 	if (hw_priv == NULL)
 		return;
 
+	spin_lock(&bes2600_cdev.status_lock);
 	if (bes2600_chrdev_is_wifi_opened() &&
 	   !work_pending(&bes2600_cdev.wifi_force_close_work)) {
 		spin_lock(&bes2600_cdev.status_lock);
@@ -1171,6 +1177,8 @@ void bes2600_chrdev_wifi_force_close(struct bes2600_common *hw_priv, bool halt_d
 
 		bes2600_tx_loop_set_enable(hw_priv, true);
 		schedule_work(&bes2600_cdev.wifi_force_close_work);
+	} else {
+			spin_unlock(&bes2600_cdev.status_lock);
 	}
 }
 

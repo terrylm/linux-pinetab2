@@ -44,16 +44,16 @@
 
 #include "txrx_opt.h"
 
-#define WEP_ENCRYPT_HDR_SIZE    4
-#define WEP_ENCRYPT_TAIL_SIZE   4
-#define WPA_ENCRYPT_HDR_SIZE    8
-#define WPA_ENCRYPT_TAIL_SIZE   12
-#define WPA2_ENCRYPT_HDR_SIZE   8
-#define WPA2_ENCRYPT_TAIL_SIZE  8
-#define WAPI_ENCRYPT_HDR_SIZE   18
-#define WAPI_ENCRYPT_TAIL_SIZE  16
-#define MAX_ARP_REPLY_TEMPLATE_SIZE     120
-#define MAX_TCP_ALIVE_TEMPLATE_SIZE     256
+#define WEP_ENCRYPT_HDR_SIZE	4
+#define WEP_ENCRYPT_TAIL_SIZE	4
+#define WPA_ENCRYPT_HDR_SIZE	8
+#define WPA_ENCRYPT_TAIL_SIZE	12
+#define WPA2_ENCRYPT_HDR_SIZE	8
+#define WPA2_ENCRYPT_TAIL_SIZE	8
+#define WAPI_ENCRYPT_HDR_SIZE	18
+#define WAPI_ENCRYPT_TAIL_SIZE	16
+#define MAX_ARP_REPLY_TEMPLATE_SIZE		120
+#define MAX_TCP_ALIVE_TEMPLATE_SIZE		256
 
 #ifdef CONFIG_BES2600_TESTMODE
 const int bes2600_1d_to_ac[8] = {
@@ -286,7 +286,7 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
 printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
-       vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
+	   vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
 
 #ifndef P2P_MULTIVIF
 	int i;
@@ -410,7 +410,7 @@ printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\
 }
 
 void bes2600_remove_interface(struct ieee80211_hw *dev,
-			     struct ieee80211_vif *vif)
+				 struct ieee80211_vif *vif)
 {
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
@@ -428,9 +428,9 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	down(&hw_priv->conf_lock);
 	if (!__cw12xx_hwpriv_to_vifpriv(hw_priv, priv->if_id)) {
 		bes_devel(" !!! %s: interface addr %pM already removed\n",
-			     __func__, vif->addr);
-	        up(&hw_priv->conf_lock);
-	        up(&hw_priv->scan.lock);
+				 __func__, vif->addr);
+			up(&hw_priv->conf_lock);
+			up(&hw_priv->scan.lock);
 		return;
 	}
 	bes2600_tx_queues_lock(hw_priv);
@@ -614,8 +614,8 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 		bes_devel("[STA] TX power: %d\n",
 				hw_priv->output_power);
 		WARN_ON(wsm_set_output_power(hw_priv,
-					     hw_priv->output_power * 10,
-					     if_id));
+						 hw_priv->output_power * 10,
+						 if_id));
 	}
 
 	if (changed & IEEE80211_CONF_CHANGE_CHANNEL) {
@@ -770,7 +770,7 @@ void bes2600_set_beacon_wakeup_period_work(struct work_struct *work)
 }
 
 u64 bes2600_prepare_multicast(struct ieee80211_hw *hw,
-			     struct netdev_hw_addr_list *mc_list)
+				 struct netdev_hw_addr_list *mc_list)
 {
 	static u8 broadcast_ipv6[ETH_ALEN] = {
 		0x33, 0x33, 0x00, 0x00, 0x00, 0x01
@@ -799,7 +799,7 @@ u64 bes2600_prepare_multicast(struct ieee80211_hw *hw,
 	netdev_hw_addr_list_for_each(ha, mc_list) {
 		bes_devel("[STA] multicast: %pM\n", ha->addr);
 		memcpy(&priv->multicast_filter.macAddress[count],
-		       ha->addr, ETH_ALEN);
+			   ha->addr, ETH_ALEN);
 		if (memcmp(ha->addr, broadcast_ipv4, ETH_ALEN) &&
 				memcmp(ha->addr, broadcast_ipv6, ETH_ALEN))
 			priv->has_multicast_subscription = true;
@@ -815,9 +815,9 @@ u64 bes2600_prepare_multicast(struct ieee80211_hw *hw,
 }
 
 void bes2600_configure_filter(struct ieee80211_hw *hw,
-			     unsigned int changed_flags,
-			     unsigned int *total_flags,
-			     u64 multicast)
+				 unsigned int changed_flags,
+				 unsigned int *total_flags,
+				 u64 multicast)
 {
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, 0);
@@ -916,7 +916,7 @@ out:
 }
 
 int bes2600_get_stats(struct ieee80211_hw *dev,
-		     struct ieee80211_low_level_stats *stats)
+			 struct ieee80211_low_level_stats *stats)
 {
 	struct bes2600_common *hw_priv = dev->priv;
 
@@ -989,7 +989,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 			peer_addr = sta->addr;
 
 		key->flags |= IEEE80211_KEY_FLAG_PUT_IV_SPACE |
-			      IEEE80211_KEY_FLAG_RESERVE_TAILROOM;
+				  IEEE80211_KEY_FLAG_RESERVE_TAILROOM;
 
 		/* only need to update cipher type of pairwise key */
 		if (pairwise)
@@ -1027,9 +1027,9 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				memcpy(wsm_key->tkipPairwiseKey.tkipKeyData,
 					&key->key[0],  16);
 				memcpy(wsm_key->tkipPairwiseKey.txMicKey,
-					&key->key[16],  8);
+					&key->key[16],	8);
 				memcpy(wsm_key->tkipPairwiseKey.rxMicKey,
-					&key->key[24],  8);
+					&key->key[24],	8);
 			} else {
 				size_t mic_offset =
 					(priv->mode == NL80211_IFTYPE_AP) ?
@@ -1038,7 +1038,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				memcpy(wsm_key->tkipGroupKey.tkipKeyData,
 					&key->key[0],  16);
 				memcpy(wsm_key->tkipGroupKey.rxMicKey,
-					&key->key[mic_offset],  8);
+					&key->key[mic_offset],	8);
 
 				/* TODO: Where can I find TKIP SEQ? */
 				memset(wsm_key->tkipGroupKey.rxSeqCounter,
@@ -1060,7 +1060,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 					&key->key[0],  16);
 				/* TODO: Where can I find AES SEQ? */
 				memset(wsm_key->aesGroupKey.rxSeqCounter,
-					0,              8);
+					0,				8);
 				wsm_key->aesGroupKey.keyId = key->keyidx;
 			}
 			break;
@@ -1133,7 +1133,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 			&& (priv->filter4.enable & 0x2))
 				bes2600_set_arpreply(dev, vif);
 #ifdef IPV6_FILTERING
-        	if (!ret && (pairwise
+			if (!ret && (pairwise
 			|| wsm_key->type == WSM_KEY_TYPE_WEP_DEFAULT)
 			&& (priv->filter6.enable & 0x2))
 				bes2600_set_na(dev, vif);
@@ -1273,7 +1273,7 @@ int __bes2600_flush(struct bes2600_common *hw_priv, bool drop, int if_id)
 		wsm_vif_lock_tx(priv);
 		if (unlikely(!bes2600_queue_stats_is_empty(
 				&hw_priv->tx_queue_stats, -1, if_id))) {
-			/* Highly unlekely: WSM requeued frames. */
+			/* Highly unlikely: WSM requeued frames. */
 			wsm_unlock_tx(hw_priv);
 			continue;
 		}
@@ -1283,7 +1283,7 @@ int __bes2600_flush(struct bes2600_common *hw_priv, bool drop, int if_id)
 }
 
 void bes2600_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
-		  u32 queues, bool drop)
+		 u32 queues, bool drop)
 {
 	struct bes2600_vif *priv = NULL;
 	struct bes2600_common *hw_priv = hw->priv;
@@ -1376,9 +1376,9 @@ int bes2600_remain_on_channel(struct ieee80211_hw *hw,
 	bes_devel("ROC OUT %d\n", priv->if_id);
 
 	/* set the channel to supplied ieee80211_channel pointer, if it
-        is not set. This is to remove the crash while sending a probe res
-        in listen state. Later channel will updated on
-        IEEE80211_CONF_CHANGE_CHANNEL event*/
+		is not set. This is to remove the crash while sending a probe res
+		in listen state. Later channel will updated on
+		IEEE80211_CONF_CHANGE_CHANNEL event*/
 	if(!hw_priv->channel) {
 		hw_priv->channel = chan;
 	}
@@ -1387,9 +1387,8 @@ int bes2600_remain_on_channel(struct ieee80211_hw *hw,
 	return ret;
 }
 
-int bes2600_cancel_remain_on_channel(struct ieee80211_hw *hw
-	, struct ieee80211_vif *vif
-	)
+int bes2600_cancel_remain_on_channel(struct ieee80211_hw *hw,
+		struct ieee80211_vif *vif)
 {
 	struct bes2600_common *hw_priv = hw->priv;
 
@@ -1554,11 +1553,11 @@ void bes2600_event_handler(struct work_struct *work)
 				bes_err("PS Mode Error, Reason:%u\n", event->evt.eventData);
 
 				if (event->evt.eventData != WSM_PS_ERROR_AP_NO_DATA_AFTER_TIM &&
-				    !priv->uapsd_info.uapsdFlags &&
-				    (priv->user_pm_mode != WSM_PSM_PS))
+					!priv->uapsd_info.uapsdFlags &&
+					(priv->user_pm_mode != WSM_PSM_PS))
 				{
 					bes2600_pwr_mark_ap_lp_bad(hw_priv);
-				 	priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
+					priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 				}
 				break;
 			}
@@ -1812,9 +1811,9 @@ static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 	#define SDD_PTA_CFG_ELT_ID 0xEB
 #ifdef CONFIG_BES2600_TESTMODE
 	#define SDD_MAX_OUTPUT_POWER_2G4_ELT_ID 0xE3
-	#define SDD_MAX_OUTPUT_POWER_5G_ELT_ID  0xE4
-	#define SDD_FE_COR_2G4_ELT_ID   0x30
-	#define SDD_FE_COR_5G_ELT_ID    0x31
+	#define SDD_MAX_OUTPUT_POWER_5G_ELT_ID	0xE4
+	#define SDD_FE_COR_2G4_ELT_ID	0x30
+	#define SDD_FE_COR_5G_ELT_ID	0x31
 	#define MIN(x, y, z) (x < y ? (x < z ? x : z) : (y < z ? y : z))
 #endif
 	#define FIELD_OFFSET(type, field) ((u8 *)&((type *)0)->field - (u8 *)0)
@@ -1907,15 +1906,15 @@ static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 
 
 	bes_devel("%s output power before %d\n",__func__,hw_priv->output_power);
-        if (!hw_priv->output_power)
-                hw_priv->output_power=hw_priv->txPowerRange[NL80211_BAND_2GHZ].max_power_level;
+		if (!hw_priv->output_power)
+				hw_priv->output_power=hw_priv->txPowerRange[NL80211_BAND_2GHZ].max_power_level;
 
-        bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
+		bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
 #else
-        bes_devel("%s output power before %d\n",__func__,hw_priv->output_power);
-        if (!hw_priv->output_power)
-                hw_priv->output_power=20;
-        bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
+		bes_devel("%s output power before %d\n",__func__,hw_priv->output_power);
+		if (!hw_priv->output_power)
+				hw_priv->output_power=20;
+		bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
 #endif
 	return 0;
 
@@ -1996,25 +1995,25 @@ const uint8_t sdd_22[] =
 	0x57, 0x1a, 0x00, 0x00, 0xc0, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd4, 0x4b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf5, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 
 #if WIFI_OUT_FEM
-	0xc6, 0x22, 0,  0,  0,  8,  0, 16,  0, 16,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  8,  0, 16,  0, 16,  0,  0,  0,  8,  0, 16,  0, 16, 0, 0,
+	0xc6, 0x22, 0,	0,	0,	8,	0, 16,	0, 16,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	0,	8,	0, 16,	0, 16,	0,	0,	0,	8,	0, 16,	0, 16, 0, 0,
 #else
 
 #ifdef CHIP_BEST2002
-    //bes EVB sw gpio20
-    0xc6, 0x22, 1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0, 0, 0,
+	//bes EVB sw gpio20
+	0xc6, 0x22, 1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0, 0, 0,
 #else //2003
 //gpio24 io number = 2*8+4=20
 #if (20 == RF_TX_CONTROL_IO )
 	//0xc6 eco proprietary; bailu EVB sw gpio24
-	0xc6, 0x22, 0,  0,  16,  16,  0,  0,  0,  0,  0,  0,  16,  16,  0,  0,  0,  0,  0,  0,  16,  16,  0,  0,  0,  0,  0,  0,  16,  16,  0,  0,  0,  0, 0, 0,
+	0xc6, 0x22, 0,	0,	16,  16,  0,  0,  0,  0,  0,  0,  16,  16,	0,	0,	0,	0,	0,	0,	16,  16,  0,  0,  0,  0,  0,  0,  16,  16,	0,	0,	0,	0, 0, 0,
 #elif(12 == RF_TX_CONTROL_IO )
-    //0xc6 eco proprietary; yunque EVB sw gpio14 or bes EVB sw gpio20
-    0xc6, 0x22, 1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0, 0, 0,
+	//0xc6 eco proprietary; yunque EVB sw gpio14 or bes EVB sw gpio20
+	0xc6, 0x22, 1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0, 0, 0,
 #elif(2 == RF_TX_CONTROL_IO )
-    0xc6, 0x22, 0,  2,  0,  2,  0, 16,  0, 16,  0,  2,  0,  2,  0,  0,  0,  0,  0,  2,  0,  2,  0,  0,  0,  0,  0,  2,  0,  2,  0,  0,  0,  0, 0, 0,
+	0xc6, 0x22, 0,	2,	0,	2,	0, 16,	0, 16,	0,	2,	0,	2,	0,	0,	0,	0,	0,	2,	0,	2,	0,	0,	0,	0,	0,	2,	0,	2,	0,	0,	0,	0, 0, 0,
 #else
 	//0xc6 eco proprietary; yunque EVB sw gpio14 or bes EVB sw gpio20
-	0xc6, 0x22, 1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0,  1,  1,  1,  1,  0,  0,  0,  0, 0, 0,
+	0xc6, 0x22, 1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0,	1,	1,	1,	1,	0,	0,	0,	0, 0, 0,
 #endif
 #endif
 
@@ -2082,10 +2081,10 @@ int bes2600_setup_mac(struct bes2600_common *hw_priv)
 #endif
 
 		for (if_id = 0; if_id < 2;
-		     if_id++) {
+			 if_id++) {
 			/* Set low-power mode. */
 			ret |= WARN_ON(wsm_configuration(hw_priv, &cfg,
-				       if_id));
+					   if_id));
 		}
 		/* Parse SDD file for PTA element */
 		//bes2600_parse_SDD_file(hw_priv);
@@ -2136,7 +2135,7 @@ void bes2600_offchannel_work(struct work_struct *work)
 #endif
 		if (ret)
 			bes_err("bes2600_offchannel_work: "
-			       "queue_remove failed %d\n", ret);
+				   "queue_remove failed %d\n", ret);
 		wsm_unlock_tx(hw_priv);
 		return;
 	}
@@ -2218,7 +2217,7 @@ void bes2600_join_work(struct work_struct *work)
 	cancel_delayed_work_sync(&priv->join_timeout);
 
 	bss = cfg80211_get_bss(hw_priv->hw->wiphy, hw_priv->channel, bssid, NULL, 0,
-			       IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
+				   IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
 
 	if (!bss) {
 #ifdef CONFIG_BES2600_TESTMODE
@@ -2344,7 +2343,7 @@ void bes2600_join_work(struct work_struct *work)
 		mgmt_policy.unprotectedMgmtFramesAllowed = 1;
 		mgmt_policy.encryptionForAuthFrame = 1;
 		wsm_set_protected_mgmt_policy(hw_priv, &mgmt_policy,
-					      priv->if_id);
+						  priv->if_id);
 
 		/* need to switch channel before join */
 		channel.channelMode = NL80211_CHAN_NO_HT << 4;
@@ -2555,7 +2554,7 @@ int bes2600_disable_listening(struct bes2600_vif *priv)
 	};
 	if(priv->if_id != 2) {
 		WARN_ON(priv->join_status > BES2600_JOIN_STATUS_MONITOR);
-        return 0;
+		return 0;
 	}
 	priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
 
@@ -2712,7 +2711,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	INIT_WORK(&priv->set_beacon_wakeup_period_work,
 		bes2600_set_beacon_wakeup_period_work);
 #ifdef AP_HT_CAP_UPDATE
-        INIT_WORK(&priv->ht_info_update_work, bes2600_ht_info_update_work);
+		INIT_WORK(&priv->ht_info_update_work, bes2600_ht_info_update_work);
 #endif
 	timer_setup(&priv->mcast_timeout, bes2600_mcast_timeout, 0);
 
@@ -2978,10 +2977,10 @@ static int bes2600_set_multicastfilter(struct bes2600_common *hw_priv, struct be
  * Returns: 0 on success or non zero value on failure
  */
 static int bes2600_set_ipv6addrfilter(struct ieee80211_hw *hw,
-				     u8 *data, int if_id)
+					 u8 *data, int if_id)
 {
 	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
-	struct wsm_ipv6_filter  *ipv6_filter =  NULL;
+	struct wsm_ipv6_filter	*ipv6_filter =	NULL;
 	struct ipv6_addr_info *ipv6_info = NULL;
 	u8 action_mode = 0, no_of_ip_addr = 0, i = 0, ret = 0;
 	u16 ipaddrfiltersize = 0;
@@ -2994,7 +2993,7 @@ static int bes2600_set_ipv6addrfilter(struct ieee80211_hw *hw,
 	ipv6_info = (struct ipv6_addr_info *)&data[2];
 
 	/* Computing sizeof Mac addr filter */
-	ipaddrfiltersize =  sizeof(struct wsm_ipv6_filter_header) + \
+	ipaddrfiltersize =	sizeof(struct wsm_ipv6_filter_header) + \
 			(no_of_ip_addr * sizeof(struct wsm_ip6_addr_info));
 
 
@@ -3103,122 +3102,124 @@ u32 bes2600_bh_get_encry_hdr_len(u32 cipherType)
 int bes2600_set_arpreply(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 {
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
-	struct bes2600_common *hw_priv = (struct bes2600_common *)hw->priv;
-        u32 framehdrlen, encrypthdr, encrypttailsize, framebdylen = 0;
-        bool encrypt = false;
-        int ret = 0;
-        u8 *template_frame = NULL;
-        struct ieee80211_hdr_3addr *dot11hdr = NULL;
-        struct ieee80211_snap_hdr *snaphdr = NULL;
-        struct arphdr *arp_hdr = NULL;
+	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
+	u32 framehdrlen, encrypthdr, encrypttailsize, framebdylen = 0;
+	bool encrypt = false;
+	int ret = 0;
+	u8 *template_frame = NULL;
+	struct ieee80211_hdr_3addr *dot11hdr = NULL;
+	struct ieee80211_snap_hdr *snaphdr = NULL;
+	struct arphdr *arp_hdr = NULL;
 
-        template_frame = kzalloc(MAX_ARP_REPLY_TEMPLATE_SIZE, GFP_ATOMIC);
-        if (!template_frame) {
-                bes_err("[STA] Template frame memory failed\n");
-                ret = -ENOMEM;
-                goto exit_p;
-        }
-        dot11hdr = (struct ieee80211_hdr_3addr *)&template_frame[4];
+	template_frame = kzalloc(MAX_ARP_REPLY_TEMPLATE_SIZE, GFP_ATOMIC);
+	if (!template_frame) {
+		bes_err("[STA] Template frame memory failed\n");
+		ret = -ENOMEM;
+		goto exit_p;
+	}
+	dot11hdr = (struct ieee80211_hdr_3addr *)&template_frame[4];
 
-        framehdrlen = sizeof(*dot11hdr);
-        if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
-                priv->cipherType = WLAN_CIPHER_SUITE_CCMP;
-        switch (priv->cipherType) {
+	framehdrlen = sizeof(*dot11hdr);
+	if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
+		priv->cipherType = WLAN_CIPHER_SUITE_CCMP;
+	switch (priv->cipherType) {
 
-        case WLAN_CIPHER_SUITE_WEP40:
-        case WLAN_CIPHER_SUITE_WEP104:
-                bes_devel("[STA] WEP\n");
-                encrypthdr = WEP_ENCRYPT_HDR_SIZE;
-                encrypttailsize = WEP_ENCRYPT_TAIL_SIZE;
-                encrypt = 1;
-                break;
+	case WLAN_CIPHER_SUITE_WEP40:
+	case WLAN_CIPHER_SUITE_WEP104:
+		bes_devel("[STA] WEP\n");
+		encrypthdr = WEP_ENCRYPT_HDR_SIZE;
+		encrypttailsize = WEP_ENCRYPT_TAIL_SIZE;
+		encrypt = 1;
+		break;
 
+	case WLAN_CIPHER_SUITE_TKIP:
+		bes_devel("[STA] WPA\n");
+		encrypthdr = WPA_ENCRYPT_HDR_SIZE;
+		encrypttailsize = WPA_ENCRYPT_TAIL_SIZE;
+		encrypt = 1;
+		break;
 
-        case WLAN_CIPHER_SUITE_TKIP:
-                bes_devel("[STA] WPA\n");
-                encrypthdr = WPA_ENCRYPT_HDR_SIZE;
-                encrypttailsize = WPA_ENCRYPT_TAIL_SIZE;
-                encrypt = 1;
-                break;
+	case WLAN_CIPHER_SUITE_CCMP:
+		bes_devel("[STA] WPA2\n");
+		encrypthdr = WPA2_ENCRYPT_HDR_SIZE;
+		encrypttailsize = WPA2_ENCRYPT_TAIL_SIZE;
+		encrypt = 1;
+		break;
 
-        case WLAN_CIPHER_SUITE_CCMP:
-                bes_devel("[STA] WPA2\n");
-                encrypthdr = WPA2_ENCRYPT_HDR_SIZE;
-                encrypttailsize = WPA2_ENCRYPT_TAIL_SIZE;
-                encrypt = 1;
-                break;
+	case WLAN_CIPHER_SUITE_SMS4:
+		bes_devel("[STA] WAPI\n");
+		encrypthdr = WAPI_ENCRYPT_HDR_SIZE;
+		encrypttailsize = WAPI_ENCRYPT_TAIL_SIZE;
+		encrypt = 1;
+		break;
 
-        case WLAN_CIPHER_SUITE_SMS4:
-                bes_devel("[STA] WAPI\n");
-                encrypthdr = WAPI_ENCRYPT_HDR_SIZE;
-                encrypttailsize = WAPI_ENCRYPT_TAIL_SIZE;
-                encrypt = 1;
-                break;
+	default:
+		encrypthdr = 0;
+		encrypttailsize = 0;
+		encrypt = 0;
+		break;
+	}
 
-        default:
-                encrypthdr = 0;
-                encrypttailsize = 0;
-                encrypt = 0;
-                break;
-        }
+	framehdrlen += encrypthdr;
 
-        framehdrlen += encrypthdr;
+	/* Filling the 802.11 Hdr */
+	dot11hdr->frame_control = cpu_to_le16(IEEE80211_FTYPE_DATA);
+	if (priv->vif->type == NL80211_IFTYPE_STATION)
+		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_TODS);
+	else
+		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_FROMDS);
 
-        /* Filling the 802.11 Hdr */
-        dot11hdr->frame_control = cpu_to_le16(IEEE80211_FTYPE_DATA);
-        if (priv->vif->type == NL80211_IFTYPE_STATION)
-                dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_TODS);
-        else
-                dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_FROMDS);
+	if (encrypt)
+		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_WEP);
 
-        if (encrypt)
-                dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_WEP);
+	if (priv->vif->bss_conf.qos) {
+		bes_devel("[STA] QOS Enabled\n");
+		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_QOS_DATAGRP);
+		/* Fill in seq num */
+		*(u16 *)(dot11hdr + 1) = 0x0;
+		framehdrlen += 2;
+	} else {
+		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_STYPE_DATA);
+	}
 
-        if (priv->vif->bss_conf.qos) {
-                bes_devel("[STA] QOS Enabled\n");
-                dot11hdr->frame_control |= cpu_to_le16(IEEE80211_QOS_DATAGRP);
-                 *(u16 *)(dot11hdr + 1) = 0x0;
-                 framehdrlen += 2;
-        } else {
-                dot11hdr->frame_control |= cpu_to_le16(IEEE80211_STYPE_DATA);
-        }
+	memcpy(dot11hdr->addr1, priv->vif->bss_conf.bssid, ETH_ALEN);
+	memcpy(dot11hdr->addr2, priv->vif->addr, ETH_ALEN);
+	memcpy(dot11hdr->addr3, priv->vif->bss_conf.bssid, ETH_ALEN);
 
-        memcpy(dot11hdr->addr1, priv->vif->bss_conf.bssid, ETH_ALEN);
-        memcpy(dot11hdr->addr2, priv->vif->addr, ETH_ALEN);
-        memcpy(dot11hdr->addr3, priv->vif->bss_conf.bssid, ETH_ALEN);
+	/* Filling the LLC/SNAP Hdr */
+	snaphdr = (struct ieee80211_snap_hdr *)((u8 *)dot11hdr + framehdrlen);
+	memcpy(snaphdr, (struct ieee80211_snap_hdr *)rfc1042_header, \
+		sizeof(*snaphdr));
+	*(u16 *)(++snaphdr) = cpu_to_be16(ETH_P_ARP);
+	/* Updating the framebdylen with snaphdr and LLC hdr size */
+	framebdylen = sizeof(*snaphdr) + 2;
 
-        /* Filling the LLC/SNAP Hdr */
-        snaphdr = (struct ieee80211_snap_hdr *)((u8 *)dot11hdr + framehdrlen);
-        memcpy(snaphdr, (struct ieee80211_snap_hdr *)rfc1042_header, \
-                sizeof(*snaphdr));
-        *(u16 *)(++snaphdr) = cpu_to_be16(ETH_P_ARP);
-        /* Updating the framebdylen with snaphdr and LLC hdr size */
-        framebdylen = sizeof(*snaphdr) + 2;
+	/* Filling the ARP Reply Payload */
+	arp_hdr = (struct arphdr *)((u8 *)dot11hdr + framehdrlen + framebdylen);
+	arp_hdr->ar_hrd = cpu_to_be16(ARPHRD_ETHER);
+	arp_hdr->ar_pro = cpu_to_be16(ETH_P_IP);
+	arp_hdr->ar_hln = ETH_ALEN;
+	arp_hdr->ar_pln = 4;
+	arp_hdr->ar_op = cpu_to_be16(ARPOP_REPLY);
 
-        /* Filling the ARP Reply Payload */
-        arp_hdr = (struct arphdr *)((u8 *)dot11hdr + framehdrlen + framebdylen);
-        arp_hdr->ar_hrd = cpu_to_be16(ARPHRD_ETHER);
-        arp_hdr->ar_pro = cpu_to_be16(ETH_P_IP);
-        arp_hdr->ar_hln = ETH_ALEN;
-        arp_hdr->ar_pln = 4;
-        arp_hdr->ar_op = cpu_to_be16(ARPOP_REPLY);
+	/* Updating the frmbdylen with Arp Reply Hdr and Arp payload size(20) */
+	framebdylen += sizeof(*arp_hdr) + 20;
 
-        /* Updating the frmbdylen with Arp Reply Hdr and Arp payload size(20) */
-        framebdylen += sizeof(*arp_hdr) + 20;
+	/* Updating the framebdylen with Encryption Tail Size */
+	framebdylen += encrypttailsize;
 
-        /* Updating the framebdylen with Encryption Tail Size */
-        framebdylen += encrypttailsize;
+	/* Filling the Template Frame Hdr */
+	template_frame[0] = WSM_FRAME_TYPE_ARP_REPLY; /* Template frame type */
+	template_frame[1] = 0xFF; /* Rate to be fixed */
+	((u16 *)&template_frame[2])[0] = framehdrlen + framebdylen;
 
-        /* Filling the Template Frame Hdr */
-        template_frame[0] = WSM_FRAME_TYPE_ARP_REPLY; /* Template frame type */
-        template_frame[1] = 0xFF; /* Rate to be fixed */
-        ((u16 *)&template_frame[2])[0] = framehdrlen + framebdylen;
+	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
+				template_frame, (framehdrlen+framebdylen+4), priv->if_id));
 
-        ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
-                                template_frame, (framehdrlen+framebdylen+4), priv->if_id));
-        kfree(template_frame);
+	kfree(template_frame);
+
 exit_p:
-        return ret;
+	return ret;
 }
 
 #ifdef IPV6_FILTERING
@@ -3234,7 +3235,7 @@ exit_p:
 int bes2600_set_na(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 {
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
-	struct bes2600_common *hw_priv = (struct bes2600_common *)hw->priv;
+	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
 	u32 framehdrlen, encrypthdr, encrypttailsize, framebdylen = 0;
 	bool encrypt = false;
 	int ret = 0;
@@ -3255,7 +3256,7 @@ int bes2600_set_na(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	dot11hdr = (struct ieee80211_hdr_3addr *)&template_frame[4];
 
 	framehdrlen = sizeof(*dot11hdr);
-        if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
+	if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
 		priv->cipherType = WLAN_CIPHER_SUITE_CCMP;
 	switch (priv->cipherType) {
 
@@ -3266,7 +3267,6 @@ int bes2600_set_na(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 		encrypttailsize = WEP_ENCRYPT_TAIL_SIZE;
 		encrypt = 1;
 		break;
-
 
 	case WLAN_CIPHER_SUITE_TKIP:
 		bes_devel("[STA] WPA\n");
@@ -3312,8 +3312,8 @@ int bes2600_set_na(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 		bes_devel("[STA] QOS Enabled\n");
 		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_QOS_DATAGRP);
 		/* Filling QOS Control Field */
-		 *(u16 *)(dot11hdr + 1) = 0x0;
-		 framehdrlen += 2;
+		*(u16 *)(dot11hdr + 1) = 0x0;
+		framehdrlen += 2;
 	} else {
 		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_STYPE_DATA);
 	}
@@ -3432,17 +3432,17 @@ static int bes2600_set_snap_frame(struct ieee80211_hw *hw,
  * Returns: 0 on success or non zero value on failure
  */
 static int bes2600_set_txqueue_params(struct ieee80211_hw *hw,
-				     u8 *data, int len)
+					 u8 *data, int len)
 {
 	struct bes_msg_set_txqueue_params *txqueue_params =
 		(struct bes_msg_set_txqueue_params *) data;
 	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
 	struct bes2600_vif *priv;
 	/* Interface ID is hard coded here, as interface is not
-         * passed in testmode command.
-         * Also it is assumed here that STA will be on interface
-         * 0 always.
-         */
+		 * passed in testmode command.
+		 * Also it is assumed here that STA will be on interface
+		 * 0 always.
+		 */
 
 	int if_id = 0;
 	u16 queueId = bes2600_priority_to_queueId[txqueue_params->user_priority];
@@ -3536,7 +3536,7 @@ nla_put_failure:
  * sends both: synchronous reply and asynchronous event
  */
 static int bes2600_test(struct ieee80211_hw *hw,
-		       void *data, int len)
+			   void *data, int len)
 {
 	struct bes_msg_test_t *test_p;
 	struct bes_reply_test_t reply;
@@ -3648,10 +3648,10 @@ static int bes2600_set_power_save(struct ieee80211_hw *hw,
 	struct bes2600_vif *priv;
 	int if_id = 0;
 	/* Interface ID is hard coded here, as interface is not
-         * passed in testmode command.
-         * Also it is assumed here that STA will be on interface
-         * 0 always.
-         */
+		 * passed in testmode command.
+		 * Also it is assumed here that STA will be on interface
+		 * 0 always.
+		 */
 
 	if (elems_len != len)
 		return -EINVAL;
@@ -3761,7 +3761,7 @@ int bes2600_get_tsm_params(struct ieee80211_hw *hw)
 	hw_priv->tsm_info.sum_media_delay = 0;
 	spin_unlock_bh(&hw_priv->tsm_lock);
 	return bes2600_testmode_reply(hw->wiphy, &tsm_stats,
-				     sizeof(hw_priv->tsm_stats));
+					 sizeof(hw_priv->tsm_stats));
 }
 
 /**
@@ -3789,7 +3789,7 @@ int bes2600_get_roam_delay(struct ieee80211_hw *hw)
 
 int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_id)
 {
-	struct wsm_ipv4_filter  *ipv4_filter =  NULL;
+	struct wsm_ipv4_filter	*ipv4_filter =	NULL;
 	struct ipv4_addr_info *ipv4_info = NULL;
 	u8 action_mode = 0, no_of_ip_addr = 0, i = 0, ret = 0;
 	u16 ipaddrfiltersize = 0;
@@ -3802,8 +3802,8 @@ int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_
 	ipv4_info = (struct ipv4_addr_info *)&data[2];
 
 	/* Computing sizeof Mac addr filter */
-	ipaddrfiltersize =  sizeof(*ipv4_filter) + \
-			    (no_of_ip_addr * sizeof(struct wsm_ip4_addr_info));
+	ipaddrfiltersize =	sizeof(*ipv4_filter) + \
+				(no_of_ip_addr * sizeof(struct wsm_ip4_addr_info));
 
 
 	ipv4_filter = kzalloc(ipaddrfiltersize, GFP_KERNEL);
@@ -3820,12 +3820,12 @@ int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_
 		ipv4_filter->ipv4filter[i].filter_mode = \
 							 ipv4_info[i].filter_mode;
 		memcpy(ipv4_filter->ipv4filter[i].ipv4, \
-		       (u8 *)(ipv4_info[i].ipv4), 4);
+			   (u8 *)(ipv4_info[i].ipv4), 4);
 	}
 
 	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_IPV4_ADDR_FILTERING, \
-				    ipv4_filter, ipaddrfiltersize, \
-				    if_id));
+					ipv4_filter, ipaddrfiltersize, \
+					if_id));
 
 	kfree(ipv4_filter);
 exit_p:
@@ -3854,9 +3854,9 @@ static uint16_t csum(uint16_t *packet, int packlen)
 
 
 static void tcpcsum(struct ip_header *ip,
-                       struct tcp_header *tcp,
-                       uint8_t *data,
-                       uint16_t data_len)
+					   struct tcp_header *tcp,
+					   uint8_t *data,
+					   uint16_t data_len)
 {
 	uint8_t tcphd_len = sizeof(struct tcp_header);
 	uint16_t *buf = kzalloc(12 + tcphd_len + data_len, GFP_KERNEL);
@@ -3884,9 +3884,9 @@ static void tcpcsum(struct ip_header *ip,
 }
 
 int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
-                            struct bes2600_vif *priv,
-                            struct ip_alive_cfg *iac,
-                            u16 idx)
+							struct bes2600_vif *priv,
+							struct ip_alive_cfg *iac,
+							u16 idx)
 {
 	u32 framehdrlen, encrypthdr, encrypttailsize, framebdylen = 0, tu_len, tu_proto;
 	bool encrypt = false;
@@ -3986,7 +3986,7 @@ int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
 	/* Filling the LLC/SNAP Hdr */
 	snaphdr = (struct ieee80211_snap_hdr *)((u8 *)dot11hdr + framehdrlen);
 	memcpy(snaphdr, (struct ieee80211_snap_hdr *)rfc1042_header, \
-	       sizeof(*snaphdr));
+		   sizeof(*snaphdr));
 	*(u16 *)(++snaphdr) = cpu_to_be16(ETH_P_IP);
 	/* Updating the framebdylen with snaphdr and LLC hdr size */
 	framebdylen = sizeof(*snaphdr) + 2;
@@ -4083,10 +4083,10 @@ int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
 	tmp_frame[framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN] = (EncrType | (iac->klv_vendor << 4));
 
 	ret = WARN_ON(wsm_write_mib(hw_priv,
-                                WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
-                                tmp_frame,
-                                (framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN + 1),
-                                priv->if_id));
+								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
+								tmp_frame,
+								(framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN + 1),
+								priv->if_id));
 	kfree(tmp_frame);
 
 exit_p:
@@ -4094,8 +4094,8 @@ exit_p:
 }
 
 int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
-                            struct bes2600_vif *priv,
-                            u8 stream_idx)
+							struct bes2600_vif *priv,
+							u8 stream_idx)
 {
 	u8 tmp_frame[8];
 	int ret;
@@ -4106,17 +4106,17 @@ int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
 	((u16 *)&tmp_frame[2])[0] = 0;
 
 	ret = WARN_ON(wsm_write_mib(hw_priv,
-                                WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
-                                tmp_frame,
-                                4,
-                                priv->if_id));
+								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
+								tmp_frame,
+								4,
+								priv->if_id));
 
 	return ret;
 }
 
 int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
-                           struct bes2600_vif *priv,
-                           u16 period_in_s)
+						   struct bes2600_vif *priv,
+						   u16 period_in_s)
 {
 	int ret;
 	struct MIB_TCP_KEEP_ALIVE_PERIOD period;
@@ -4153,10 +4153,10 @@ int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
 	period.EncrType = EncrType;
 	period.Reserved = 0;
 	ret = WARN_ON(wsm_write_mib(hw_priv,
-                                WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_PERIOD,
-                                (u8 *)&period,
-                                sizeof(period),
-                                priv->if_id));
+								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_PERIOD,
+								(u8 *)&period,
+								sizeof(period),
+								priv->if_id));
 
 	return ret;
 }
@@ -4171,11 +4171,11 @@ static int search_for_free_stream(struct bes2600_common *hw_priv, uint8_t proto,
 	/* If port matches, overwrites the configuration; */
 	for (i = 0; i < NUM_IP_FRAMES; i++) {
 		if (iac[i].bd.idx_used == 1 &&
-		    iac[i].bd.proto == proto &&
-		    iac[i].bd.src_port == src_port &&
-		    iac[i].bd.dest_port == dst_port &&
-		    iac[i].bd.src_ip == src_ip &&
-		    iac[i].bd.dest_ip == dst_ip) {
+			iac[i].bd.proto == proto &&
+			iac[i].bd.src_port == src_port &&
+			iac[i].bd.dest_port == dst_port &&
+			iac[i].bd.src_ip == src_ip &&
+			iac[i].bd.dest_ip == dst_ip) {
 			free_idx = i;
 			break;
 		} else if (free_idx == -1 && iac[i].bd.idx_used == 0) {
@@ -4240,10 +4240,10 @@ static int net_device_add_ip_offload(struct ieee80211_hw *hw, u8 *data, int len)
 	if (paras->payload_len <= IP_KEEPALIVE_MAX_LEN) {
 		/* idx == 0xF, find a free one. */
 		idx_check = search_for_free_stream(hw->priv, paras->proto,
-		                                    paras->src_port,
-		                                    paras->dst_port,
-		                                    paras->src_ip,
-		                                    paras->dst_ip);
+											paras->src_port,
+											paras->dst_port,
+											paras->src_ip,
+											paras->dst_ip);
 		if (idx_check < 0 || idx_check >= NUM_IP_FRAMES) {
 			paras->idx = 0xF;
 			idx_cfg.err_code = -2; /* get stream fail */
@@ -4398,11 +4398,11 @@ static int bes2600_factory_cali_to_mcu(struct ieee80211_hw *hw, enum bes2600_rf_
 
 #ifdef STANDARD_FACTORY_EFUSE_FLAG
 static int bes2600_set_select_efuse_flag_to_txt(struct ieee80211_hw *hw,
-		       void *data, int len)
+			   void *data, int len)
 {
 	struct bes_select_calib_t *test_p = (struct bes_select_calib_t *)data;
 	int ret = bes2600_select_efuse_flag_write(test_p->select_efuse_flag);
-    return bes2600_testmode_reply(hw->wiphy, &ret, sizeof(int));
+	return bes2600_testmode_reply(hw->wiphy, &ret, sizeof(int));
 }
 #endif
 

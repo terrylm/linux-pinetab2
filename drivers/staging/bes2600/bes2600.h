@@ -821,6 +821,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 			  struct sbus_priv *sbus,
 			  struct device *pdev,
 			  struct bes2600_common **pself);
+
 void bes2600_core_release(struct bes2600_common *self);
 
 static inline void bes2600_tx_queues_lock(struct bes2600_common *hw_priv)

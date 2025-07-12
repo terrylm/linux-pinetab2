@@ -1594,45 +1594,46 @@ bes2600_rx_h_ba_stat(struct bes2600_vif *priv,
 	spin_unlock_bh(&hw_priv->ba_lock);
 }
 
-void bes2600_rx_cb(struct bes2600_vif *priv,
-		  struct wsm_rx *arg,
-		  struct sk_buff **skb_p)
+/* ******************************** From Grok 4, start ********************************** */
+static void bes2600_rx_set_timestamp(struct ieee80211_rx_status *hdr)
 {
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-	struct sk_buff *skb = *skb_p;
-	struct ieee80211_rx_status *hdr = IEEE80211_SKB_RXCB(skb);
-	struct ieee80211_hdr *frame = (struct ieee80211_hdr *)skb->data;
-	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
-	struct bes2600_link_entry *entry = NULL;
-	bool early_data = false;
-	size_t hdrlen = 0;
 	u64 tsf;
-	do {
-		struct timespec64 ts;
-		ts = ktime_to_timespec64(ktime_get_boottime());
-		tsf = (u64)ts.tv_sec * 1000000000 + ts.tv_nsec;
-		hdr->boottime_ns = tsf;
-	} while (0);
+	struct timespec64 ts;
+	ts = ktime_to_timespec64(ktime_get_boottime());
+	tsf = (u64)ts.tv_sec * 1000000000 + ts.tv_nsec;
+	hdr->boottime_ns = tsf;
+}
 
-	hdr->flag = 0;
+static bool bes2600_rx_check_mode_drop(struct bes2600_vif *priv)
+{
 	if (unlikely(priv->mode == NL80211_IFTYPE_UNSPECIFIED)) {
 		/* STA is stopped. */
-		goto drop;
+		return true;
 	}
+	return false;
+}
 
+static void bes2600_rx_wakeup_device(struct bes2600_common *hw_priv, struct ieee80211_hdr *frame)
+{
 	/* wakeup device based on frame type */
 	if (!is_multicast_ether_addr(ieee80211_get_DA(frame)) && ieee80211_is_data(frame->frame_control)) {
 		/* for unicast, wakeup device directly */
 		bes2600_pwr_set_busy_event_with_timeout_async(
 				hw_priv, BES_PWR_LOCK_ON_RX, BES_PWR_EVENT_RX_TIMEOUT);
 	}
+}
 
+static void bes2600_rx_check_go_neg(struct bes2600_common *hw_priv, struct ieee80211_hdr *frame, struct ieee80211_mgmt *mgmt)
+{
 	if ((ieee80211_is_action(frame->frame_control))
 						&& (mgmt->u.action.category == WLAN_CATEGORY_PUBLIC)) {
 		u8 *action = (u8*)&mgmt->u.action.category;
 		bes2600_check_go_neg_conf_success(hw_priv, action);
 	}
+}
 
+static void bes2600_rx_handle_testmode(struct bes2600_common *hw_priv, struct sk_buff *skb)
+{
 #ifdef CONFIG_BES2600_TESTMODE
 	spin_lock_bh(&hw_priv->tsm_lock);
 	if (hw_priv->start_stop_tsm.start) {
@@ -1652,13 +1653,17 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	}
 	spin_unlock_bh(&hw_priv->tsm_lock);
 #endif /*CONFIG_BES2600_TESTMODE*/
+}
+
+static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *arg, struct ieee80211_hdr *frame, bool *early_data, struct bes2600_link_entry **entry)
+{
 	if (arg->link_id && (arg->link_id != BES2600_LINK_ID_UNMAPPED)
 			&& (arg->link_id <= BES2600_MAX_STA_IN_AP_MODE)) {
-		entry =	&priv->link_id_db[arg->link_id - 1];
-		if (entry->status == BES2600_LINK_SOFT &&
+		*entry =	&priv->link_id_db[arg->link_id - 1];
+		if ((*entry)->status == BES2600_LINK_SOFT &&
 				ieee80211_is_data(frame->frame_control))
-			early_data = true;
-		entry->timestamp = jiffies;
+			*early_data = true;
+		(*entry)->timestamp = jiffies;
 	}
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	else if ((arg->link_id == BES2600_LINK_ID_UNMAPPED)
@@ -1690,29 +1695,45 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		schedule_work(&priv->linkid_reset_work);
 	}
 #endif
+}
+
+static bool bes2600_rx_handle_status_drop(struct bes2600_vif *priv, struct wsm_rx *arg, struct ieee80211_rx_status *hdr)
+{
 	if (unlikely(arg->status)) {
 		if (arg->status == WSM_STATUS_MICFAILURE) {
 			bes_warn("[RX] MIC failure.\n");
 			hdr->flag |= RX_FLAG_MMIC_ERROR;
 		} else if (arg->status == WSM_STATUS_NO_KEY_FOUND) {
 			bes_devel("[RX] No key found.\n");
-			goto drop;
+			return true;
 		} else {
 			bes_warn("[RX] Receive failure: %d.\n", arg->status);
-			goto drop;
+			return true;
 		}
 	}
+	return false;
+}
 
+static bool bes2600_rx_validate_skb_len(struct bes2600_vif *priv, struct sk_buff *skb)
+{
 	if (skb->len < sizeof(struct ieee80211_pspoll)) {
 		wiphy_warn(priv->hw->wiphy, "Mailformed SDU rx'ed. "
 				"Size is lesser than IEEE header.\n");
-		goto drop;
+		return true;
 	}
+	return false;
+}
 
+static bool bes2600_rx_handle_pspoll(struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct sk_buff *skb)
+{
 	if (unlikely(ieee80211_is_pspoll(frame->frame_control)))
 		if (bes2600_handle_pspoll(priv, skb))
-			goto drop;
+			return true;
+	return false;
+}
 
+static void bes2600_rx_set_rx_fields(struct ieee80211_rx_status *hdr, struct wsm_rx *arg)
+{
 	hdr->mactime = 0; /* Not supported by WSM */
 	hdr->band = (arg->channelNumber > 14) ?
 			NL80211_BAND_5GHZ : NL80211_BAND_2GHZ;
@@ -1734,8 +1755,16 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 	hdr->signal = (s8)arg->rcpiRssi;
 	hdr->antenna = 0;
+}
 
-	hdrlen = ieee80211_hdrlen(frame->frame_control);
+static void bes2600_rx_log_probe_resp(struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct ieee80211_rx_status *hdr)
+{
+	if (ieee80211_is_probe_resp(frame->frame_control))
+		bes_info("Received probe response during scan, RCPI/RSSI (raw)=%d, signal (dBm)=%d\n", arg->rcpiRssi, hdr->signal);
+}
+
+static bool bes2600_rx_handle_decryption(struct bes2600_vif *priv, struct ieee80211_rx_status *hdr, struct wsm_rx *arg, struct sk_buff *skb, struct ieee80211_hdr *frame, size_t hdrlen)
+{
 	if (WSM_RX_STATUS_ENCRYPTION(arg->flags) == WSM_RX_STATUS_DECRYPTED) {
 		/* decrypted frame with iv/icv stripped */
 		hdr->flag |= RX_FLAG_DECRYPTED;
@@ -1770,7 +1799,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 			break;
 		default:
 			WARN_ON("Unknown encryption type");
-			goto drop;
+			return true;
 		}
 
 		/* Firmware strips ICV in case of MIC failure. */
@@ -1782,7 +1811,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		if (skb->len < hdrlen + iv_len + icv_len) {
 			wiphy_warn(priv->hw->wiphy, "Mailformed SDU rx'ed. "
 				"Size is lesser than crypto headers.\n");
-			goto drop;
+			return true;
 		}
 
 		/* Protocols not defined in mac80211 should be
@@ -1796,11 +1825,18 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		}
 
 	}
+	return false;
+}
 
+static void bes2600_rx_update_debug(struct bes2600_vif *priv, struct wsm_rx *arg)
+{
 	bes2600_debug_rxed(priv);
 	if (arg->flags & WSM_RX_STATUS_AGGREGATE)
 		bes2600_debug_rxed_agg(priv);
+}
 
+static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_common *hw_priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct sk_buff *skb)
+{
 	if (ieee80211_is_beacon(frame->frame_control) &&
 			!arg->status &&
 			!memcmp(ieee80211_get_SA(frame), priv->join_bssid,
@@ -1831,27 +1867,31 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 				&priv->update_filtering_work);
 		}
 	}
+}
+
+static void bes2600_rx_handle_ap_ht_cap(struct bes2600_vif *priv, struct bes2600_common *hw_priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct sk_buff *skb)
+{
 #ifdef AP_HT_CAP_UPDATE
-		if (priv->mode == NL80211_IFTYPE_AP &&
-						ieee80211_is_beacon(frame->frame_control) &&
-						!arg->status){
+	if (priv->mode == NL80211_IFTYPE_AP
+		&& ieee80211_is_beacon(frame->frame_control)
+		&& !arg->status){
 
-				u8 *ies;
-				size_t ies_len;
-				const u8 *ht_cap;
-				ies = ((struct ieee80211_mgmt *)
-						  (skb->data))->u.beacon.variable;
-				ies_len = skb->len - (ies - (u8 *)(skb->data));
-				ht_cap = bes2600_get_ie(ies, ies_len, WLAN_EID_HT_CAPABILITY);
-				if(!ht_cap){
-						priv->ht_info |= 0x0011;
-				}
-				queue_work(hw_priv->workqueue,
-								&priv->ht_info_update_work);
+		u8 *ies;
+		size_t ies_len;
+		const u8 *ht_cap;
+		ies = ((struct ieee80211_mgmt *) (skb->data))->u.beacon.variable;
+		ies_len = skb->len - (ies - (u8 *)(skb->data));
+		ht_cap = bes2600_get_ie(ies, ies_len, WLAN_EID_HT_CAPABILITY);
 
+		if(!ht_cap) priv->ht_info |= 0x0011;
+
+		queue_work(hw_priv->workqueue, &priv->ht_info_update_work);
 		}
 #endif
+}
 
+static void bes2600_rx_handle_roam_offload(struct bes2600_common *hw_priv, struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct sk_buff *skb)
+{
 #ifdef ROAM_OFFLOAD
 	if ((ieee80211_is_beacon(frame->frame_control)||ieee80211_is_probe_resp(frame->frame_control)) &&
 			!arg->status ) {
@@ -1869,32 +1909,51 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		}
 	}
 #endif /*ROAM_OFFLOAD*/
+}
 
+static void bes2600_rx_handle_discon_power(struct bes2600_common *hw_priv, struct ieee80211_hdr *frame)
+{
 	if (ieee80211_is_deauth(frame->frame_control) ||
 		ieee80211_is_disassoc(frame->frame_control))
 		bes2600_pwr_set_busy_event_with_timeout_async(hw_priv,
 				BES_PWR_LOCK_ON_DISCON, 1500);
+}
 
-
+static void bes2600_rx_handle_data_stats(struct bes2600_vif *priv, struct ieee80211_hdr *frame, size_t hdrlen, struct sk_buff *skb)
+{
 	if (ieee80211_is_data(frame->frame_control)) {
 		bes2600_rx_h_ba_stat(priv, hdrlen, skb->len);
 		bes2600_rx_status(priv, skb);
 	}
+}
 
 #ifdef CONFIG_BES2600_TESTMODE
+static bool bes2600_rx_handle_test_frame(struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct sk_buff *skb)
+{
 	if (hw_priv->test_frame.len > 0 &&
 		priv->mode == NL80211_IFTYPE_STATION) {
 		if (bes2600_frame_test_detection(priv, frame, skb) == 1) {
 			consume_skb(skb);
 			*skb_p = NULL;
-			return;
+			return true;
 		}
 	}
+	return false;
+}
 #endif /* CONFIG_BES2600_TESTMODE */
 
-	if (unlikely(bes2600_itp_rxed(hw_priv, skb)))
+static bool bes2600_rx_check_itp(struct bes2600_common *hw_priv, struct sk_buff *skb)
+{
+	if (unlikely(bes2600_itp_rxed(hw_priv, skb))) {
 		consume_skb(skb);
-	else if (unlikely(early_data)) {
+		return true;
+	}
+	return false;
+}
+
+static void bes2600_rx_queue_or_submit(struct bes2600_vif *priv, bool early_data, struct bes2600_link_entry *entry, struct sk_buff *skb)
+{
+	if (unlikely(early_data)) {
 		spin_lock_bh(&priv->ps_state_lock);
 		/* Double-check status with lock held */
 		if (entry->status == BES2600_LINK_SOFT)
@@ -1905,16 +1964,72 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	} else {
 		ieee80211_rx_irqsafe(priv->hw, skb);
 	}
+}
+
+void bes2600_rx_cb(struct bes2600_vif *priv,
+		  struct wsm_rx *arg,
+		  struct sk_buff **skb_p)
+{
+	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+	struct sk_buff *skb = *skb_p;
+	struct ieee80211_rx_status *hdr = IEEE80211_SKB_RXCB(skb);
+	struct ieee80211_hdr *frame = (struct ieee80211_hdr *)skb->data;
+	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
+	struct bes2600_link_entry *entry = NULL;
+	bool early_data = false;
+	size_t hdrlen = 0;
+
+	bes2600_rx_set_timestamp(hdr);
+	hdr->flag = 0;
+
+	if (bes2600_rx_check_mode_drop(priv))
+		goto drop;
+
+	bes2600_rx_wakeup_device(hw_priv, frame);
+	bes2600_rx_check_go_neg(hw_priv, frame, mgmt);
+	bes2600_rx_handle_testmode(hw_priv, skb); /* CONFIG_BES2600_TESTMODE, or empty function. */
+	bes2600_rx_handle_link_id(priv, arg, frame, &early_data, &entry);
+
+	if (bes2600_rx_handle_status_drop(priv, arg, hdr)) goto drop;
+	if (bes2600_rx_validate_skb_len(priv, skb)) goto drop;
+	if (bes2600_rx_handle_pspoll(priv, frame, skb)) goto drop;
+
+	bes2600_rx_set_rx_fields(hdr, arg);
+	bes2600_rx_log_probe_resp(priv, frame, arg, hdr);
+	hdrlen = ieee80211_hdrlen(frame->frame_control);
+
+	if (bes2600_rx_handle_decryption(priv, hdr, arg, skb, frame, hdrlen))
+		goto drop;
+
+	bes2600_rx_update_debug(priv, arg);
+	bes2600_rx_handle_beacon(priv, hw_priv, frame, arg, skb);
+	bes2600_rx_handle_ap_ht_cap(priv, hw_priv, frame, arg, skb); /* AP_HT_CAP_UPDATE, or empty function. */
+	bes2600_rx_handle_roam_offload(hw_priv, priv, frame, arg, skb); /* ROAM_OFFLOAD, or empty function. */
+	bes2600_rx_handle_discon_power(hw_priv, frame);
+	bes2600_rx_handle_data_stats(priv, frame, hdrlen, skb);
+
+#ifdef CONFIG_BES2600_TESTMODE
+	if (bes2600_rx_handle_test_frame(priv, frame, skb))
+		return;
+#endif /* CONFIG_BES2600_TESTMODE */
+
+	if (bes2600_rx_check_itp(hw_priv, skb))
+		return;
+
+	bes2600_rx_queue_or_submit(priv, early_data, entry, skb);
+
 	*skb_p = NULL;
 
 	return;
 
 drop:
 	/* TODO: update failure counters */
+	bes_info("Something failed in that scan.");
 	return;
 }
 
-/* ******************************************************************** */
+/* ******************************** From Grok 4, end ************************************ */
+
 /* Security								*/
 
 int bes2600_alloc_key(struct bes2600_common *hw_priv)

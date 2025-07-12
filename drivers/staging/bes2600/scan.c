@@ -118,11 +118,7 @@ static int bes2600_scan_get_first_active_if(struct bes2600_common *hw_priv)
 static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 {
 	int ret, i;
-#ifdef FPGA_SETUP
 	int tmo = 5000;
-#else
-	int tmo = 5000;
-#endif
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 
 	if (hw_priv->scan_switch_if_id == -1 &&
@@ -138,17 +134,20 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 			bes_devel("scan start channel type %d num %d\n", hw_priv->ht_info.channel_type, channel.newChannelNumber);
 		}
 	}
+
 	for (i = 0; i < scan->numOfChannels; ++i)
 		tmo += scan->ch[i].maxChannelTime + 10;
+
 	atomic_set(&hw_priv->scan.in_progress, 1);
 	atomic_set(&hw_priv->recent_scan, 1);
-	queue_delayed_work(hw_priv->workqueue, &hw_priv->scan.timeout,
-		tmo * HZ / 1000);
+	queue_delayed_work(hw_priv->workqueue, &hw_priv->scan.timeout, tmo * HZ / 1000);
+
 #ifdef P2P_MULTIVIF
 	ret = wsm_scan(hw_priv, scan, 0);
 #else
 	ret = wsm_scan(hw_priv, scan, priv->if_id);
 #endif
+
 	if (unlikely(ret)) {
 		atomic_set(&hw_priv->scan.in_progress, 0);
 		cancel_delayed_work_sync(&hw_priv->scan.timeout);
@@ -161,6 +160,10 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 		   struct ieee80211_vif *vif,
 		   struct ieee80211_scan_request *hw_req)
 {
+	if (!hw_req) {
+		bes_info("%s %d hw_req is NULL!\n", __func__, __LINE__);
+		return -EINVAL;
+	}
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct cfg80211_scan_request *req = &hw_req->req;
@@ -168,6 +171,10 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 		.frame_type = WSM_FRAME_TYPE_PROBE_REQUEST,
 	};
 	int i;
+
+	bes_info("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__, priv->if_id, req->n_channels, req->n_ssids);
+	for (size_t i = 0; i < req->n_channels; i++)
+		bes_info("[SCAN] Channel %zu: %u MHz\n", i, req->channels[i]->center_freq);
 
 	/* Scan when P2P_GO corrupt firmware MiniAP mode */
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
@@ -227,7 +234,7 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	hw_priv->scan.if_id = priv->if_id;
 	/* TODO:COMBO: Populate BIT4 in scanflags to decide on which MAC
 	 * address the SCAN request will be sent */
-	bes_devel("%s %d if_id:%d,num_channel:%d.\n", __func__, __LINE__, priv->if_id, req->n_channels);
+	bes_info("%s %d if_id:%d,num_channel:%d.\n", __func__, __LINE__, priv->if_id, req->n_channels);
 
 	for (i = 0; i < req->n_ssids; ++i) {
 		struct wsm_ssid *dst =
@@ -871,6 +878,13 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 	// bwifi_change_current_status(hw_priv, BWIFI_STATUS_SCANNING_COMP);
 #endif
 	wiphy_info(hw_priv->hw->wiphy, "bes2600_scan_complete_cb status: %u", arg->status);
+
+	bes_info("%s %d: FW scan complete, status=%d, channels completed=%d\n",
+		__func__, __LINE__, arg->status, arg->numChannels);
+
+	if (arg->status == 0 && arg->numChannels == 0) {
+		bes_info("Scan completed successfully but 0 channels processed - possible FW issue?\n");
+	}
 
 	if(hw_priv->scan.status == -ETIMEDOUT)
 		wiphy_warn(hw_priv->hw->wiphy,

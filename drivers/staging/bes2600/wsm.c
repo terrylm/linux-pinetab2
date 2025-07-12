@@ -547,6 +547,9 @@ int wsm_scan(struct bes2600_common *hw_priv, const struct wsm_scan *arg,
 	if (unlikely(arg->band > 1))
 		return -EINVAL;
 
+	bes_info("%s %d Sending scan cmd to FW, band=%d, type=%d, flags=0x%x, autoInterval=%u\n",
+		__func__, __LINE__, arg->band, arg->scanType, arg->scanFlags, arg->autoScanInterval);
+
 	wsm_oper_lock(hw_priv);
 	wsm_cmd_lock(hw_priv);
 
@@ -1736,12 +1739,18 @@ static int wsm_scan_complete_indication(struct bes2600_common *hw_priv,
 	wsm_oper_unlock(hw_priv);
 #endif /*ROAM_OFFLOAD*/
 
+
 	if (hw_priv->wsm_cbc.scan_complete) {
 		struct wsm_scan_complete arg;
 		arg.status = WSM_GET32(buf);
 		arg.psm = WSM_GET8(buf);
 		arg.numChannels = WSM_GET8(buf);
+		bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
+			__func__, __LINE__, arg.status, arg.psm, arg.numChannels);
 		hw_priv->wsm_cbc.scan_complete(hw_priv, &arg);
+		//bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
+		//	__func__, __LINE__, arg.status, arg.psm, arg.numChannels);
+
 	}
 	return 0;
 

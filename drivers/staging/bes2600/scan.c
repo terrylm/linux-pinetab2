@@ -131,7 +131,7 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 			channel.channelSwitchCount = 0;
 			channel.newChannelNumber = hw_priv->channel->hw_value;
 			wsm_switch_channel(hw_priv, &channel, hw_priv->scan_switch_if_id);
-			bes_devel("scan start channel type %d num %d\n", hw_priv->ht_info.channel_type, channel.newChannelNumber);
+			bes_info("%s: scan start channel type %d num %d\n", __func__, hw_priv->ht_info.channel_type, channel.newChannelNumber);
 		}
 	}
 
@@ -183,8 +183,8 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	if (req->n_ssids == 1 && !req->ssids[0].ssid_len)
 		req->n_ssids = 0;
 
-	wiphy_dbg(hw->wiphy, "[SCAN] Scan request for %d SSIDs.\n",
-		req->n_ssids);
+	wiphy_info(hw->wiphy, "%s: Scan request for %d SSIDs.\n",
+		__func__, req->n_ssids);
 
 	if (req->n_ssids > hw->wiphy->max_scan_ssids)
 		return -EINVAL;
@@ -852,7 +852,7 @@ static void bes2600_scan_complete(struct bes2600_common *hw_priv, int if_id)
 }
 
 void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
-				struct wsm_scan_complete *arg)
+			struct wsm_scan_complete *arg)
 {
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);

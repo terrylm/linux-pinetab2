@@ -59,7 +59,7 @@ void bes2600_sched_scan_work(struct work_struct *work);
 
 void bes2600_scan_work(struct work_struct *work);
 void bes2600_scan_timeout(struct work_struct *work);
-void bes2600_scan_complete_cb(struct bes2600_common *priv,
+void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			struct wsm_scan_complete *arg);
 
 void bes2600_cancel_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif);

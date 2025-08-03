@@ -538,7 +538,23 @@ static int bes2600_sdio_irq_unsubscribe(struct sbus_priv *self)
 
 static void bes2600_sdio_off(const struct bes2600_platform_data_sdio *pdata)
 {
-	bes_devel("%s\n", __func__);
+    struct sbus_priv *sbus = bes2600_chrdev_get_sbus_priv_data();
+    struct sdio_func *func = sbus ? sbus->func : NULL;
+
+    bes_info("%s: Performing software SDIO reset\n", __func__);
+
+    if (func) {
+        sdio_claim_host(func);
+        sdio_writeb(func, 0x08, SDIO_CCCR_ABORT, NULL);  // IO reset
+        msleep(10);
+        sdio_release_host(func);
+        // Force bus rescan
+        mmc_detect_change(func->card->host, 0);
+        bes_info("%s: Reset and rescan complete\n", __func__);
+    } else {
+        bes_warn("%s: No func for reset\n", __func__);
+    }
+
 	// Both pins are not availiable? being used for other things?
 	//gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
 	//gpiod_direction_output(pdata->reset, GPIOD_OUT_LOW);

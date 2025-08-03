@@ -2,7 +2,7 @@
 VERSION = 6
 PATCHLEVEL = 14
 SUBLEVEL = 8
-EXTRAVERSION = -terry
+EXTRAVERSION = -broken
 NAME = Baby Opossum Posse
 
 # *DOCUMENTATION*

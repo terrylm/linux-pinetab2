@@ -17,6 +17,12 @@
 #include "bes2600_factory.h"
 #include "bes_log.h"
 
+// Grok 4, for use in bes2600_load_firmware_sdio().
+#include <linux/firmware.h>  // Ensure this is included for request_firmware
+static int reload_fw = 0;
+module_param(reload_fw, int, 0644);
+MODULE_PARM_DESC(reload_fw, "Force fresh firmware load (1=enable)");
+
 // fw blob names
 #define BES2600_LOAD_BOOT_NAME		"bes2600/best2002_fw_boot_sdio.bin"
 #define BES2600_LOAD_FW_NAME		"bes2600/best2002_fw_sdio.bin"
@@ -483,9 +489,10 @@ static int bes_firmware_download(struct platform_fw_t *fw_data, const char *fw_n
 	struct run_fw_t run_addr;
 
 retry:
-	ret = request_firmware(&fw_bin, fw_name, NULL);
+	bes_info("%s: Requesting firmware: %s\n", __func__, fw_name);
+	ret = request_firmware_direct(&fw_bin, fw_name, NULL);
 	if (ret) {
-		bes_err("request firmware err:%d\n", ret);
+		bes_err("%s: Firmware load failed (%d)\n", __func__, ret);
 		goto err1;
 	}
 
@@ -495,22 +502,22 @@ retry:
 	if(fw_ver_ptr == NULL)
 		bes_err("------Firmware version get failed\n");
 	else
-		bes_devel("------Firmware: %s version :%s\n", fw_name ,fw_ver_ptr);
+		bes_info("------Firmware: %s version :%s\n", fw_name ,fw_ver_ptr);
 
-	bes_devel("------load addr	:0x%08X\n", fw_info.addr);
-	bes_devel("------data crc	:0x%08X\n", crc32_t.crc32);
+	bes_info("------load addr	:0x%08X\n", fw_info.addr);
+	bes_info("------data crc	:0x%08X\n", crc32_t.crc32);
 
 	code_length = fw_bin->size - CODE_DATA_USELESS_SIZE;
-	bes_devel("------code size	:%d\n", code_length);
+	bes_info("------code size	:%d\n", code_length);
 
 	fw_info.len = code_length;
 	data_p = fw_bin->data;
 
 	ret = bes_slave_rx_ready(fw_data, &buf_cnt, &tx_size, HZ);
 	if (!ret) {
-		bes_devel("sdio slave rx buf cnt:%d,buf len max:%d\n", buf_cnt, tx_size);
+		bes_info("sdio slave rx buf cnt:%d,buf len max:%d\n", buf_cnt, tx_size);
 	} else {
-		bes_devel("wait bes sdio slave rx ready timeout:%d\n", ret);
+		bes_info("wait bes sdio slave rx ready timeout:%d\n", ret);
 		goto err1;
 	}
 

@@ -87,7 +87,7 @@
 		(buf)->data += sizeof(type);				\
 	} while (0)
 
-#define WSM_PUT8(buf, val)  __WSM_PUT(buf, val, u8, (u8))
+#define WSM_PUT8(buf, val)	__WSM_PUT(buf, val, u8, (u8))
 #define WSM_PUT16(buf, val) __WSM_PUT(buf, val, u16, __cpu_to_le16)
 #define WSM_PUT32(buf, val) __WSM_PUT(buf, val, u32, __cpu_to_le32)
 
@@ -1109,15 +1109,15 @@ int wsm_epta_cmd(struct bes2600_common *hw_priv, struct wsm_epta_msg *arg)
 			arg->hw_epta_enable &= ~(0x3);
 		}
 		// if (coex_is_fdd_mode()) {
-		// 	arg->wlan_duration = 100000;
-		// 	arg->bt_duration = 0;
-		// 	arg->hw_epta_enable |= (1 << 10);
+		//	arg->wlan_duration = 100000;
+		//	arg->bt_duration = 0;
+		//	arg->hw_epta_enable |= (1 << 10);
 		// } else {
-		// 	if (coex_is_bt_inactive()) {
-		// 		arg->wlan_duration = 100000;
-		// 		arg->bt_duration = 0;
-		// 		arg->hw_epta_enable = 0;
-		// 	}
+		//	if (coex_is_bt_inactive()) {
+		//		arg->wlan_duration = 100000;
+		//		arg->bt_duration = 0;
+		//		arg->hw_epta_enable = 0;
+		//	}
 		// }
 	}
 
@@ -1446,9 +1446,9 @@ static int wsm_startup_indication(struct bes2600_common *hw_priv,
 		return -EINVAL;
 
 	bes_devel("BES2600 WSM init done.\n"
-		"   Input buffers: %d x %d bytes\n"
-		"   Hardware: %d.%d\n"
-		"   %s firmware [%s], ver: %d, build: %d,"
+		"	Input buffers: %d x %d bytes\n"
+		"	Hardware: %d.%d\n"
+		"	%s firmware [%s], ver: %d, build: %d,"
 			" api: %d, cap: 0x%.4X\n",
 		hw_priv->wsm_caps.numInpChBufs,
 		hw_priv->wsm_caps.sizeInpChBuf,
@@ -1742,15 +1742,16 @@ static int wsm_scan_complete_indication(struct bes2600_common *hw_priv,
 
 	if (hw_priv->wsm_cbc.scan_complete) {
 		struct wsm_scan_complete arg;
+		static DEFINE_RATELIMIT_STATE(rs, DEFAULT_RATELIMIT_INTERVAL, 5);  // 5 bursts/sec
+
 		arg.status = WSM_GET32(buf);
 		arg.psm = WSM_GET8(buf);
 		arg.numChannels = WSM_GET8(buf);
-		bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
-			__func__, __LINE__, arg.status, arg.psm, arg.numChannels);
+		if (__ratelimit(&rs) && (arg.status != 0 || arg.numChannels == 0)) {	// Only on "weird" completes
+			bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
+			 __func__, __LINE__, arg.status, arg.psm, arg.numChannels);
+		}
 		hw_priv->wsm_cbc.scan_complete(hw_priv, &arg);
-		//bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
-		//	__func__, __LINE__, arg.status, arg.psm, arg.numChannels);
-
 	}
 	return 0;
 
@@ -1866,7 +1867,7 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 	/* TODO:COMBO: Add if_id from  to the WSM header */
 	/* if_id == -1 indicates that command is HW specific,
 	 * eg. wsm_configuration which is called during driver initialzation
-	 *  (mac80211 .start callback called when first ifce is created. )*/
+	 *	(mac80211 .start callback called when first ifce is created. )*/
 
 	/* send hw specific commands on if 0 */
 	if (if_id == -1)

@@ -17,6 +17,7 @@
 #include <linux/random.h>
 #include <linux/sched.h>
 #include <linux/of.h>
+#include <linux/timer.h>
 #include <net/mac80211.h>
 
 #include "bes2600.h"
@@ -196,8 +197,8 @@ static const unsigned long bes2600_ttl[] = {
 static const struct ieee80211_iface_limit bes2600_if_limits[] = {
 	{ .max = 2, .types = BIT(NL80211_IFTYPE_STATION) },
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_AP) |
-			     BIT(NL80211_IFTYPE_P2P_CLIENT) |
-			     BIT(NL80211_IFTYPE_P2P_GO) },
+				 BIT(NL80211_IFTYPE_P2P_CLIENT) |
+				 BIT(NL80211_IFTYPE_P2P_GO) },
 #ifdef P2P_MULTIVIF
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_P2P_DEVICE) },
 #endif
@@ -228,7 +229,7 @@ static const struct ieee80211_ops bes2600_ops = {
 	.tx			= bes2600_tx,
 	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.hw_scan		= bes2600_hw_scan,
-	.cancel_hw_scan         = bes2600_cancel_hw_scan,
+	.cancel_hw_scan			= bes2600_cancel_hw_scan,
 #ifdef ROAM_OFFLOAD
 	.sched_scan_start	= bes2600_hw_sched_scan_start,
 	.sched_scan_stop	= bes2600_hw_sched_scan_stop,
@@ -256,10 +257,10 @@ static const struct ieee80211_ops bes2600_ops = {
 	.remain_on_channel	= bes2600_remain_on_channel,
 	.cancel_remain_on_channel = bes2600_cancel_remain_on_channel,
 #ifdef IPV6_FILTERING
-	//.set_data_filter        = bes2600_set_data_filter,
+	//.set_data_filter		  = bes2600_set_data_filter,
 #endif /*IPV6_FILTERING*/
 #ifdef CONFIG_BES2600_TESTMODE
-    .testmode_cmd  = bes2600_testmode_cmd,
+	.testmode_cmd  = bes2600_testmode_cmd,
 #endif
 };
 
@@ -289,6 +290,15 @@ static void bes2600_init_wapi_cipher(struct ieee80211_hw *hw)
 	hw->n_cipher_schemes = 1;
 }
 #endif
+
+static void bes2600_reset_timer_cb(struct timer_list *t)
+{
+	struct bes2600_common *hw_priv = from_timer(hw_priv, t, reset_timer);
+	bes_info("%s: Periodic FW reset\n", __func__);
+	struct wsm_reset reset = { .reset_statistics = true, .link_id = -1 };
+	wsm_reset(hw_priv, &reset, -1);
+	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(1800000));
+}
 
 static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
 {
@@ -323,7 +333,7 @@ static void bes2600_derive_mac(struct bes2600_common *hw_priv)
 
 #ifdef P2P_MULTIVIF
 	memcpy(hw_priv->addresses[2].addr, hw_priv->addresses[1].addr,
-	       ETH_ALEN);
+		   ETH_ALEN);
 	hw_priv->addresses[2].addr[4] ^= 0x80;
 #endif
 }
@@ -542,9 +552,9 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 		hw_priv->hw_bufs_used_vif[i] = 0;
 
 #ifdef MCAST_FWDING
-       for (i = 0; i < WSM_MAX_BUF; i++)
-               wsm_init_release_buffer_request(hw_priv, i);
-       hw_priv->buf_released = 0;
+	   for (i = 0; i < WSM_MAX_BUF; i++)
+			   wsm_init_release_buffer_request(hw_priv, i);
+	   hw_priv->buf_released = 0;
 #endif
 	hw_priv->vif0_throttle = CW12XX_HOST_VIF0_11BG_THROTTLE;
 	hw_priv->vif1_throttle = CW12XX_HOST_VIF1_11BG_THROTTLE;
@@ -650,7 +660,7 @@ static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 	hw_priv->if_limits2[0].types = BIT(NL80211_IFTYPE_STATION);
 
 #ifdef P2P_MULTIVIF
-       hw_priv->if_limits3[0].max = 2;
+	   hw_priv->if_limits3[0].max = 2;
 #else
 	hw_priv->if_limits3[0].max = 1;
 #endif
@@ -658,13 +668,13 @@ static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 	hw_priv->if_limits3[0].types = BIT(NL80211_IFTYPE_STATION);
 	hw_priv->if_limits3[1].max = 1;
 	hw_priv->if_limits3[1].types = BIT(NL80211_IFTYPE_P2P_CLIENT) |
-				      BIT(NL80211_IFTYPE_P2P_GO);
+					  BIT(NL80211_IFTYPE_P2P_GO);
 
 	/* TODO:COMBO: mac80211 doesn't yet support more than 1
 	 * different channel */
 	hw_priv->if_combs[0].num_different_channels = 1;
 #ifdef P2P_MULTIVIF
-        hw_priv->if_combs[0].max_interfaces = 3;
+		hw_priv->if_combs[0].max_interfaces = 3;
 #else
 	hw_priv->if_combs[0].max_interfaces = 2;
 #endif
@@ -674,7 +684,7 @@ static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 	hw_priv->if_combs[1].num_different_channels = 1;
 
 #ifdef P2P_MULTIVIF
-        hw_priv->if_combs[1].max_interfaces = 3;
+		hw_priv->if_combs[1].max_interfaces = 3;
 #else
 	hw_priv->if_combs[1].max_interfaces = 2;
 #endif
@@ -683,7 +693,7 @@ static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 
 	hw_priv->if_combs[2].num_different_channels = 1;
 #ifdef P2P_MULTIVIF
-        hw_priv->if_combs[2].max_interfaces = 3;
+		hw_priv->if_combs[2].max_interfaces = 3;
 #else
 	hw_priv->if_combs[2].max_interfaces = 2;
 #endif
@@ -711,7 +721,7 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 
 	/* Register Interrupt Handler */
 	hw_priv->sbus_ops->irq_subscribe(hw_priv->sbus_priv,
-	        (sbus_irq_handler)bes2600_irq_handler, hw_priv);
+			(sbus_irq_handler)bes2600_irq_handler, hw_priv);
 	hw_priv->hw_type = HIF_8601_SILICON;
 	hw_priv->hw_revision = BES2600_HW_REV_CUT10;
 
@@ -719,9 +729,9 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 }
 
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,
-		      struct sbus_priv *sbus,
-		      struct device *pdev,
-		      struct bes2600_common **pself)
+			  struct sbus_priv *sbus,
+			  struct device *pdev,
+			  struct bes2600_common **pself)
 {
 	int err = -ENOMEM;
 	//u16 ctrl_reg;
@@ -747,6 +757,11 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	hw_priv->wsm_cbc.suspend_resume = bes2600_suspend_resume;
 	/* hw_priv->wsm_cbc.set_pm_complete = bes2600_set_pm_complete_cb; */
 	hw_priv->wsm_cbc.channel_switch = bes2600_channel_switch_cb;
+
+	timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
+	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(1800000));	// 30 mins
+	bes_info("%s: Forced FW reset on probe\n", __func__);
+
 
 	bes2600_pwr_init(hw_priv);
 
@@ -842,7 +857,7 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 			hw_priv->wsm_caps.firmwareReady, 10 * HZ) <= 0) {
 
 		/* TODO: Needs to find how to reset device */
-		/*       in QUEUE mode properly.           */
+		/*		 in QUEUE mode properly.		   */
 		bes_info("startup timeout!!!\n");
 		ret = -ENODEV;
 		goto err;
@@ -913,3 +928,4 @@ err:
 
 	return ret;
 }
+

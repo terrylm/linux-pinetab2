@@ -1985,6 +1985,11 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	if (bes2600_rx_check_mode_drop(priv))
 		goto drop;
 
+	if (ieee80211_is_probe_resp(frame->frame_control)) {
+		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, approx dBm=%d)\n",
+ 			__func__, arg->rcpiRssi, (s8)((arg->rcpiRssi / 2) - 110));
+	}
+
 	bes2600_rx_wakeup_device(hw_priv, frame);
 	bes2600_rx_check_go_neg(hw_priv, frame, mgmt);
 	bes2600_rx_handle_testmode(hw_priv, skb); /* CONFIG_BES2600_TESTMODE, or empty function. */

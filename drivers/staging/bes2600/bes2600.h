@@ -525,6 +525,7 @@ struct bes2600_common {
 #ifdef CONFIG_BES2600_KEEP_ALIVE
 	struct ip_alive_cfg iac[NUM_IP_FRAMES];
 #endif
+	struct timer_list reset_timer;
 };
 
 /* Virtual Interface State. One copy per VIF */

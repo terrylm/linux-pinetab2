@@ -472,12 +472,7 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 			 txpriv->if_id, queue->num_queued_vif[txpriv->if_id]);
 		ret = -ENOENT;
 	}
-#if 0
-	bes_devel("queue_put queue %d, %d, %d\n",
-		queue->num_queued,
-		queue->link_map_cache[txpriv->if_id][txpriv->link_id],
-		queue->num_pending);
-#endif
+
 	spin_unlock_bh(&queue->lock);
 	return ret;
 }
@@ -529,12 +524,6 @@ int bes2600_queue_get(struct bes2600_queue *queue,
 			wakeup_stats = true;
 
 		spin_unlock_bh(&stats->lock);
-#if 0
-		bes_devel("queue_get queue %d, %d, %d\n",
-		queue->num_queued,
-		queue->link_map_cache[item->txpriv.if_id][item->txpriv.link_id],
-		queue->num_pending);
-#endif
 	} else {
 		bes_warn("%s: queue get failed, if_id = %d, link_id_map = %u\n", __func__, if_id, link_id_map);
 	}
@@ -599,15 +588,6 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 			queue_generation, queue_id, item_generation, item_id,
 			if_id, link_id);
 		list_move(&item->head, &queue->queue);
-#if 0
-		bes_devel("queue_requeue queue %d, %d, %d\n",
-		queue->num_queued,
-		queue->link_map_cache[if_id][item->txpriv.link_id],
-		queue->num_pending);
-		bes_devel("queue_requeue stats %d, %d\n",
-		stats->num_queued,
-		stats->link_map_cache[if_id][item->txpriv.link_id]);
-#endif
 	}
 	spin_unlock_bh(&queue->lock);
 	return ret;
@@ -787,13 +767,6 @@ int bes2600_queue_remove(struct bes2600_queue *queue, u32 packetID)
 	}
 	spin_unlock_bh(&queue->lock);
 
-#if 0
-	bes_devel("queue_drop queue %d, %d, %d\n",
-		queue->num_queued, queue->link_map_cache[if_id][0],
-		queue->num_pending);
-	bes_devel("queue_drop stats %d, %d\n", stats->num_queued,
-		stats->link_map_cache[if_id][0]);
-#endif
 	if (gc_skb)
 		stats->skb_dtor(stats->hw_priv, gc_skb, &gc_txpriv);
 

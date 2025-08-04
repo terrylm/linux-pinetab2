@@ -1331,17 +1331,6 @@ struct wsm_start {
 int wsm_start(struct bes2600_common *hw_priv, const struct wsm_start *arg,
 		int if_id);
 
-#if 0
-struct wsm_beacon_transmit {
-	/* 1: enable; 0: disable */
-	/* [in] */ u8 enableBeaconing;
-};
-
-int wsm_beacon_transmit(struct bes2600_common *hw_priv,
-			const struct wsm_beacon_transmit *arg,
-			int if_id);
-#endif
-
 int wsm_start_find(struct bes2600_common *hw_priv, int if_id);
 
 int wsm_stop_find(struct bes2600_common *hw_priv, int if_id);

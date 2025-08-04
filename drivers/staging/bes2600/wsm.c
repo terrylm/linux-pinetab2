@@ -981,32 +981,6 @@ nomem:
 	return -ENOMEM;
 }
 
-#if 0
-/* This API is no longer present in WSC */
-/* ******************************************************************** */
-
-int wsm_beacon_transmit(struct bes2600_common *hw_priv,
-			const struct wsm_beacon_transmit *arg,
-			int if_id)
-{
-	int ret;
-	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
-
-	wsm_cmd_lock(hw_priv);
-
-	WSM_PUT32(buf, arg->enableBeaconing ? 1 : 0);
-
-	ret = wsm_cmd_send(hw_priv, buf, NULL, 0x0018, WSM_CMD_TIMEOUT, if_id);
-
-	wsm_cmd_unlock(hw_priv);
-	return ret;
-
-nomem:
-	wsm_cmd_unlock(hw_priv);
-	return -ENOMEM;
-}
-#endif
-
 /* ******************************************************************** */
 
 int wsm_start_find(struct bes2600_common *hw_priv, int if_id)
@@ -2216,18 +2190,6 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 	int interface_link_id = (id >> 6) & 0x0F;
 	u32 ind_confirm_label = 0x0;  /* wsm to mcu cmd ind & cnfirm label */
 
-#ifdef ROAM_OFFLOAD
-#if 0
-	struct bes2600_vif *priv;
-	priv = cw12xx_hwpriv_to_vifpriv(hw_priv, interface_link_id);
-	if (unlikely(!priv)) {
-		WARN_ON(1);
-		return 0;
-	}
-	spin_unlock(&priv->vif_lock);
-#endif
-#endif/*ROAM_OFFLOAD*/
-
 	/* Strip link id. */
 	id &= ~WSM_TX_LINK_ID(WSM_TX_LINK_ID_MAX);
 
@@ -2673,37 +2635,11 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 	break;
 	case doTx:
 	{
-#if 0
-		/* Kept for history. If you want to implement wsm->more,
-		 * make sure you are able to send a frame after that. */
-		wsm->more = (count > 1) ? 1 : 0;
-		if (wsm->more) {
-			/* HACK!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-			 * It's undocumented in WSM spec, but BES2600 hangs
-			 * if 'more' is set and no TX is performed due to TX
-			 * buffers limitation. */
-			if (priv->hw_bufs_used + 1 ==
-					priv->wsm_caps.numInpChBufs)
-				wsm->more = 0;
-		}
-
-		/* BUG!!! FIXME: we can't use 'more' at all: we don't know
-		 * future. It could be a request from upper layer with TX lock
-		 * requirements (scan, for example). If "more" is set device
-		 * will not send data and wsm_tx_lock() will fail...
-		 * It's not obvious how to fix this deadlock. Any ideas?
-		 * As a workaround more is set to 0. */
-		wsm->more = 0;
-#endif /* 0 */
-
 		if (ieee80211_is_deauth(fctl) &&
 				priv->mode != NL80211_IFTYPE_AP) {
 			/* Shedule unjoin work */
 			bes_devel("[WSM] Issue unjoin command (TX).\n");
 			atomic_set(&priv->connect_in_process, 0);
-#if 0
-			wsm->more = 0;
-#endif /* 0 */
 
 #ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_DISCONNECTING);
@@ -2843,9 +2779,6 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 		for (;;) {
 			int ret;
 			struct bes2600_vif *priv;
-#if 0
-			int num_pending_vif0, num_pending_vif1;
-#endif
 			if (atomic_add_return(0, &hw_priv->tx_lock))
 				break;
 			/* Keep one buffer reserved for commands. Note
@@ -2876,26 +2809,11 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 				break;
 			}
 
-#if 0
-			if (((priv->if_id == 0) &&
-			(hw_priv->hw_bufs_used_vif[0] >=
-						CW12XX_FW_VIF0_THROTTLE)) ||
-			((priv->if_id == 1) &&
-			(hw_priv->hw_bufs_used_vif[1] >=
-						CW12XX_FW_VIF1_THROTTLE))) {
-				spin_unlock(&priv->vif_lock);
-				if (if_pending) {
-					if_pending = 0;
-					continue;
-				}
-				break;
-			}
-#endif
 
 			/* This can be removed probably: bes2600_vif will not
 			 * be in hw_priv->vif_list (as returned from
 			 * wsm_get_interface_for_tx) until it's fully
-			 * enabled, so statement above will take case of that*/
+			 * enabled.*/
 			if (!atomic_read(&priv->enabled)) {
 				spin_unlock(&priv->vif_lock);
 				break;
@@ -3087,15 +3005,6 @@ static struct bes2600_vif
 
 	if (is_hardware_cw1250(hw_priv) || 1 /*TODO:COMBO*/) {
 		spin_lock(&hw_priv->vif_list_lock);
-#if 0
-		bes2600_for_each_vif(hw_priv, i_priv, i) {
-			if (i_priv) {
-				priv = i_priv;
-				spin_lock(&priv->vif_lock);
-				break;
-			}
-		}
-#endif
 		i_priv = hw_priv->vif_list[i] ?
 			cw12xx_get_vif_from_ieee80211(hw_priv->vif_list[i]) : NULL;
 		if (i_priv) {

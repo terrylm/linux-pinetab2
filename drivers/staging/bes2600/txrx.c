@@ -633,64 +633,6 @@ static void bes2600_tx_wapi_shrink_iv_space(struct bes2600_vif *priv,
 }
 #endif
 
-#if 0
-/* IV/ICV injection. */
-/* TODO: Quite unoptimal. It's better co modify mac80211
- * to reserve space for IV */
-static int
-bes2600_tx_h_crypt(struct bes2600_vif *priv,
-		  struct bes2600_txinfo *t)
-{
-	size_t iv_len;
-	size_t icv_len;
-	u8 *icv;
-	u8 *newhdr;
-
-	if (!t->tx_info->control.hw_key ||
-		!(t->hdr->frame_control &
-		 __cpu_to_le32(IEEE80211_FCTL_PROTECTED)))
-		return 0;
-
-	iv_len = t->tx_info->control.hw_key->iv_len;
-	icv_len = t->tx_info->control.hw_key->icv_len;
-
-	if (t->tx_info->control.hw_key->cipher == WLAN_CIPHER_SUITE_TKIP)
-		icv_len += 8; /* MIC */
-
-	if ((skb_headroom(t->skb) + skb_tailroom(t->skb) <
-			 iv_len + icv_len + WSM_TX_EXTRA_HEADROOM) ||
-			(skb_headroom(t->skb) <
-			 iv_len + WSM_TX_EXTRA_HEADROOM)) {
-		wiphy_err(priv->hw->wiphy,
-			"Bug: no space allocated for crypto headers.\n"
-			"headroom: %d, tailroom: %d, "
-			"req_headroom: %d, req_tailroom: %d\n"
-			"Please fix it in bes2600_get_skb().\n",
-			skb_headroom(t->skb), skb_tailroom(t->skb),
-			iv_len + WSM_TX_EXTRA_HEADROOM, icv_len);
-		return -ENOMEM;
-	} else if (skb_tailroom(t->skb) < icv_len) {
-		size_t offset = icv_len - skb_tailroom(t->skb);
-		u8 *p;
-		wiphy_warn(priv->hw->wiphy,
-			"Slowpath: tailroom is not big enough. "
-			"Req: %d, got: %d.\n",
-			icv_len, skb_tailroom(t->skb));
-
-		p = skb_push(t->skb, offset);
-		memmove(p, &p[offset], t->skb->len - offset);
-		skb_trim(t->skb, t->skb->len - offset);
-	}
-
-	newhdr = skb_push(t->skb, iv_len);
-	memmove(newhdr, newhdr + iv_len, t->hdrlen);
-	t->hdr = (struct ieee80211_hdr *) newhdr;
-	t->hdrlen += iv_len;
-	icv = skb_put(t->skb, icv_len);
-
-	return 0;
-}
-#else
 static int
 bes2600_tx_h_crypt(struct bes2600_vif *priv,
 		  struct bes2600_txinfo *t)
@@ -709,7 +651,6 @@ bes2600_tx_h_crypt(struct bes2600_vif *priv,
 
 	return 0;
 }
-#endif
 
 static int
 bes2600_tx_h_align(struct bes2600_vif *priv,
@@ -1120,28 +1061,6 @@ void bes2600_tx(struct ieee80211_hw *dev,
 
 	if (WARN_ON(t.queue >= 4))
 		goto drop;
-
-	/*
-		should not drop packets here, it may cause tx rate decreasing
-		tx flow control will be handled in bes2600_queue_put
-	*/
-#if 0
-	spin_lock_bh(&hw_priv->tx_queue[t.queue].lock);
-
-	if ((priv->if_id == 0) &&
-		(hw_priv->tx_queue[t.queue].num_queued_vif[0] >=
-			hw_priv->vif0_throttle)) {
-		spin_unlock_bh(&hw_priv->tx_queue[t.queue].lock);
-		goto drop;
-	} else if ((priv->if_id == 1) &&
-		(hw_priv->tx_queue[t.queue].num_queued_vif[1] >=
-			hw_priv->vif1_throttle)) {
-		spin_unlock_bh(&hw_priv->tx_queue[t.queue].lock);
-		goto drop;
-	}
-
-	spin_unlock_bh(&hw_priv->tx_queue[t.queue].lock);
-#endif
 
 	ret = bes2600_tx_h_calc_link_ids(priv, &t);
 	if (ret)
@@ -1970,7 +1889,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 	if (ieee80211_is_probe_resp(frame->frame_control)) {
 		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, approx dBm=%d)\n",
- 			__func__, arg->rcpiRssi, ((s8)arg->rcpiRssi - 256));
+ 			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
 	}
 
 	bes2600_rx_wakeup_device(hw_priv, frame);

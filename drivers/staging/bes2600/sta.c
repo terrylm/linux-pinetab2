@@ -797,13 +797,7 @@ void bes2600_configure_filter(struct ieee80211_hw *hw,
 {
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, 0);
-#if 0
-	bool listening = !!(*total_flags &
-			(FIF_PROMISC_IN_BSS |
-			 FIF_OTHER_BSS |
-			 FIF_BCN_PRBRESP_PROMISC |
-			 FIF_PROBE_REQ));
-#endif
+
 	*total_flags &= FIF_OTHER_BSS |
 			FIF_FCSFAIL |
 			FIF_BCN_PRBRESP_PROMISC |
@@ -819,14 +813,6 @@ void bes2600_configure_filter(struct ieee80211_hw *hw,
 		priv->rx_filter.fcs = (*total_flags & FIF_FCSFAIL) ? 1 : 0;
 		priv->bf_control.bcn_count = __cpu_to_le32((*total_flags &
 				(FIF_BCN_PRBRESP_PROMISC | FIF_PROBE_REQ)) ? 1 : 0);
-#if 0
-		if (priv->listening ^ listening) {
-			priv->listening = listening;
-			wsm_lock_tx(hw_priv);
-			bes2600_update_listening(priv, listening);
-			wsm_unlock_tx(hw_priv);
-		}
-#endif
 		bes2600_update_filtering(priv);
 		up(&hw_priv->conf_lock);
 		up(&hw_priv->scan.lock);
@@ -874,12 +860,6 @@ int bes2600_conf_tx(struct ieee80211_hw *dev, struct ieee80211_vif *vif,
 
 		if (priv->mode == NL80211_IFTYPE_STATION) {
 			ret = bes2600_set_uapsd_param(priv, &priv->edca);
-			#if 0
-			if (!ret && priv->setbssparams_done &&
-				(priv->join_status == BES2600_JOIN_STATUS_STA) &&
-				(old_uapsdFlags != priv->uapsd_info.uapsdFlags))
-				bes2600_set_pm(priv, &priv->powersave_mode);
-			#endif
 		}
 	} else
 		ret = -EINVAL;
@@ -2625,11 +2605,6 @@ void bes2600_ba_timer(struct timer_list *t)
 		if (ba_ena || ++hw_priv->ba_hist >= BES2600_BLOCK_ACK_HIST) {
 			hw_priv->ba_ena = ba_ena;
 			hw_priv->ba_hist = 0;
-#if 0
-			bes_devel("[STA] %s block ACK:\n",
-				ba_ena ? "enable" : "disable");
-			queue_work(hw_priv->workqueue, &hw_priv->ba_work);
-#endif
 		}
 	} else if (hw_priv->ba_hist)
 		--hw_priv->ba_hist;
@@ -2883,39 +2858,6 @@ exit_p:
 	return ret;
 }
 
-#if 0
-/**
- * bes2600_set_multicastaddrfilter -called when tesmode command
- * is for setting the ipv4 address filter
- *
- * @hw: the hardware
- * @data: incoming data
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_set_multicastfilter(struct bes2600_common *hw_priv, struct bes2600_vif *priv, u8 *data)
-{
-	u8 i = 0;
-	int ret = 0;
-
-	memset(&priv->multicast_filter, 0, sizeof(priv->multicast_filter));
-	priv->multicast_filter.enable = (u32)data[0];
-	priv->multicast_filter.numOfAddresses = (u32)data[1];
-
-	for (i = 0; i < priv->multicast_filter.numOfAddresses; i++) {
-		memcpy(&priv->multicast_filter.macAddress[i], \
-			   &data[2+(i*ETH_ALEN)], ETH_ALEN);
-	}
-	/* Configure the multicast mib in case of drop all multicast */
-	if (priv->multicast_filter.enable != 2)
-		return ret;
-
-	ret = wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_GROUP_ADDRESSES_TABLE, \
-		&priv->multicast_filter, sizeof(priv->multicast_filter), priv->if_id);
-
-	return ret;
-}
-#endif
 
 #ifdef IPV6_FILTERING
 /**

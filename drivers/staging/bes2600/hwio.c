@@ -55,14 +55,6 @@ static int __bes2600_reg_write(u16 addr, const void *buf, size_t buf_len, int bu
 	u16 addr_sdio;
 	u32 sdio_reg_addr_17bit ;
 
-#if 0
-	/* Check if buffer is aligned to 4 byte boundary */
-	if (WARN_ON(((unsigned long)buf & 3) && (buf_len > 4))) {
-		bes_devel("%s: buffer is not aligned.\n", __func__);
-		return -EINVAL;
-	}
-#endif
-
 	/* Convert to SDIO Register Address */
 	addr_sdio = SPI_REG_ADDR_TO_SDIO(addr);
 	sdio_reg_addr_17bit = SDIO_ADDR17BIT(buf_id, 0, 0, addr_sdio);

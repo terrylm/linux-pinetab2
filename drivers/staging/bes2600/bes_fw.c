@@ -626,13 +626,6 @@ retry:
 			length = tx_size - sizeof(struct fw_msg_hdr_t);
 		}
 
-#if 0 // for SDIO_USE_V2
-		if (length + sizeof(struct fw_msg_hdr_t) > func->cur_blksize) {
-			length = (length + sizeof(struct fw_msg_hdr_t)) / func->cur_blksize * func->cur_blksize;
-			length -= sizeof(struct fw_msg_hdr_t);
-		}
-#endif
-
 		header.type = FRAME_HEADER_DOWNLOAD_DATA;
 		header.seq = frame_num;
 		header.len = length;

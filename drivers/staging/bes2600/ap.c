@@ -816,31 +816,6 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 					wsm_unlock_tx(hw_priv);
 			}
 
-#if 0
-			/* It's better to override internal TX rete; otherwise
-			 * device sends RTS at too high rate. However device
-			 * can't receive CTS at 1 and 2 Mbps. Well, 5.5 is a
-			 * good choice for RTS/CTS, but that means PS poll
-			 * will be sent at the same rate - impact on link
-			 * budget. Not sure what is better.. */
-
-			/* Update: internal rate selection algorythm is not
-			 * bad: if device is not receiving CTS at high rate,
-			 * it drops RTS rate.
-			 * So, conclusion: if-0 the code. Keep code just for
-			 * information:
-			 * Do not touch WSM_MIB_ID_OVERRIDE_INTERNAL_TX_RATE! */
-
-			/* ~3 is a bug in device: RTS/CTS is not working at
-			 * low rates */
-
-			__le32 internal_tx_rate = __cpu_to_le32(__ffs(
-				priv->association_mode.basicRateSet & ~3));
-			WARN_ON(wsm_write_mib(priv,
-				WSM_MIB_ID_OVERRIDE_INTERNAL_TX_RATE,
-				&internal_tx_rate,
-				sizeof(internal_tx_rate)));
-#endif
 		} else {
 #ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 			if (changed & BSS_CHANGED_ASSOC)
@@ -882,12 +857,6 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		struct wsm_rcpi_rssi_threshold threshold = {
 			.rollingAverageCount = 8,
 		};
-
-#if 0
-		/* For verification purposes */
-		info->cqm_rssi_thold = -50;
-		info->cqm_rssi_hyst = 4;
-#endif /* 0 */
 
 		bes_devel("[CQM] RSSI threshold "
 			"subscribe: %d +- %d\n",
@@ -1458,47 +1427,15 @@ static int bes2600_upload_qosnull(struct bes2600_vif *priv)
 	return ret;
 }
 
-/* This API is nolonegr present in WSC */
-#if 0
-static int bes2600_enable_beaconing(struct bes2600_vif *priv,
-				   bool enable)
-{
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-	struct wsm_beacon_transmit transmit = {
-		.enableBeaconing = enable,
-	};
-
-	return wsm_beacon_transmit(hw_priv, &transmit, priv->if_id);
-}
-#endif
 
 static int start_dhcpd(void)
 {
-#if 0
-	volatile int result=0;
-	char cmdPath[]="/bin/bash";
-	char cmdText[128];
-	char* cmdArgv[]={cmdPath, "-c", cmdText, NULL};
-	char* cmdArgv2[]={cmdPath, "-c", "/usr/sbin/dhcpd >> /tmp/log", NULL};
-	char* cmdEnvp[]={"HOME=/", "PATH=/sbin:/bin:/usr/bin:/usr/sbin", NULL};
-	static int ifname_id = 0;
-
-	snprintf(cmdText, 128, "/sbin/ifconfig p2p-wlan0-%d 192.168.50.1/24 up >> /tmp/log2", ifname_id);
-	ifname_id++;
-
-	result=call_usermodehelper(cmdPath,cmdArgv,cmdEnvp, UMH_WAIT_EXEC);
-	msleep(100);
-	result=call_usermodehelper(cmdPath,cmdArgv2,cmdEnvp, UMH_WAIT_EXEC);
-	//msleep(100);
-	//result=call_usermodehelper(cmdPath,cmdArgv3,cmdEnvp, UMH_WAIT_EXEC);
-#else
 	volatile int result=0;
 	char cmdPath[]="/bin/bash";
 	char* cmdArgv[]={cmdPath, "-c", "/usr/bin/start_dhcpd > /tmp/log", NULL};
 	char* cmdEnvp[]={"HOME=/", "PATH=/sbin:/bin:/usr/bin:/usr/sbin", NULL};
 
 	result=call_usermodehelper(cmdPath,cmdArgv,cmdEnvp, UMH_WAIT_EXEC);
-#endif
 	bes_devel( "testDriver1 _init exec! The result of call_usermodehelper is %d\n",result);
 	bes_devel( "testDriver1 _init exec! The process is \"%s\",pid is %d\n",current->comm,current->pid);
 

@@ -2467,9 +2467,7 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 				   struct bes2600_queue *queue)
 {
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-#ifdef P2P_MULTIVIF
 	struct bes2600_vif *p2p_if_vif = NULL;
-#endif
 	bool handled = false;
 	const struct ieee80211_hdr *frame =
 		(struct ieee80211_hdr *) &((u8 *)wsm)[txpriv->offset];
@@ -2484,10 +2482,9 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 	} action = doTx;
 
 	hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-#ifdef P2P_MULTIVIF
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		p2p_if_vif = __cw12xx_hwpriv_to_vifpriv(hw_priv, 2);
-#endif
+
 	frame =  (struct ieee80211_hdr *) &((u8 *)wsm)[txpriv->offset];
 	fctl  = frame->frame_control;
 
@@ -2506,7 +2503,6 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			(priv->join_status <= BES2600_JOIN_STATUS_MONITOR) ||
 			memcmp(frame->addr1, priv->join_bssid,
 				sizeof(priv->join_bssid)))) {
-#ifdef P2P_MULTIVIF
 			if (p2p_if_vif && (p2p_if_vif->join_status >
 				BES2600_JOIN_STATUS_MONITOR)
 					&& (priv->join_status
@@ -2519,9 +2515,8 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 					*/
 				action = doTx;
 				txpriv->raw_if_id = 0;
-			} else
-#endif
-			if (ieee80211_is_auth(fctl))
+			}
+			else if (ieee80211_is_auth(fctl))
 				action = doJoin;
 			else if (ieee80211_is_probe_req(fctl))
 				action = doTx;
@@ -2818,9 +2813,7 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 	int queue_num;
 	u32 tx_allowed_mask = 0;
 	struct bes2600_txpriv *txpriv = NULL;
-#ifdef P2P_MULTIVIF
 	int first = 1;
-#endif
 	/*
 	 * Count was intended as an input for wsm->more flag.
 	 * During implementation it was found that wsm->more
@@ -2828,11 +2821,7 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 	 * in case you would like to try to implement it again.
 	 */
 	int count = 0;
-#ifdef P2P_MULTIVIF
 	int if_pending = CW12XX_MAX_VIFS - 1;
-#else
-	int if_pending = 1;
-#endif
 
 	/* More is used only for broadcasts. */
 	bool more = false;
@@ -2865,31 +2854,23 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 			if (hw_priv->hw_bufs_used >=
 					hw_priv->wsm_caps.numInpChBufs)
 				break;
-#ifdef P2P_MULTIVIF
+
 			if (first) {
 				first = 0;
 				hw_priv->if_id_selected = 0;
 			}
-#endif
+
 			priv = wsm_get_interface_for_tx(hw_priv);
 			/* go to next interface ID to select next packet */
-#ifdef P2P_MULTIVIF
 			hw_priv->if_id_selected++;
 			if(hw_priv->if_id_selected > 2)
 				hw_priv->if_id_selected = 0;
-#else
-				hw_priv->if_id_selected ^= 1;
-#endif
 
 			/* There might be no interface before add_interface
 			 * call */
 			if (!priv) {
 				if (if_pending) {
-#ifdef P2P_MULTIVIF
 					if_pending--;
-#else
-					if_pending = 0;
-#endif
 					continue;
 				}
 				break;
@@ -2943,16 +2924,8 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 
 			if (ret) {
 				spin_unlock(&priv->vif_lock);
-#ifdef P2P_MULTIVIF
 				if (if_pending) {
-#else
-				if (if_pending == 1) {
-#endif
-#ifdef P2P_MULTIVIF
 					if_pending--;
-#else
-					if_pending = 0;
-#endif
 					continue;
 				}
 				break;
@@ -2966,19 +2939,6 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 				if_pending = 0;
 				continue;
 			}
-#ifndef P2P_MULTIVIF
-			{
-				struct ieee80211_hdr *hdr =
-				(struct ieee80211_hdr *)
-					&((u8 *)wsm)[txpriv->offset];
-
-				bes_devel("QGET-1 %x, off_id %d,"
-						   " if_id %d\n",
-						hdr->frame_control,
-						txpriv->offchannel_if_id,
-						priv->if_id);
-			}
-#endif
 			if (wsm_handle_tx_data(priv, wsm,
 					tx_info, txpriv, queue)) {
 				spin_unlock(&priv->vif_lock);
@@ -2988,15 +2948,10 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 
 			wsm->hdr.id &= __cpu_to_le16(
 					~WSM_TX_IF_ID(WSM_TX_IF_ID_MAX));
-#ifdef P2P_MULTIVIF
+
 			if (txpriv->raw_if_id)
 				wsm->hdr.id |= cpu_to_le16(
 					WSM_TX_IF_ID(txpriv->raw_if_id));
-#else
-			if (txpriv->offchannel_if_id)
-				wsm->hdr.id |= cpu_to_le16(
-					WSM_TX_IF_ID(txpriv->offchannel_if_id));
-#endif
 			else
 				wsm->hdr.id |= cpu_to_le16(
 					WSM_TX_IF_ID(priv->if_id));

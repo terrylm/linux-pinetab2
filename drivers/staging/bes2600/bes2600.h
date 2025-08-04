@@ -26,11 +26,7 @@
 #include <linux/atomic.h>
 #include <linux/usb.h>
 #include <net/mac80211.h>
-#ifdef P2P_MULTIVIF
 #define CW12XX_MAX_VIFS			(3)
-#else
-#define CW12XX_MAX_VIFS			(2)
-#endif
 #define CW12XX_GENERIC_IF_ID		(2)
 #define CW12XX_HOST_VIF0_11N_THROTTLE	(63)
 #define CW12XX_HOST_VIF1_11N_THROTTLE	(63)
@@ -237,11 +233,7 @@ struct bes2600_start_stop_tsm {
 #define KLV_VENDOR_XM			1
 #define WEBSOCKET_HD_LEN		6
 
-#ifdef P2P_MULTIVIF
 #define NET_DEVICE_NUM (3)
-#else
-#define NET_DEVICE_NUM (2)
-#endif
 
 struct ip_header {
 	/* version / header length */

@@ -199,9 +199,7 @@ static const struct ieee80211_iface_limit bes2600_if_limits[] = {
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_AP) |
 				 BIT(NL80211_IFTYPE_P2P_CLIENT) |
 				 BIT(NL80211_IFTYPE_P2P_GO) },
-#ifdef P2P_MULTIVIF
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_P2P_DEVICE) },
-#endif
 };
 
 
@@ -331,11 +329,9 @@ static void bes2600_derive_mac(struct bes2600_common *hw_priv)
 	memcpy(hw_priv->addresses[1].addr, hw_priv->addresses[0].addr, ETH_ALEN);
 	hw_priv->addresses[1].addr[5] = hw_priv->addresses[0].addr[5] + 1;
 
-#ifdef P2P_MULTIVIF
 	memcpy(hw_priv->addresses[2].addr, hw_priv->addresses[1].addr,
 		   ETH_ALEN);
 	hw_priv->addresses[2].addr[4] ^= 0x80;
-#endif
 }
 
 static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
@@ -405,9 +401,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 					  BIT(NL80211_IFTYPE_MESH_POINT) |
 					  BIT(NL80211_IFTYPE_P2P_CLIENT) |
 					  BIT(NL80211_IFTYPE_P2P_GO);
-#ifdef P2P_MULTIVIF
 	hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_P2P_DEVICE);
-#endif
 
 	/* Support only for limited wowlan functionalities */
 #ifdef CONFIG_PM
@@ -642,28 +636,15 @@ static void bes2600_unregister_common(struct ieee80211_hw *dev)
 static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 				 struct ieee80211_hw *hw)
 {
-#ifdef P2P_MULTIVIF
 	hw_priv->if_limits1[0].max = 2;
-#else
-	hw_priv->if_limits1[0].max = 1;
-#endif
-
 	hw_priv->if_limits1[0].types = BIT(NL80211_IFTYPE_STATION);
 	hw_priv->if_limits1[1].max = 1;
 	hw_priv->if_limits1[1].types = BIT(NL80211_IFTYPE_AP);
 
-#ifdef P2P_MULTIVIF
 	hw_priv->if_limits2[0].max = 3;
-#else
-	hw_priv->if_limits2[0].max = 2;
-#endif
 	hw_priv->if_limits2[0].types = BIT(NL80211_IFTYPE_STATION);
 
-#ifdef P2P_MULTIVIF
-	   hw_priv->if_limits3[0].max = 2;
-#else
-	hw_priv->if_limits3[0].max = 1;
-#endif
+	hw_priv->if_limits3[0].max = 2;
 
 	hw_priv->if_limits3[0].types = BIT(NL80211_IFTYPE_STATION);
 	hw_priv->if_limits3[1].max = 1;
@@ -673,30 +654,18 @@ static void cw12xx_set_ifce_comb(struct bes2600_common *hw_priv,
 	/* TODO:COMBO: mac80211 doesn't yet support more than 1
 	 * different channel */
 	hw_priv->if_combs[0].num_different_channels = 1;
-#ifdef P2P_MULTIVIF
-		hw_priv->if_combs[0].max_interfaces = 3;
-#else
-	hw_priv->if_combs[0].max_interfaces = 2;
-#endif
+	hw_priv->if_combs[0].max_interfaces = 3;
 	hw_priv->if_combs[0].limits = hw_priv->if_limits1;
 	hw_priv->if_combs[0].n_limits = 2;
 
 	hw_priv->if_combs[1].num_different_channels = 1;
 
-#ifdef P2P_MULTIVIF
-		hw_priv->if_combs[1].max_interfaces = 3;
-#else
-	hw_priv->if_combs[1].max_interfaces = 2;
-#endif
+	hw_priv->if_combs[1].max_interfaces = 3;
 	hw_priv->if_combs[1].limits = hw_priv->if_limits2;
 	hw_priv->if_combs[1].n_limits = 1;
 
 	hw_priv->if_combs[2].num_different_channels = 1;
-#ifdef P2P_MULTIVIF
-		hw_priv->if_combs[2].max_interfaces = 3;
-#else
-	hw_priv->if_combs[2].max_interfaces = 2;
-#endif
+	hw_priv->if_combs[2].max_interfaces = 3;
 	hw_priv->if_combs[2].limits = hw_priv->if_limits3;
 	hw_priv->if_combs[2].n_limits = 2;
 

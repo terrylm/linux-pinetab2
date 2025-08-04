@@ -530,15 +530,6 @@ static int
 bes2600_tx_h_calc_link_ids(struct bes2600_vif *priv,
 			  struct bes2600_txinfo *t)
 {
-#ifndef P2P_MULTIVIF
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-	if ((t->tx_info->flags & IEEE80211_TX_CTL_TX_OFFCHAN) ||
-			(hw_priv->roc_if_id == priv->if_id))
-		t->txpriv.offchannel_if_id = 2;
-	else
-		t->txpriv.offchannel_if_id = 0;
-#endif
-
 	if (likely(t->sta && t->sta_priv->link_id))
 		t->txpriv.raw_link_id =
 				t->txpriv.link_id =
@@ -1070,9 +1061,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 		.hdr = (struct ieee80211_hdr *)skb->data,
 		.txpriv.tid = BES2600_MAX_TID,
 		.txpriv.rate_id = BES2600_INVALID_RATE_ID,
-#ifdef P2P_MULTIVIF
 		.txpriv.raw_if_id = 0,
-#endif
 	};
 	struct ieee80211_sta *sta;
 	struct wsm_tx *wsm;
@@ -1380,12 +1369,6 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 		u8 ht_flags = 0;
 		int i;
 
-#ifndef P2P_MULTIVIF
-		if (txpriv->offchannel_if_id)
-			bes_devel("TX CONFIRM %x - %d - %d\n",
-				skb->data[txpriv->offset],
-				txpriv->offchannel_if_id, arg->status);
-#endif
 		if (priv->association_mode.greenfieldMode)
 			ht_flags |= IEEE80211_TX_RC_GREEN_FIELD;
 
@@ -1987,7 +1970,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 	if (ieee80211_is_probe_resp(frame->frame_control)) {
 		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, approx dBm=%d)\n",
- 			__func__, arg->rcpiRssi, (s8)((arg->rcpiRssi / 2) - 110));
+ 			__func__, arg->rcpiRssi, ((s8)arg->rcpiRssi - 256));
 	}
 
 	bes2600_rx_wakeup_device(hw_priv, frame);

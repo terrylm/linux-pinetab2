@@ -281,12 +281,9 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 
 #ifdef ROAM_OFFLOAD
 	bes2600_for_each_vif(hw_priv, priv, i) {
-#ifdef P2P_MULTIVIF
 		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
-#else
-		if (!priv || !priv->vif) /* Added priv->vif check */
-#endif
 			continue;
+
 		if ((priv->vif->type == NL80211_IFTYPE_STATION)
 			&& (priv->join_status == BES2600_JOIN_STATUS_STA)) {
 			down(&hw_priv->scan.lock);
@@ -349,11 +346,7 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 
 	/* set filters and offload based on interface */
 	bes2600_for_each_vif(hw_priv, priv, i) {
-#ifdef P2P_MULTIVIF
 		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
-#else
-		if (!priv || !priv->vif) /* Added priv->vif check */
-#endif
 			continue;
 
 		ret = __bes2600_wow_suspend(priv, wowlan);
@@ -500,12 +493,9 @@ int bes2600_wow_resume(struct ieee80211_hw *hw)
 
 	/* set filters and offload based on interface */
 	bes2600_for_each_vif(hw_priv, priv, i) {
-#ifdef P2P_MULTIVIF
 		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
-#else
-		if (!priv || !priv->vif) /* Added priv->vif check */
-#endif
 			continue;
+
 		ret = __bes2600_wow_resume(priv);
 		if (ret)
 			break;

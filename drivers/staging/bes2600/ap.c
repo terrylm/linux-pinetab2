@@ -68,9 +68,7 @@ int bes2600_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	struct sk_buff *skb;
 	struct bes2600_common *hw_priv = hw->priv;
 
-#ifdef P2P_MULTIVIF
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
-#endif
 
 	bes_devel( "%s mode:%u, MFP:%u\n",
 		__FUNCTION__, priv->mode, sta->mfp);
@@ -123,9 +121,7 @@ int bes2600_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct bes2600_link_entry *entry;
 
-#ifdef P2P_MULTIVIF
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
-#endif
 
 	bes_devel( "%s mode:%u\n", __FUNCTION__, priv->mode);
 
@@ -211,9 +207,8 @@ void bes2600_sta_notify(struct ieee80211_hw *dev,
 	struct bes2600_sta_priv *sta_priv =
 		(struct bes2600_sta_priv *)&sta->drv_priv;
 
-#ifdef P2P_MULTIVIF
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
-#endif
+
 	spin_lock_bh(&priv->ps_state_lock);
 	__bes2600_sta_notify(priv, notify_cmd, sta_priv->link_id);
 	spin_unlock_bh(&priv->ps_state_lock);
@@ -289,9 +284,7 @@ int bes2600_set_tim(struct ieee80211_hw *dev, struct ieee80211_sta *sta,
 		(struct bes2600_sta_priv *)&sta->drv_priv;
 	struct bes2600_vif *priv = sta_priv->priv;
 
-#ifdef P2P_MULTIVIF
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
-#endif
 	WARN_ON(priv->mode != NL80211_IFTYPE_AP);
 	queue_work(priv->hw_priv->workqueue, &priv->set_tim_work);
 	return 0;
@@ -398,10 +391,9 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	const u8 override_fpsm_timeout = BES2600_FASTPS_IDLE_TIME;
 	struct ieee80211_vif_cfg *cfg = &vif->cfg;
 
-#ifdef P2P_MULTIVIF
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		return;
-#endif
+
 	bes_devel( "BSS CHANGED:	%08llx\n", changed);
 	down(&hw_priv->conf_lock);
 	if (changed & BSS_CHANGED_BSSID) {
@@ -693,12 +685,10 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 			//rcu_read_unlock();
 			priv->htcap = (sta && bes2600_is_ht(&hw_priv->ht_info));
 			bes2600_for_each_vif(hw_priv, tmp_priv, i) {
-#ifdef P2P_MULTIVIF
+
 				if ((i == (CW12XX_MAX_VIFS - 1)) || !tmp_priv)
-#else
-				if (!tmp_priv)
-#endif
 					continue;
+
 				if (tmp_priv->join_status >= BES2600_JOIN_STATUS_STA)
 					is_combo++;
 			}
@@ -1541,10 +1531,9 @@ static int bes2600_start_ap(struct bes2600_vif *priv)
 		.probeDelay = 100,
 		.basicRateSet = bes2600_rate_mask_to_wsm(hw_priv,
 				conf->basic_rates),
-#ifdef P2P_MULTIVIF
+
 		.CTWindow = priv->if_id ? 0xFFFFFFFF : 0, /* it makes addr1's byte4 ^0x80 in firmware,
 			which matches with driver's addr2 */
-#endif
 	};
 
 	struct wsm_switch_channel channel = {

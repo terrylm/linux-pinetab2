@@ -561,11 +561,7 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 				&item_generation, &item_id, &if_id, &link_id);
 
 	item = &queue->pool[item_id];
-#ifdef P2P_MULTIVIF
 	if (check && item->txpriv.if_id == CW12XX_GENERIC_IF_ID) {
-#else
-	if (check && item->txpriv.offchannel_if_id == CW12XX_GENERIC_IF_ID) {
-#endif
 		bes_devel("Requeued frame dropped for generic interface id.\n");
 #ifdef CONFIG_BES2600_TESTMODE
 		bes2600_queue_remove(hw_priv, queue, packetID);
@@ -574,11 +570,6 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 #endif
 		return 0;
 	}
-
-#ifndef P2P_MULTIVIF
-	if (!check)
-		item->txpriv.offchannel_if_id = CW12XX_GENERIC_IF_ID;
-#endif
 
 	/*if_id = item->txpriv.if_id;*/
 
@@ -632,11 +623,7 @@ int bes2600_sw_retry_requeue(struct bes2600_common *hw_priv,
 	bes2600_queue_parse_id(packetID, &queue_generation, &queue_id,
 				&item_generation, &item_id, &if_id, &link_id);
 	item = &queue->pool[item_id];
-#ifdef P2P_MULTIVIF
 	if (check && item->txpriv.if_id == CW12XX_GENERIC_IF_ID) {
-#else
-	if (check && item->txpriv.offchannel_if_id == CW12XX_GENERIC_IF_ID) {
-#endif
 		bes_devel("Requeued frame dropped for generic interface id.\n");
 #ifdef CONFIG_BES2600_TESTMODE
 		bes2600_queue_remove(hw_priv, queue, packetID);
@@ -646,10 +633,6 @@ int bes2600_sw_retry_requeue(struct bes2600_common *hw_priv,
 		return 0;
 	}
 
-#ifndef P2P_MULTIVIF
-	if (!check)
-		item->txpriv.offchannel_if_id = CW12XX_GENERIC_IF_ID;
-#endif
 	/*if_id = item->txpriv.if_id;*/
 	spin_lock_bh(&queue->lock);
 	BUG_ON(queue_id != queue->queue_id);

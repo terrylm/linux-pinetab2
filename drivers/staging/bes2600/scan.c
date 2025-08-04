@@ -142,12 +142,7 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 	atomic_set(&hw_priv->recent_scan, 1);
 	queue_delayed_work(hw_priv->workqueue, &hw_priv->scan.timeout, tmo * HZ / 1000);
 
-#ifdef P2P_MULTIVIF
 	ret = wsm_scan(hw_priv, scan, 0);
-#else
-	ret = wsm_scan(hw_priv, scan, priv->if_id);
-#endif
-
 	if (unlikely(ret)) {
 		atomic_set(&hw_priv->scan.in_progress, 0);
 		cancel_delayed_work_sync(&hw_priv->scan.timeout);
@@ -207,12 +202,7 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 		int ret=0; /* Initialize ret */
 		//if (priv->if_id == 0)
 		//	bes2600_remove_wps_p2p_ie(&frame);
-#ifdef P2P_MULTIVIF
 		ret = wsm_set_template_frame(hw_priv, &frame, 0);
-#else
-		ret = wsm_set_template_frame(hw_priv, &frame, priv->if_id);
-#endif
-
 		if (ret) {
 			up(&hw_priv->conf_lock);
 			up(&hw_priv->scan.lock);
@@ -281,14 +271,10 @@ static void bes2600_scan_update_vif_flags(struct bes2600_common *hw_priv, struct
     int i;
 
     bes2600_for_each_vif(hw_priv, vif, i) {
-#ifdef P2P_MULTIVIF
-	if (i == (CW12XX_MAX_VIFS - 1) || !vif)
-#else
-	if (!vif)
-#endif
-	    continue;
-	if (vif->bss_loss_status > BES2600_BSS_LOSS_NONE)
-	    scan->scanFlags |= WSM_SCAN_FLAG_FORCE_BACKGROUND;
+		if (i == (CW12XX_MAX_VIFS - 1) || !vif)
+	    	continue;
+		if (vif->bss_loss_status > BES2600_BSS_LOSS_NONE)
+	    	scan->scanFlags |= WSM_SCAN_FLAG_FORCE_BACKGROUND;
     }
 }
 

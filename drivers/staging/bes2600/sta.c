@@ -285,17 +285,9 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
-printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
+	printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
 	   vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
 
-#ifndef P2P_MULTIVIF
-	int i;
-
-	if (atomic_read(&hw_priv->num_vifs) >= CW12XX_MAX_VIFS) {
-		bes_err("%s %d.",__func__, __LINE__);
-		return -EOPNOTSUPP;
-	}
-#endif
 	bes_devel(" !!! %s: type %d p2p %d addr %pM\n", __func__, vif->type, vif->p2p, vif->addr);
 
 	priv = cw12xx_get_vif_from_ieee80211(vif);
@@ -311,7 +303,6 @@ printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\
 	spin_lock(&hw_priv->vif_list_lock);
 
 	if (atomic_read(&hw_priv->num_vifs) < CW12XX_MAX_VIFS) {
-#ifdef P2P_MULTIVIF
 		if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
 			if (hw_priv->vif_list[0]) {
 				bes_err("VIF if_id=0 already in use for addr[0]=%pM\n",
@@ -340,7 +331,7 @@ printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\
 			}
 			priv->if_id = 1;
 		} else {
-			static int vif_attempts;
+			static int vif_attempts=0;
 			if (vif_attempts++ > 3) {
 				bes_err("Too many VIF creation attempts (%d)\n", vif_attempts);
 				spin_unlock(&hw_priv->vif_list_lock);
@@ -368,18 +359,6 @@ printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\
 			}
 		}
 
-#else
-		for (i = 0; i < CW12XX_MAX_VIFS; i++)
-			if (!memcmp(vif->addr, hw_priv->addresses[i].addr,
-						ETH_ALEN))
-				break;
-		if (i == CW12XX_MAX_VIFS) {
-			spin_unlock(&hw_priv->vif_list_lock);
-			up(&hw_priv->conf_lock);
-			return -EINVAL;
-		}
-		priv->if_id = i;
-#endif
 		priv->hw_priv = hw_priv;
 		priv->hw = dev;
 		priv->vif = vif;
@@ -459,12 +438,9 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 		reset.link_id = 0;
 		wsm_reset(hw_priv, &reset, priv->if_id);
 		bes2600_for_each_vif(hw_priv, tmp_priv, i) {
-#ifdef P2P_MULTIVIF
 			if ((i == (CW12XX_MAX_VIFS - 1)) || !tmp_priv)
-#else
-			if (!tmp_priv)
-#endif
 				continue;
+
 			if ((tmp_priv->join_status == BES2600_JOIN_STATUS_STA) && tmp_priv->htcap)
 				is_htcapie = true;
 		}
@@ -870,10 +846,9 @@ int bes2600_conf_tx(struct ieee80211_hw *dev, struct ieee80211_vif *vif,
 	if (WARN_ON(!priv))
 		return -EOPNOTSUPP;
 
-#ifdef P2P_MULTIVIF
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		return 0;
-#endif
+
 	down(&hw_priv->conf_lock);
 
 	if (queue < dev->queues) {
@@ -964,9 +939,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct wsm_protected_mgmt_policy mgmt_policy;
 
-#ifdef P2P_MULTIVIF
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
-#endif
 	memset(&mgmt_policy, 0, sizeof(mgmt_policy));
 	down(&hw_priv->conf_lock);
 	bes_devel("%s, cmd:%d cipher:0x%08x idx:%d\n",
@@ -2311,9 +2284,7 @@ void bes2600_join_work(struct work_struct *work)
 
 		if (priv->vif->p2p) {
 			join.flags |= WSM_JOIN_FLAGS_P2P_GO;
-#ifdef P2P_MULTIVIF
 			join.flags |= (1 << 6);
-#endif
 			join.basicRateSet =
 				bes2600_rate_mask_to_wsm(hw_priv, 0xFF0);
 		}
@@ -2354,11 +2325,7 @@ void bes2600_join_work(struct work_struct *work)
 		/* avoid lmac assert when wpa_supplicant connect to ap without scan */
 		probe_tmp.skb = ieee80211_probereq_get(hw_priv->hw, priv->vif->addr, NULL, 0, 0);
 		if (probe_tmp.skb) {
-#ifdef P2P_MULTIVIF
 			wsm_set_template_frame(hw_priv, &probe_tmp, 0);
-#else
-			wsm_set_template_frame(hw_priv, &probe_tmp, priv->if_id);
-#endif
 			dev_kfree_skb(probe_tmp.skb);
 		}
 
@@ -2485,12 +2452,9 @@ void bes2600_unjoin_work(struct work_struct *work)
 			sizeof(priv->firmware_ps_mode));
 		priv->htcap = false;
 		bes2600_for_each_vif(hw_priv, tmp_priv, i) {
-#ifdef P2P_MULTIVIF
 			if ((i == (CW12XX_MAX_VIFS - 1)) || !tmp_priv)
-#else
-			if (!tmp_priv)
-#endif
 				continue;
+
 			if ((tmp_priv->join_status == BES2600_JOIN_STATUS_STA) && tmp_priv->htcap)
 				is_htcapie = true;
 		}
@@ -2519,11 +2483,7 @@ int bes2600_enable_listening(struct bes2600_vif *priv,
 	Change the code below once channel is made per VIF */
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	struct wsm_start start = {
-#ifdef P2P_MULTIVIF
 		.mode = WSM_START_MODE_P2P_DEV | (priv->if_id ? (5 << 4) : 0),
-#else
-		.mode = WSM_START_MODE_P2P_DEV | (priv->if_id << 4),
-#endif
 		.band = (chan->band == NL80211_BAND_5GHZ) ?
 				WSM_PHY_BAND_5G : WSM_PHY_BAND_2_4G,
 		.channelNumber = chan->hw_value,
@@ -2740,9 +2700,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	spin_unlock(&hw_priv->vif_list_lock);
 	atomic_set(&priv->connect_in_process, 0);
 
-#ifdef P2P_MULTIVIF
 	if (priv->if_id < 2) {
-#endif
 		/* default EDCA */
 		WSM_EDCA_SET(&priv->edca, 0, 0x0002, 0x0003, 0x0007,
 				47, 0xc8, false);
@@ -2773,9 +2731,8 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 
 		/* Temporary configuration - beacon filter table */
 		__bes2600_bf_configure(priv);
-#ifdef P2P_MULTIVIF
 	}
-#endif
+
 out:
 	return ret;
 }
@@ -2803,13 +2760,8 @@ int bes2600_setup_mac_pvif(struct bes2600_vif *priv)
 
 
 	/* Configure RSSI/SCPI reporting as RSSI. */
-#ifdef P2P_MULTIVIF
-	ret = wsm_set_rcpi_rssi_threshold(priv->hw_priv, &threshold,
-					priv->if_id ? 0 : 0);
-#else
-	ret = wsm_set_rcpi_rssi_threshold(priv->hw_priv, &threshold,
-					priv->if_id);
-#endif
+	ret = wsm_set_rcpi_rssi_threshold(priv->hw_priv, &threshold, priv->if_id ? 0 : 0);
+
 	return ret;
 }
 

@@ -478,10 +478,9 @@ static int bes2600_pwr_enter_lp_mode(struct bes2600_common *hw_priv)
 
 	/* set interface low power configuration */
 	bes2600_for_each_vif(hw_priv, priv, i) {
-#ifdef P2P_MULTIVIF
 		if (i == (CW12XX_MAX_VIFS - 1))
 			continue;
-#endif
+
 		if (!priv)
 			continue;
 
@@ -586,10 +585,9 @@ static int bes2600_pwr_exit_lp_mode(struct bes2600_common *hw_priv)
 
 	/* set interface low power configutation */
 	bes2600_for_each_vif(hw_priv, priv, i) {
-#ifdef P2P_MULTIVIF
 		if (i == (CW12XX_MAX_VIFS - 1))
 			continue;
-#endif
+
 		if (!priv)
 			continue;
 

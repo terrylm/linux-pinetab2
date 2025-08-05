@@ -107,39 +107,6 @@ static void tx_policy_build(const struct bes2600_common *hw_priv,
 		}
 	}
 
-	/* enhance throughput, more tx retry rate */
-#if defined(BES2600_TX_RX_OPT) && defined(BES2600_TX_MORE_RETRY)
-	if (rates[0].flags & IEEE80211_TX_RC_MCS) {
-		static int min_rate_index = 1; //min rate index  is mcs1
-		static u8 last_rate_tx_cnt = 7;
-
-		count = IEEE80211_TX_MAX_RATES;
-		/* if idx < min rate index, set min rate index */
-		rates[0].count = 6;
-		if (rates[0].idx <= min_rate_index) {
-			rates[0].idx = min_rate_index;
-		}
-
-		for (i = 1; i < count; ++i) {
-			/* only one rate try 2 times*/
-			if (rates[i].count > 6)
-				rates[i].count = 6;
-			if (rates[i - 1].idx > min_rate_index) {
-				rates[i].idx = (rates[i - 1].idx - 1);
-				rates[i].count = 6;
-				rates[i].flags = rates[i - 1].flags;
-			} else if (rates[i - 1].idx <= min_rate_index) {
-				rates[i].idx = -1;
-				rates[i].count = 0;
-				rates[i].flags = 0;
-				break;
-			}
-		}
-		/* update the last	rate index	tx cnt */
-		rates[i - 1].count = last_rate_tx_cnt;
-		count = i;
-	}
-#endif
 	/* Eliminate duplicates. */
 	total = rates[0].count;
 	for (i = 0, j = 1; j < count; ++j) {

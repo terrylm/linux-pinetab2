@@ -28,7 +28,6 @@ CONFIG_BES2600_BT_BOOT_ON               ?= n
 
 BES2600_GPIO_WAKEUP_AP                  ?= n
 BES2600_WRITE_DPD_TO_FILE               ?= n
-BES2600_TX_MORE_RETRY                   ?= n
 
 # bes evb
 BES2600_INDEPENDENT_EVB                 ?= n
@@ -113,7 +112,6 @@ ccflags-y += $(call boolen_flag,WIFI_BT_COEXIST_EPTA_ENABLE,y)
 ccflags-y += $(call boolen_flag,WIFI_BT_COEXIST_EPTA_FDD,y)
 ccflags-y += $(call boolen_flag,CONFIG_BES2600_DISABLE_BEACON_HINTS,y)
 ccflags-y += $(call boolen_flag,CONFIG_BES2600_NON_POWER_OF_TWO_BLOCKSIZES,y)
-ccflags-y += $(call boolen_flag,BES2600_TX_MORE_RETRY,y)
 
 ccflags-y += $(call boolen_flag,CONFIG_BES2600_ITP,y)
 ccflags-y += $(call boolen_flag,CONFIG_BES2600_DEBUGFS,y)

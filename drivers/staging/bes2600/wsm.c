@@ -2192,10 +2192,8 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 	if (id == 0x404) {
 		ret = wsm_tx_confirm(hw_priv, &wsm_buf, interface_link_id);
 #ifdef MCAST_FWDING
-#if 1
 	} else if (id == 0x422) {
 		ret = wsm_give_buffer_confirm(hw_priv, &wsm_buf);
-#endif
 #endif
 
 	} else if (id == 0x41E) {

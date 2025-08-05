@@ -1834,14 +1834,22 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		goto drop;
 
 	if (ieee80211_is_probe_resp(frame->frame_control)) {
-		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, approx dBm=%d)\n",
- 			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
+		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, dBm=%d)\n",
+			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
 	}
+	else if (ieee80211_is_beacon(frame->frame_control)) {
+		bes_info("%s: Beacon rx'ed (raw RCPI/RSSI=%u, dBm=%d)\n",
+			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
+	}
+
 
 	bes2600_rx_wakeup_device(hw_priv, frame);
 	bes2600_rx_check_go_neg(hw_priv, frame, mgmt);
 	bes2600_rx_handle_testmode(hw_priv, skb); /* CONFIG_BES2600_TESTMODE, or empty function. */
 	bes2600_rx_handle_link_id(priv, arg, frame, &early_data, &entry);
+
+	if (early_data)
+		bes_info("%s: Frame filtered (type=0x%04x)\n", __func__, frame->frame_control);
 
 	if (bes2600_rx_handle_status_drop(priv, arg, hdr)) goto drop;
 	if (bes2600_rx_validate_skb_len(priv, skb)) goto drop;
@@ -1876,7 +1884,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 drop:
 	/* TODO: update failure counters */
-	bes_info("Something failed in that scan.");
+	bes_info("%s: Frame dropped (type=0x%04x)\n", __func__, frame->frame_control);
 	return;
 }
 

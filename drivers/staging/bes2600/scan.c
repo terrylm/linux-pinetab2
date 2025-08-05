@@ -646,6 +646,7 @@ static void bes2600_scan_complete(struct bes2600_common *hw_priv, int if_id)
 void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			struct wsm_scan_complete *arg)
 {
+	static int empty_scans = 0;
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);
 
@@ -659,10 +660,6 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 	}
 	spin_unlock(&priv->vif_lock);
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
-	// recover EPTA timer after scan wsm msg complete, in case of epta state error
-	// bwifi_change_current_status(hw_priv, BWIFI_STATUS_SCANNING_COMP);
-#endif
 	wiphy_info(hw_priv->hw->wiphy, "bes2600_scan_complete_cb status: %u", arg->status);
 
 	bes_info("%s %d: FW scan complete, status=%d, channels completed=%d\n",
@@ -670,6 +667,21 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 
 	if (arg->status == 0 && arg->numChannels == 0) {
 		bes_info("Scan completed successfully but 0 channels processed - possible FW issue?\n");
+	}
+
+	if (arg->status == 0 && arg->numChannels > 0) {  // Success, but check if empty (add BSS count if you have it)
+		empty_scans = 0;
+	} else {
+		empty_scans++;
+		bes_info("%s: Scan complete - empty #%d (status=%d, channels=%d)\n",
+			 __func__, empty_scans, arg->status, arg->numChannels);
+		if (empty_scans > 3) {
+			bes_warn("%s: Too many empties - forcing reset\n", __func__);
+			struct wsm_reset reset = { .reset_statistics = true, .link_id = -1 };
+			wsm_reset(hw_priv, &reset, -1);
+			msleep(50);
+			empty_scans = 0;
+		}
 	}
 
 	if(hw_priv->scan.status == -ETIMEDOUT)

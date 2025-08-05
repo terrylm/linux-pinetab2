@@ -296,16 +296,15 @@ static bool bes2600_scan_setup(struct bes2600_common *hw_priv, struct bes2600_vi
 	    }
 	    int ret = bes2600_disable_filtering(priv);
 	    if (ret)
-		wiphy_err(hw_priv->hw->wiphy,
-			  "%s: Disable BSSID or Beacon filtering failed: %d.\n",
-			  __func__, ret);
+			wiphy_err(hw_priv->hw->wiphy,
+			  "%s: Disable BSSID or Beacon filtering failed: %d.\n", __func__, ret);
 	} else if (hw_priv->enable_advance_scan &&
 		   (hw_priv->advanceScanElems.scanMode == BES2600_SCAN_MEASUREMENT_PASSIVE) &&
 		   (priv->join_status == BES2600_JOIN_STATUS_STA)) {
 	    if (!(priv->powersave_mode.pmMode & WSM_PSM_PS)) {
-		struct wsm_set_pm pm = priv->powersave_mode;
-		pm.pmMode = WSM_PSM_PS;
-		bes2600_set_pm(priv, &pm);
+			struct wsm_set_pm pm = priv->powersave_mode;
+			pm.pmMode = WSM_PSM_PS;
+			bes2600_set_pm(priv, &pm);
 	    }
 	} else {
 #endif
@@ -350,31 +349,31 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
 #endif
 
     if (hw_priv->scan.status < 0)
-	wiphy_info(priv->hw->wiphy, "[SCAN] Scan failed (%d).\n", hw_priv->scan.status);
+		wiphy_info(priv->hw->wiphy, "[SCAN] Scan failed (%d).\n", hw_priv->scan.status);
     else if (hw_priv->scan.req)
-	wiphy_info(priv->hw->wiphy, "[SCAN] Scan completed.\n");
+		wiphy_info(priv->hw->wiphy, "[SCAN] Scan completed.\n");
     else
-	wiphy_info(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
+		wiphy_info(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
 
 #ifdef WIFI_BT_COEXIST_EPTA_ENABLE
     if (priv->join_status == BES2600_JOIN_STATUS_STA) {
-	if (hw_priv->channel->band != NL80211_BAND_2GHZ)
-	    bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP_5G);
-	else
-	    bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP);
+		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
+	    	bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP_5G);
+		else
+	    	bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP);
     } else {
-	bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
+		bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
     }
 #endif
     bes_devel("%s %d %d.", __func__, __LINE__, hw_priv->ht_info.channel_type);
     if (hw_priv->scan_switch_if_id >= 0) {
-	struct wsm_switch_channel channel;
-	channel.channelMode = hw_priv->ht_info.channel_type << 4;
-	channel.channelSwitchCount = 0;
-	channel.newChannelNumber = hw_priv->channel->hw_value;
-	wsm_switch_channel(hw_priv, &channel, hw_priv->scan_switch_if_id);
-	hw_priv->scan_switch_if_id = -1;
-	bes_devel("scan done channel type %d num %d\n", hw_priv->ht_info.channel_type,
+		struct wsm_switch_channel channel;
+		channel.channelMode = hw_priv->ht_info.channel_type << 4;
+		channel.channelSwitchCount = 0;
+		channel.newChannelNumber = hw_priv->channel->hw_value;
+		wsm_switch_channel(hw_priv, &channel, hw_priv->scan_switch_if_id);
+		hw_priv->scan_switch_if_id = -1;
+		bes_devel("scan done channel type %d num %d\n", hw_priv->ht_info.channel_type,
 		  channel.newChannelNumber);
     }
 
@@ -579,199 +578,6 @@ void bes2600_scan_work(struct work_struct *work)
 
 /*                            GROK 3                                  */
 
-#ifdef ROAM_OFFLOAD
-static int bes2600_sched_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
-{
-	int ret;
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-
-	ret = wsm_scan(hw_priv, scan, priv->if_id);
-	if (unlikely(ret)) {
-		atomic_set(&hw_priv->scan.in_progress, 0);
-	}
-	return ret;
-}
-
-int bes2600_hw_sched_scan_start(struct ieee80211_hw *hw,
-		   struct ieee80211_vif *vif,
-		   struct cfg80211_sched_scan_request *req,
-		   struct ieee80211_sched_scan_ies *ies)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
-	struct wsm_template_frame frame = {
-		.frame_type = WSM_FRAME_TYPE_PROBE_REQUEST,
-	};
-	int i;
-
-	wiphy_warn(hw->wiphy, "[SCAN] Scheduled scan request-->.\n");
-
-	if (!priv->vif)
-		return -EINVAL;
-
-	/* Scan when P2P_GO corrupt firmware MiniAP mode */
-	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		return -EOPNOTSUPP;
-
-	wiphy_warn(hw->wiphy, "[SCAN] Scheduled scan: n_ssids %d, ssid[0].len = %d\n", req->n_ssids, req->ssids[0].ssid_len);
-	if (req->n_ssids == 1 && !req->ssids[0].ssid_len)
-		req->n_ssids = 0;
-
-	wiphy_dbg(hw->wiphy, "[SCAN] Scan request for %d SSIDs.\n",
-		req->n_ssids);
-
-	if (req->n_ssids > hw->wiphy->max_scan_ssids)
-		return -EINVAL;
-
-	frame.skb = ieee80211_probereq_get(hw, priv->vif->addr, NULL, 0,
-		req->ie_len);
-	if (!frame.skb)
-		return -ENOMEM;
-
-	/* will be unlocked in bes2600_scan_work() */
-	down(&hw_priv->scan.lock);
-	down(&hw_priv->conf_lock);
-	if (frame.skb) {
-		int ret;
-		if (priv->if_id == 0)
-			bes2600_remove_wps_p2p_ie(&frame);
-		ret = wsm_set_template_frame(hw_priv, &frame, priv->if_id);
-		if (!ret) {
-			/* Host want to be the probe responder. */
-			ret = wsm_set_probe_responder(priv, true);
-		}
-		if (ret) {
-			up(&hw_priv->conf_lock);
-			up(&hw_priv->scan.lock);
-			dev_kfree_skb(frame.skb);
-			return ret;
-		}
-	}
-
-	wsm_lock_tx(hw_priv);
-
-	BUG_ON(hw_priv->scan.req);
-	hw_priv->scan.sched_req = req;
-	hw_priv->scan.n_ssids = 0;
-	hw_priv->scan.status = 0;
-	hw_priv->scan.begin = &req->channels[0];
-	hw_priv->scan.curr = hw_priv->scan.begin;
-	hw_priv->scan.end = &req->channels[req->n_channels];
-	hw_priv->scan.output_power = hw_priv->output_power;
-
-	for (i = 0; i < req->n_ssids; ++i) {
-		struct wsm_ssid *dst =
-			&hw_priv->scan.ssids[hw_priv->scan.n_ssids];
-		BUG_ON(req->ssids[i].ssid_len > sizeof(dst->ssid));
-		memcpy(&dst->ssid[0], req->ssids[i].ssid,
-			sizeof(dst->ssid));
-		dst->length = req->ssids[i].ssid_len;
-		++hw_priv->scan.n_ssids;
-		{
-			u8 j;
-			wiphy_warn(hw->wiphy, "[SCAN] SSID %d\n",i);
-			for(j=0; j<req->ssids[i].ssid_len; j++)
-				wiphy_warn(priv->hw->wiphy, "[SCAN] 0x%x\n", req->ssids[i].ssid[j]);
-		}
-	}
-
-	up(&hw_priv->conf_lock);
-
-	if (frame.skb)
-		dev_kfree_skb(frame.skb);
-	queue_work(hw_priv->workqueue, &hw_priv->scan.swork);
-	wiphy_warn(hw->wiphy, "<--[SCAN] Scheduled scan request.\n");
-	return 0;
-}
-
-
-void bes2600_sched_scan_work(struct work_struct *work)
-{
-	struct bes2600_common *hw_priv = container_of(work, struct bes2600_common,
-		scan.swork);
-	struct wsm_scan scan;
-	struct wsm_ssid scan_ssid;
-	int i;
-	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
-					hw_priv->scan.if_id);
-	if (unlikely(!priv)) {
-		WARN_ON(1);
-		return;
-	}
-
-	spin_unlock(&priv->vif_lock);
-
-	/* Firmware gets crazy if scan request is sent
-	 * when STA is joined but not yet associated.
-	 * Force unjoin in this case. */
-	if (cancel_delayed_work_sync(&priv->join_timeout) > 0) {
-		bes2600_join_timeout(&priv->join_timeout.work);
-	}
-	down(&hw_priv->conf_lock);
-	hw_priv->auto_scanning = 1;
-
-	scan.band = 0;
-
-	if (priv->join_status == BES2600_JOIN_STATUS_STA)
-		scan.scanType = 3; /* auto background */
-	else
-		scan.scanType = 2; /* auto foreground */
-
-	scan.scanFlags = 0x01; /* bit 0 set => forced background scan */
-	scan.maxTransmitRate = WSM_TRANSMIT_RATE_6;
-	scan.autoScanInterval = (0xba << 24)|(30 * 1024); /* 30 seconds, -70 rssi */
-	scan.numOfProbeRequests = 2;
-	//scan.numOfChannels = 11;
-	scan.numOfChannels = hw_priv->num_scanchannels;
-	scan.numOfSSIDs = 1;
-	scan.probeDelay = 100;
-	scan_ssid.length = priv->ssid_length;
-	memcpy(scan_ssid.ssid, priv->ssid, priv->ssid_length);
-	scan.ssids = &scan_ssid;
-
-	scan.ch = kzalloc(
-		sizeof(struct wsm_scan_ch[scan.numOfChannels]),
-		GFP_KERNEL);
-	if (!scan.ch) {
-		hw_priv->scan.status = -ENOMEM;
-		goto fail;
-	}
-
-	for (i = 0; i < scan.numOfChannels; i++) {
-		scan.ch[i].number = hw_priv->scan_channels[i].number;
-		scan.ch[i].minChannelTime = hw_priv->scan_channels[i].minChannelTime;
-		scan.ch[i].maxChannelTime = hw_priv->scan_channels[i].maxChannelTime;
-		scan.ch[i].txPowerLevel = hw_priv->scan_channels[i].txPowerLevel;
-	}
-
-	hw_priv->scan.status = bes2600_sched_scan_start(priv, &scan);
-	kfree(scan.ch);
-	if (hw_priv->scan.status)
-		goto fail;
-	up(&hw_priv->conf_lock);
-	return;
-
-fail:
-	if (hw_priv->scan.sched_req) /* Check sched_req before queuing */
-		queue_work(hw_priv->workqueue, &hw_priv->scan.swork);
-	up(&hw_priv->conf_lock);
-	return;
-}
-
-void bes2600_hw_sched_scan_stop(struct bes2600_common *hw_priv)
-{
-	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
-					hw_priv->scan.if_id);
-	if (unlikely(!priv))
-		return;
-	spin_unlock(&priv->vif_lock);
-
-	wsm_stop_scan(hw_priv, priv->if_id);
-
-	return;
-}
-#endif /*ROAM_OFFLOAD*/
-
 static void bes2600_scan_restart_delayed(struct bes2600_vif *priv)
 {
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
@@ -846,12 +652,6 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 	if (unlikely(!priv))
 		return;
 
-#ifdef ROAM_OFFLOAD
-	if (hw_priv->auto_scanning)
-		queue_delayed_work(hw_priv->workqueue,
-				&hw_priv->scan.timeout, 0);
-#endif /*ROAM_OFFLOAD*/
-
 	if (unlikely(priv->mode == NL80211_IFTYPE_UNSPECIFIED)) {
 		/* STA is stopped. */
 		spin_unlock(&priv->vif_lock);
@@ -901,11 +701,6 @@ void bes2600_scan_timeout(struct work_struct *work)
 						hw_priv->scan.if_id ? 1 : 0));
 		}
 		bes2600_scan_complete(hw_priv, hw_priv->scan.if_id);
-#ifdef ROAM_OFFLOAD
-	} else if (hw_priv->auto_scanning) {
-		hw_priv->auto_scanning = 0;
-		ieee80211_sched_scan_results(hw_priv->hw);
-#endif /*ROAM_OFFLOAD*/
 	}
 }
 

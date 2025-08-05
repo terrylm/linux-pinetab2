@@ -1792,27 +1792,6 @@ static void bes2600_rx_handle_ap_ht_cap(struct bes2600_vif *priv, struct bes2600
 #endif
 }
 
-static void bes2600_rx_handle_roam_offload(struct bes2600_common *hw_priv, struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct sk_buff *skb)
-{
-#ifdef ROAM_OFFLOAD
-	if ((ieee80211_is_beacon(frame->frame_control)||ieee80211_is_probe_resp(frame->frame_control)) &&
-			!arg->status ) {
-		if (hw_priv->auto_scanning && !atomic_read(&hw_priv->scan.in_progress))
-			hw_priv->frame_rcvd = 1;
-
-		if (!memcmp(ieee80211_get_SA(frame), priv->join_bssid, ETH_ALEN)) {
-			if (hw_priv->beacon)
-				dev_kfree_skb(hw_priv->beacon);
-
-			hw_priv->beacon = NULL; /* Ensure null after free */
-			hw_priv->beacon = skb_copy(skb, GFP_ATOMIC);
-			if (!hw_priv->beacon)
-				bes_err("bes2600: sched_scan: own beacon storing failed\n");
-		}
-	}
-#endif /*ROAM_OFFLOAD*/
-}
-
 static void bes2600_rx_handle_discon_power(struct bes2600_common *hw_priv, struct ieee80211_hdr *frame)
 {
 	if (ieee80211_is_deauth(frame->frame_control) ||
@@ -1911,7 +1890,6 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_update_debug(priv, arg);
 	bes2600_rx_handle_beacon(priv, hw_priv, frame, arg, skb);
 	bes2600_rx_handle_ap_ht_cap(priv, hw_priv, frame, arg, skb); /* AP_HT_CAP_UPDATE, or empty function. */
-	bes2600_rx_handle_roam_offload(hw_priv, priv, frame, arg, skb); /* ROAM_OFFLOAD, or empty function. */
 	bes2600_rx_handle_discon_power(hw_priv, frame);
 	bes2600_rx_handle_data_stats(priv, frame, hdrlen, skb);
 

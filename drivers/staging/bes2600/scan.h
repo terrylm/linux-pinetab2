@@ -24,10 +24,6 @@
 struct bes2600_scan {
 	struct semaphore lock;
 	struct work_struct work;
-#ifdef ROAM_OFFLOAD
-	struct work_struct swork; /* scheduled scan work */
-	struct cfg80211_sched_scan_request *sched_req;
-#endif /*ROAM_OFFLOAD*/
 	struct delayed_work timeout;
 	struct cfg80211_scan_request *req;
 	struct ieee80211_channel **begin;
@@ -47,15 +43,6 @@ struct bes2600_scan {
 int bes2600_hw_scan(struct ieee80211_hw *hw,
 		   struct ieee80211_vif *vif,
 		   struct ieee80211_scan_request *hw_req);
-#ifdef ROAM_OFFLOAD
-int bes2600_hw_sched_scan_start(struct ieee80211_hw *hw,
-			struct ieee80211_vif *vif,
-			struct cfg80211_sched_scan_request *req,
-			struct ieee80211_sched_scan_ies *ies);
-
-void bes2600_hw_sched_scan_stop(struct bes2600_common *priv);
-void bes2600_sched_scan_work(struct work_struct *work);
-#endif /*ROAM_OFFLOAD*/
 
 void bes2600_scan_work(struct work_struct *work);
 void bes2600_scan_timeout(struct work_struct *work);

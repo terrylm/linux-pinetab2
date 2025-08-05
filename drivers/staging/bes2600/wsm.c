@@ -23,9 +23,6 @@
 #include "bh.h"
 #include "debug.h"
 #include "itp.h"
-#ifdef ROAM_OFFLOAD
-#include "sta.h"
-#endif /*ROAM_OFFLOAD*/
 #ifdef CONFIG_BES2600_TESTMODE
 #include "bes_nl80211_testmode_msg.h"
 #endif
@@ -1479,11 +1476,6 @@ static int wsm_receive_indication(struct bes2600_common *hw_priv,
 				if (interface_link_id == -1) {
 					interface_link_id = hw_priv->roc_if_id;
 				}
-#ifdef ROAM_OFFLOAD
-				if (hw_priv->auto_scanning) {
-					interface_link_id = hw_priv->scan.if_id;
-				}
-#endif/*ROAM_OFFLOAD*/
 			}
 			/* linkid (peer sta id is encoded in bit 25-28 of
 			   flags field */
@@ -1706,13 +1698,7 @@ underflow:
 static int wsm_scan_complete_indication(struct bes2600_common *hw_priv,
 					struct wsm_buf *buf)
 {
-#ifdef ROAM_OFFLOAD
-	if(hw_priv->auto_scanning == 0)
-		wsm_oper_unlock(hw_priv);
-#else
 	wsm_oper_unlock(hw_priv);
-#endif /*ROAM_OFFLOAD*/
-
 
 	if (hw_priv->wsm_cbc.scan_complete) {
 		struct wsm_scan_complete arg;
@@ -2272,17 +2258,6 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 			break;
 #endif
 		case 0x0407: /* start-scan */
-#ifdef ROAM_OFFLOAD
-			if (hw_priv->auto_scanning) {
-				if (atomic_read(&hw_priv->scan.in_progress)) {
-					hw_priv->auto_scanning = 0;
-				}
-				else {
-					wsm_oper_unlock(hw_priv);
-					up(&hw_priv->scan.lock);
-				}
-			}
-#endif /*ROAM_OFFLOAD*/
 		case 0x0408: /* stop-scan */
 		case 0x040A: /* wsm_reset */
 		case 0x040C: /* add_key */
@@ -2350,43 +2325,6 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 			ret = wsm_set_pm_indication(hw_priv, &wsm_buf);
 			break;
 		case 0x0806:
-#ifdef ROAM_OFFLOAD
-			if(hw_priv->auto_scanning && hw_priv->frame_rcvd) {
-				struct bes2600_vif *priv;
-				hw_priv->frame_rcvd = 0;
-				priv = cw12xx_hwpriv_to_vifpriv(hw_priv, hw_priv->scan.if_id);
-				if (unlikely(!priv)) {
-					WARN_ON(1);
-					return 0;
-				}
-					spin_unlock(&priv->vif_lock);
-				if (hw_priv->beacon) {
-					struct wsm_scan_complete *scan_cmpl = \
-						(struct wsm_scan_complete *) \
-						((u8 *)wsm + sizeof(struct wsm_hdr));
-					struct ieee80211_rx_status *rhdr = \
-						IEEE80211_SKB_RXCB(hw_priv->beacon);
-					rhdr->signal = (s8)scan_cmpl->reserved;
-					if (!priv->cqm_use_rssi) {
-						rhdr->signal = rhdr->signal / 2 - 110;
-					}
-					if (!hw_priv->beacon_bkp)
-						hw_priv->beacon_bkp = \
-						skb_copy(hw_priv->beacon, GFP_ATOMIC);
-					ieee80211_rx_irqsafe(hw_priv->hw, hw_priv->beacon);
-					hw_priv->beacon = hw_priv->beacon_bkp;
-
-					hw_priv->beacon_bkp = NULL;
-				}
-				bes_devel("[WSM] Send Testmode Event.\n");
-#ifdef CONFIG_BES2600_TESTMODE
-				bes2600_testmode_event(priv->hw->wiphy,
-					BES_MSG_NEW_SCAN_RESULTS, 0,
-					0, GFP_KERNEL);
-#endif
-
-			}
-#endif /*ROAM_OFFLOAD*/
 			ret = wsm_scan_complete_indication(hw_priv, &wsm_buf);
 			break;
 		case 0x080B:

@@ -797,9 +797,6 @@ struct wsm_scan_complete {
 
 	/* Number of channels that the scan operation completed. */
 	u8 numChannels;
-#ifdef ROAM_OFFLOAD
-	u16 reserved;
-#endif /*ROAM_OFFLOAD*/
 };
 
 typedef void (*wsm_scan_complete_cb) (struct bes2600_common *hw_priv,

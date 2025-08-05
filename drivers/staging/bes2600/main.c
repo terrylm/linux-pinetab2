@@ -228,10 +228,6 @@ static const struct ieee80211_ops bes2600_ops = {
 	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.hw_scan		= bes2600_hw_scan,
 	.cancel_hw_scan			= bes2600_cancel_hw_scan,
-#ifdef ROAM_OFFLOAD
-	.sched_scan_start	= bes2600_hw_sched_scan_start,
-	.sched_scan_stop	= bes2600_hw_sched_scan_stop,
-#endif /*ROAM_OFFLOAD*/
 	.set_tim		= bes2600_set_tim,
 	.sta_notify		= bes2600_sta_notify,
 	.sta_add		= bes2600_sta_add,
@@ -359,13 +355,6 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->hw = hw;
 	hw_priv->rates = bes2600_rates; /* TODO: fetch from FW */
 	hw_priv->mcs_rates = bes2600_n_rates;
-#ifdef ROAM_OFFLOAD
-	hw_priv->auto_scanning = 0;
-	hw_priv->frame_rcvd = 0;
-	hw_priv->num_scanchannels = 0;
-	hw_priv->num_2g_channels = 0;
-	hw_priv->num_5g_channels = 0;
-#endif /*ROAM_OFFLOAD*/
 #ifdef AP_AGGREGATE_FW_FIX
 	/* Enable block ACK for 4 TID (BE,VI,VI,VO). */
 	/*due to HW limitations*/
@@ -475,9 +464,6 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->workqueue = create_singlethread_workqueue("bes2600_wq");
 	sema_init(&hw_priv->scan.lock, 1);
 	INIT_WORK(&hw_priv->scan.work, bes2600_scan_work);
-#ifdef ROAM_OFFLOAD
-	INIT_WORK(&hw_priv->scan.swork, bes2600_sched_scan_work);
-#endif /*ROAM_OFFLOAD*/
 	INIT_DELAYED_WORK(&hw_priv->scan.probe_work, bes2600_probe_work);
 	INIT_DELAYED_WORK(&hw_priv->scan.timeout, bes2600_scan_timeout);
 #ifdef CONFIG_BES2600_TESTMODE

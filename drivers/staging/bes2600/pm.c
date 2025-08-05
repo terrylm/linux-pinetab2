@@ -279,20 +279,6 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 	/* reset wakeup reason to default */
 	bes2600_chrdev_wifi_update_wakeup_reason(0, 0);
 
-#ifdef ROAM_OFFLOAD
-	bes2600_for_each_vif(hw_priv, priv, i) {
-		if ((i == (CW12XX_MAX_VIFS - 1)) || !priv || !priv->vif) /* Added priv->vif check */
-			continue;
-
-		if ((priv->vif->type == NL80211_IFTYPE_STATION)
-			&& (priv->join_status == BES2600_JOIN_STATUS_STA)) {
-			down(&hw_priv->scan.lock);
-			hw_priv->scan.if_id = priv->if_id;
-			bes2600_sched_scan_work(&hw_priv->scan.swork);
-		}
-	}
-#endif /*ROAM_OFFLOAD*/
-
 	/* Do not suspend when datapath is not idle */
 	if (hw_priv->tx_queue_stats.num_queued[0]
 			+ hw_priv->tx_queue_stats.num_queued[1])
@@ -528,12 +514,6 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 
 	if (!state) /* Added NULL check */
 		return 0;
-
-#ifdef ROAM_OFFLOAD
-	if ((priv->vif && priv->vif->type == NL80211_IFTYPE_STATION) /* Added priv->vif check */
-		&& (priv->join_status == BES2600_JOIN_STATUS_STA))
-		bes2600_hw_sched_scan_stop(hw_priv);
-#endif /*ROAM_OFFLOAD*/
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		WARN_ON(wsm_set_keepalive_filter(priv, false));

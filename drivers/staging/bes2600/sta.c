@@ -24,9 +24,6 @@
 #include "bh.h"
 #include "debug.h"
 #include "wsm.h"
-#ifdef ROAM_OFFLOAD
-#include <net/netlink.h>
-#endif /*ROAM_OFFLOAD*/
 #ifdef CONFIG_BES2600_TESTMODE
 #include "bes_nl80211_testmode_msg.h"
 #include <net/netlink.h>
@@ -2254,12 +2251,6 @@ void bes2600_join_work(struct work_struct *work)
 			memcpy(&join.ssid[0], &ssidie[2], join.ssidLength);
 			if(strstr(&join.ssid[0],"5.1.4"))
 				msleep(200);
-#ifdef ROAM_OFFLOAD
-			if((priv->vif->type == NL80211_IFTYPE_STATION)) {
-				priv->ssid_length = join.ssidLength;
-				memcpy(priv->ssid, &join.ssid[0], priv->ssid_length);
-			}
-#endif /*ROAM_OFFLOAD*/
 		}
 
 		if (priv->vif->p2p) {

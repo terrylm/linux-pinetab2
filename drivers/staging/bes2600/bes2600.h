@@ -98,10 +98,6 @@
 #define BES2600_BLOCK_ACK_HIST		(3)
 #define BES2600_BLOCK_ACK_INTERVAL	(1 * HZ / BES2600_BLOCK_ACK_HIST)
 #define CW12XX_ALL_IFS			(-1)
-#ifdef ROAM_OFFLOAD
-#define BES2600_SCAN_TYPE_ACTIVE 0x1000
-#define BES2600_SCAN_BAND_5G 0X2000
-#endif /*ROAM_OFFLOAD*/
 
 #define IEEE80211_FCTL_WEP		0x4000
 #define IEEE80211_QOS_DATAGRP	0x0080
@@ -160,13 +156,12 @@ struct bes2600_link_entry {
 	struct sk_buff_head		rx_queue;
 };
 
-#if defined(ROAM_OFFLOAD) || defined(CONFIG_BES2600_TESTMODE)
+#ifdef CONFIG_BES2600_TESTMODE
 struct bes2600_testframe {
 	u8 len;
 	u8 *data;
 };
-#endif
-#ifdef CONFIG_BES2600_TESTMODE
+
 struct advance_scan_elems {
 	u8 scanMode;
 	u16 duration;
@@ -469,17 +464,6 @@ struct bes2600_common {
 	struct wsm_buf		wsm_release_buf[WSM_MAX_BUF];
 	u8			buf_released;
 #endif
-#ifdef ROAM_OFFLOAD
-	u8				auto_scanning;
-	u8				frame_rcvd;
-	u8				num_scanchannels;
-	u8				num_2g_channels;
-	u8				num_5g_channels;
-	struct wsm_scan_ch		scan_channels[48];
-	struct sk_buff			*beacon;
-	struct sk_buff			*beacon_bkp;
-	struct bes2600_testframe	testframe;
-#endif /*ROAM_OFFLOAD*/
 #ifdef CONFIG_BES2600_TESTMODE
 	struct bes2600_testframe test_frame;
 	struct bes_tsm_stats		tsm_stats;

@@ -85,7 +85,7 @@ int bes2600_chrdev_wakeup_by_event_get(void);
 int bes2600_chrdev_init(struct sbus_ops *ops);
 void bes2600_chrdev_free(void);
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 void bes2600_free_dpd_log_buffer(void);
 u8* bes2600_alloc_dpd_log_buffer(u16 len);
 void bes2600_get_dpd_log(char **data, size_t *len);

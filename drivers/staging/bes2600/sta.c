@@ -31,14 +31,9 @@
 #include "net/mac80211.h"
 #include "bes_chardev.h"
 #include "bes_log.h"
-
 #include "epta_request.h"
 #include "epta_coex.h"
-
-#if defined(STANDARD_FACTORY_EFUSE_FLAG)
 #include "bes2600_factory.h"
-#endif
-
 #include "txrx_opt.h"
 
 #define WEP_ENCRYPT_HDR_SIZE	4
@@ -171,18 +166,14 @@ int bes2600_start(struct ieee80211_hw *dev)
 	memcpy(hw_priv->mac_addr, dev->wiphy->perm_addr, ETH_ALEN);
 
 	atomic_inc(&hw_priv->netdevice_start);
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	coex_start(hw_priv);
-#endif
 
 	bes_devel("%s %pM.\n", __func__, hw_priv->mac_addr);
 	ret = bes2600_setup_mac(hw_priv);
 	if (WARN_ON(ret))
 		goto out;
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
-#endif
 
 out:
 	up(&hw_priv->conf_lock);
@@ -261,10 +252,8 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 		timer_delete_sync(&priv->mcast_timeout);
 	}
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	cancel_work_sync(&hw_priv->coex_work);
 	coex_stop(hw_priv);
-#endif
 
 	bes2600_wifi_stop(hw_priv);
 
@@ -330,10 +319,11 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 		} else {
 			static int vif_attempts=0;
 			if (vif_attempts++ > 3) {
-				bes_err("Too many VIF creation attempts (%d)\n", vif_attempts);
+				bes_info("Too many VIF creation attempts (%d), ignoring.\n", vif_attempts);
+				dump_stack(); // Full trace for analysis.
 				spin_unlock(&hw_priv->vif_list_lock);
 				up(&hw_priv->conf_lock);
-				return -EBUSY;
+				return -EEXIST;
 			}
 			if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
 				bes_warn("Fixing VIF addr=%pM to addr[0]=%pM\n", vif->addr, hw_priv->addresses[0].addr);
@@ -1538,12 +1528,10 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		container_of(work, struct bes2600_vif, bss_loss_work.work);
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int timeout; /* in beacons */
-#ifdef BSS_LOSS_CHECK
 	struct sk_buff *skb;
 	struct ieee80211_tx_info *info;
 	static int bl_ck_cnt = 0;
 	static int bl_cfm_cnt = 0;
-#endif
 
 	timeout = priv->cqm_link_loss_count -
 		priv->cqm_beacon_loss_count;
@@ -1553,7 +1541,6 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		goto report;
 
 	spin_lock(&priv->bss_loss_lock);
-#ifdef BSS_LOSS_CHECK
 	if (!priv->vif->cfg.assoc) {
 		priv->bss_loss_status = BES2600_BSS_LOSS_NONE;
 		spin_unlock(&priv->bss_loss_lock);
@@ -1561,9 +1548,8 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		bl_cfm_cnt = 0;
 		return;
 	}
-#endif
+
 	if (priv->bss_loss_status == BES2600_BSS_LOSS_CHECKING) {
-#ifdef BSS_LOSS_CHECK
 		spin_unlock(&priv->bss_loss_lock);
 		bes_devel("bl checking\n");
 		priv->cmq_tx_success_count = 0;
@@ -1580,12 +1566,7 @@ void bes2600_bss_loss_work(struct work_struct *work)
 					   &priv->bss_loss_work, 1 * HZ);
 		}
 		return;
-#else
-		priv->bss_loss_status = BES2600_BSS_LOSS_CONFIRMED;
-#endif
 	} else if (priv->bss_loss_status == BES2600_BSS_LOSS_CONFIRMING) {
-#ifdef BSS_LOSS_CHECK
-
 		/* succeeded to send last null frame */
 		bl_cfm_cnt = 0;
 		/* keep checking to wait bss regain*/
@@ -1606,13 +1587,7 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		} else {
 			bl_ck_cnt = 0;
 		}
-#else
-		priv->bss_loss_status = BES2600_BSS_LOSS_NONE;
-		spin_unlock(&priv->bss_loss_lock);
-		return;
-#endif
 	} else if (priv->bss_loss_status == BES2600_BSS_LOSS_CONFIRMED) {
-#ifdef BSS_LOSS_CHECK
 		/* failed to send last null frame */
 		/* check if continous failures occur */
 		if (priv->cmq_tx_success_count != 0) {
@@ -1637,11 +1612,6 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		} else {
 			bl_cfm_cnt = 0;
 		}
-#else
-		priv->bss_loss_status = BES2600_BSS_LOSS_NONE;
-		spin_unlock(&priv->bss_loss_lock);
-		return;
-#endif
 	}
 	spin_unlock(&priv->bss_loss_lock);
 
@@ -1680,10 +1650,9 @@ void bes2600_connection_loss_work(struct work_struct *work)
 		bes2600_pending_unjoin_set(hw_priv, priv->if_id);
 	} else
 		ieee80211_connection_loss(priv->vif);
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
+
 	// set disconnected in BSS_CHANGED_ASSOC
 	// bwifi_change_current_status(hw_priv, BWIFI_STATUS_DISCONNECTED);
-#endif
 }
 
 void bes2600_tx_failure_work(struct work_struct *work)
@@ -2009,26 +1978,11 @@ int bes2600_setup_mac(struct bes2600_common *hw_priv)
 			BUG_ON(1);
 		}
 
-#ifdef CONFIG_BES2600_STATIC_SDD
 		g_sdd.data = sdd_22;
 		g_sdd.size = sizeof(sdd_22);
 		hw_priv->sdd = &g_sdd;
 		cfg.dpdData = sdd_22;
 		cfg.dpdData_size = g_sdd.size;
-#else
-		ret = request_firmware(&hw_priv->sdd,
-			sdd_path, hw_priv->pdev);
-
-		if (unlikely(ret)) {
-			bes_devel(
-				"%s: can't load sdd file %s.\n",
-				__func__, sdd_path);
-			return ret;
-		}
-
-		cfg.dpdData = hw_priv->sdd->data;
-		cfg.dpdData_size = hw_priv->sdd->size;
-#endif
 
 		for (if_id = 0; if_id < 2;
 			 if_id++) {
@@ -2687,13 +2641,8 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		memset(priv->bssid, ~0, ETH_ALEN);
 		priv->wep_default_key_id = -1;
 		priv->cipherType = 0;
-		#ifdef P2P_STA_COEX
-		priv->cqm_link_loss_count = 400;
-		priv->cqm_beacon_loss_count = 200;
-		#else
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
-		#endif
 
 		/* Temporary configuration - beacon filter table */
 		__bes2600_bf_configure(priv);
@@ -4245,7 +4194,6 @@ static int net_device_en_ip_offload(struct ieee80211_hw *hw, struct ieee80211_vi
 }
 #endif /* CONFIG_BES2600_KEEP_ALIVE */
 
-#if defined(STANDARD_FACTORY_EFUSE_FLAG)
 static int bes2600_factory_cali_to_mcu(struct ieee80211_hw *hw, enum bes2600_rf_cmd_type cmd_type)
 {
 	struct bes2600_common *hw_priv = hw->priv;
@@ -4279,9 +4227,7 @@ static int bes2600_factory_cali_to_mcu(struct ieee80211_hw *hw, enum bes2600_rf_
 
 	return ret;
 }
-#endif
 
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 static int bes2600_set_select_efuse_flag_to_txt(struct ieee80211_hw *hw,
 			   void *data, int len)
 {
@@ -4289,7 +4235,6 @@ static int bes2600_set_select_efuse_flag_to_txt(struct ieee80211_hw *hw,
 	int ret = bes2600_select_efuse_flag_write(test_p->select_efuse_flag);
 	return bes2600_testmode_reply(hw->wiphy, &ret, sizeof(int));
 }
-#endif
 
 static int bes2600_vendor_cpu_usage(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 {
@@ -4298,15 +4243,11 @@ static int bes2600_vendor_cpu_usage(struct ieee80211_hw *hw, struct ieee80211_vi
 
 static int bes2600_vendor_epta_parm_config(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u8 *data, int len)
 {
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	struct bes2600_common *hw_priv = hw->priv;
 	struct vendor_epta_parm *epta_para = (struct vendor_epta_parm *)data;
 
 	return coex_set_epta_params(hw_priv, epta_para->wlan_duration,
 				epta_para->bt_duration, epta_para->hw_epta_enable);
-#else
-	return -EOPNOTSUPP;
-#endif
 }
 
 /**
@@ -4402,18 +4343,10 @@ int bes2600_testmode_cmd(struct ieee80211_hw *hw, struct ieee80211_vif *vif, voi
 		ret = -EPERM;
 		break;
 	case BES_MSG_SAVE_CALI_TXT_TO_EFUSE:
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 		ret = bes2600_factory_cali_to_mcu(hw, BES2600_RF_CMD_CALI_TXT_TO_EFUSE);
-#else
-		ret = -EPERM;
-#endif
 		break;
 	case BES_MSG_SET_SELECT_EFUSE_FLAG:
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 		ret = bes2600_set_select_efuse_flag_to_txt(hw, nla_data(data_p), nla_len(data_p));
-#else
-		ret = EPERM;
-#endif
 		break;
 	case BES_MSG_VENDOR_RF_CMD:
 		ret = bes2600_vendor_rf_cmd(hw, vif, (u8 *) nla_data(data_p),

@@ -355,14 +355,11 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->hw = hw;
 	hw_priv->rates = bes2600_rates; /* TODO: fetch from FW */
 	hw_priv->mcs_rates = bes2600_n_rates;
-#ifdef AP_AGGREGATE_FW_FIX
-	/* Enable block ACK for 4 TID (BE,VI,VI,VO). */
-	/*due to HW limitations*/
+	/* Enable block ACK for 4 TID (BE,VI,VI,VO).
+	   Due to HW limitations. */
 	hw_priv->ba_tid_mask = 0xB1;
-#else
 	/* Enable block ACK for every TID but voice. */
-	hw_priv->ba_tid_mask = 0xFF;//0x3F;
-#endif
+	//hw_priv->ba_tid_mask = 0xFF;//0x3F;
 
 	/* Init tx retry limit */
 #ifdef BES2600_TX_RX_OPT
@@ -400,10 +397,6 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	hw->wiphy->flags |= WIPHY_FLAG_AP_UAPSD;
 #endif /* CONFIG_BES2600_USE_STE_EXTENSIONS */
-
-#ifdef PROBE_RESP_EXTRA_IE
-	hw->wiphy->flags |= WIPHY_FLAG_AP_PROBE_RESP_OFFLOAD;
-#endif
 
 #if defined(CONFIG_BES2600_DISABLE_BEACON_HINTS)
 	hw->wiphy->flags |= WIPHY_FLAG_DISABLE_BEACON_HINTS;
@@ -597,18 +590,19 @@ static void bes2600_unregister_common(struct ieee80211_hw *dev)
 	wsm_buf_deinit(&hw_priv->wsm_cmd_buf);
 	destroy_workqueue(hw_priv->workqueue);
 	hw_priv->workqueue = NULL;
+
 	if (hw_priv->skb_cache) {
 		dev_kfree_skb(hw_priv->skb_cache);
 		hw_priv->skb_cache = NULL;
 	}
+
 	if (hw_priv->sdd) {
-#ifndef CONFIG_BES2600_STATIC_SDD
-		release_firmware(hw_priv->sdd);
-#endif
 		hw_priv->sdd = NULL;
 	}
+
 	for (i = 0; i < 4; ++i)
 		bes2600_queue_deinit(&hw_priv->tx_queue[i]);
+
 	bes2600_queue_stats_deinit(&hw_priv->tx_queue_stats);
 	for (i = 0; i < CW12XX_MAX_VIFS; i++) {
 		kfree(hw_priv->vif_list[i]);
@@ -761,7 +755,7 @@ void bes2600_core_release(struct bes2600_common *self)
 	return;
 }
 
-#if (GET_MAC_ADDR_METHOD == 2) || (GET_MAC_ADDR_METHOD == 3) /* To use macaddr and ps mode of customers */
+#if (CONFIG_GET_MAC_ADDR_METHOD == 2) || (CONFIG_GET_MAC_ADDR_METHOD == 3) /* To use macaddr and ps mode of customers */
 int access_file(char *path, char *buffer, int size, int isRead)
 {
 	int ret=0;
@@ -869,11 +863,7 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 	hw_priv->wsm_tx_pending[1] = 0;
 	timer_delete_sync(&hw_priv->mcu_mon_timer);
 	timer_delete_sync(&hw_priv->lmac_mon_timer);
-#ifdef CONFIG_BES2600_STATIC_SDD
 	hw_priv->sdd = NULL;
-#else
-	#error "TO BE CONTINUED: release SDD file"
-#endif
 	return ret;
 
 err:

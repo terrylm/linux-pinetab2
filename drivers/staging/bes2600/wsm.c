@@ -234,19 +234,11 @@ int wsm_vendor_rf_test_indication(struct bes2600_common *hw_priv, struct wsm_buf
 		wifi_freq_cali.cali_flag = WSM_GET16(buf);
 		if (wifi_freq_cali.save_type == RF_CALIB_DATA_IN_LINUX) {
 			if (cmd_type == VENDOR_RF_SAVE_FREQOFFSET_CMD) {
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 				ret = bes2600_wifi_cali_freq_write(&wifi_freq_cali);
-#else
-				ret = -FACTORY_SAVE_FREQ_ERR;
-#endif
 			}
 
 			if (cmd_type == VENDOR_RF_GET_SAVE_FREQOFFSET_CMD) {
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 				ret = vendor_get_freq_cali(&wifi_freq_cali);
-#else
-				ret = -FACTORY_SAVE_FILE_NOT_EXIST;
-#endif
 			}
 			wifi_freq_cali.status = ret;
 		}
@@ -262,24 +254,17 @@ int wsm_vendor_rf_test_indication(struct bes2600_common *hw_priv, struct wsm_buf
 		power_cali_save.power_cali = WSM_GET16(buf);
 		power_cali_save.status = -WSM_GET16(buf);
 		if (power_cali_save.save_type == RF_CALIB_DATA_IN_LINUX) {
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 			ret = bes2600_wifi_power_cali_table_write(&power_cali_save);
-#else
-			ret = -FACTORY_SAVE_POWER_ERR;
-#endif
 			power_cali_save.status = ret;
 		}
+
 		bes2600_rf_cmd_msg_assembly(cmd_type, &power_cali_save,
 			sizeof(struct wifi_power_cali_save_t));
 		break;
 	case VENDOR_RF_GET_SAVE_POWERLEVEL_CMD:
 		power_cali_get.save_type = WSM_GET16(buf);
 		if (power_cali_get.save_type == RF_CALIB_DATA_IN_LINUX) {
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 			ret = vendor_get_power_cali(&power_cali_get);
-#else
-			ret = -FACTORY_SAVE_FILE_NOT_EXIST;
-#endif
 			power_cali_get.status = ret;
 		} else {
 			/* 2.4G have 3 cali ch */
@@ -299,11 +284,7 @@ int wsm_vendor_rf_test_indication(struct bes2600_common *hw_priv, struct wsm_buf
 		power_cali_flag.band = WSM_GET16(buf);
 		power_cali_flag.status = -WSM_GET16(buf);
 		if (power_cali_flag.save_type == RF_CALIB_DATA_IN_LINUX) {
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 			ret = vendor_set_power_cali_flag(&power_cali_flag);
-#else
-			ret = -FACTORY_SET_POWER_CALI_FLAG_ERR;
-#endif
 			power_cali_flag.status = ret;
 		}
 		bes2600_rf_cmd_msg_assembly(cmd_type, &power_cali_flag,
@@ -1062,7 +1043,6 @@ nomem:
 
 int wsm_epta_cmd(struct bes2600_common *hw_priv, struct wsm_epta_msg *arg)
 {
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	int ret;
 	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
 	static bool epta_lock_tx = false;
@@ -1119,12 +1099,8 @@ int wsm_epta_cmd(struct bes2600_common *hw_priv, struct wsm_epta_msg *arg)
 nomem:
 	wsm_cmd_unlock(hw_priv);
 	return -ENOMEM;
-#else
-	return 0;
-#endif
 }
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 int wsm_epta_wifi_chan_cmd(struct bes2600_common *hw_priv, uint32_t channel, uint32_t type)
 {
 	int ret;
@@ -1147,7 +1123,6 @@ nomem:
 	wsm_cmd_unlock(hw_priv);
 	return -ENOMEM;
 }
-#endif
 
 int wsm_wifi_status_cmd(struct bes2600_common *hw_priv, uint32_t status)
 {
@@ -2155,15 +2130,11 @@ EXPORT_SYMBOL(wsm_handle_exception);
 
 static int wsm_bt_ts_request(struct bes2600_common *hw_priv, struct wsm_buf *buf)
 {
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 	uint32_t type;
 
 	type = __le32_to_cpu(((struct wsm_mcu_hdr *)(buf->begin))->cmd_type);
 	bbt_change_current_status(hw_priv, type);
 	return 0;
-#else
-	return 0;
-#endif
 }
 
 int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
@@ -2537,12 +2508,11 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 		wsm_lock_tx_async(hw_priv);
 		hw_priv->pending_frame_id = __le32_to_cpu(wsm->packetID);
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING_5G);
 		else
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING);
-#endif
+
 		if (queue_work(hw_priv->workqueue, &priv->join_work) <= 0)
 			wsm_unlock_tx(hw_priv);
 		handled = true;
@@ -2577,9 +2547,7 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			bes_devel("[WSM] Issue unjoin command (TX).\n");
 			atomic_set(&priv->connect_in_process, 0);
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_DISCONNECTING);
-#endif
 			wsm_lock_tx_async(hw_priv);
 			if (queue_work(hw_priv->workqueue,
 					&priv->unjoin_work) <= 0)

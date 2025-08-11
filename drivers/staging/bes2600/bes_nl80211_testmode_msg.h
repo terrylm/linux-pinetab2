@@ -27,12 +27,10 @@ struct bes_event_test_t {
 	int dummy;
 };
 
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 /*example command structure for set select efuse*/
 struct bes_select_calib_t {
     uint16_t select_efuse_flag;
 };
-#endif
 
 /* vendor to mcu cmd msg reply structure */
 struct vendor_rf_cmd_msg_reply {

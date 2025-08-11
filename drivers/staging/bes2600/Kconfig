@@ -10,6 +10,74 @@ config BES2600
 
 if BES2600
 
+choice
+	prompt "BES2600 hardware platform variant"
+	default BES2600_PLATFORM_NONE
+	help
+		Select the specific hardware platform variant for the BES2600 driver.
+		This enables platform-specific configurations (e.g., GPIO/IRQ setups).
+		Choose one based on your hardware; if unsure or using PineTab2, select NONE.
+
+config BES2600_PLATFORM_NONE
+	bool "No specific platform (e.g., PineTab2)"
+	help
+		Use default/generic configuration, suitable for PineTab2 or unsupported hardware.
+
+config BES2600_INDEPENDENT_EVB
+	bool "BES2600 EVB (Evaluation Board)"
+	help
+		Enable support for the BES2600 independent evaluation board (EVB).
+		Select this for standalone testing hardware.
+
+config BES2600_INTEGRATED_MODULE_V1
+	bool "BES2600 integrated module V1 (Allwinner)"
+	help
+		Enable support for the BES2600 WiFi module integrated with Allwinner SoCs.
+
+config BES2600_INTEGRATED_MODULE_V2
+	bool "BES2600 integrated module V2 (Xiaomi R329)"
+	help
+		Enable support for the BES2600 WiFi module used in Xiaomi R329 devices.
+
+config BES2600_INTEGRATED_MODULE_V3
+	bool "BES2600 integrated module V3 (Sicun QM215)"
+	help
+		Enable support for the BES2600 WiFi module used in Sicun QM215 devices.
+
+endchoice
+
+config BES2600_LISTEN_INTERVAL
+	int "BES2600 listen interval"
+	default 3
+	help
+		Set the listen interval for BES2600 in beacon intervals.
+		This controls how often the device wakes to listen for beacons in power save mode.
+
+config BES2600_FASTPS_IDLE_TIME
+	int "Fast power save idle time (0 for dynamic)"
+	default 8
+	help
+		Set the fast power save idle time in seconds.
+		Use 0 to enable dynamic PS timeout; other values override it for fixed idle time.
+
+config GET_MAC_ADDR_METHOD
+	int "Method for getting MAC address (1-4)"
+	range 1 4
+	default 4
+	help
+		Select the method to obtain the MAC address:
+		1: Rock API (fixed MAC)
+		2: Read from file (customer MAC)
+		3: Read from file (MAC template)
+		4: Random MAC address
+
+config FACTORY_PATH
+	string "Path to factory calibration file"
+	default "/lib/firmware/bes2600_factory.txt"
+	help
+		Specify the file path for BES2600 factory calibration data (e.g., power/frequency settings).
+		Used for loading calibration from Linux files/efuse.
+
 config BES2600_USE_GPIO_IRQ
 	bool "Use GPIO interrupt"
 	default n
@@ -25,11 +93,14 @@ config BES2600_5GHZ_SUPPORT
 		If unsure, say N.
 
 config BES2600_WAPI_SUPPORT
-	bool "WAPI support"
+	bool "Enable WAPI support"
 	default n
 	help
-		Say Y if your compat-wireless support WAPI.
-		If unsure, say N.
+		Enable support for WAPI (WLAN Authentication and Privacy Infrastructure),
+		a Chinese national standard for wireless LAN security.  This is an alternative
+		to WPA/WPA2, mandatory in some Chinese networks.
+
+		If unsure, and not in China, say N.
 
 config BES2600_USE_STE_EXTENSIONS
 	bool "STE extensions"
@@ -43,58 +114,227 @@ config BES2600_DISABLE_BEACON_HINTS
 	default n
 	help
 		Say Y if you want to disable 11d beacon hints.
+
 		If unsure, say N.
 
-config BES2600_TESTMODE
-	bool "bes2600 testmode support"
-	select NL80211_TESTMODE
+config BES2600_WOWLAN
+	bool "Enable Wake-On-Wireless-LAN support"
+	default y
+	depends on PM
+	help
+		Enable WoWLAN for wake on WiFi events.
+
+		Say Y for battery powered devices.
+
+config BES2600_DUMP_FW_DPD_LOG
+	bool "Enable FW DPD log dumping (requires DebugFS)"
+	default n
+	depends on BES2600_DEBUGFS
+	help
+		Dump FW Digital Pre-Distortion (DPD) logs to file for RF/power debug.
+
+		If unsure, say N.
+
+config BES2600_DPD_LOG_PATH
+	string "Path for FW DPD log file"
+	default "/data/applog/bes2600_dpd.log"
+	depends on BES2600_DUMP_FW_DPD_LOG
+	help
+		File path for DPD logs. Change if needed for custom storage.
+
+config BES2600_BT
+	bool "Enable BES2600 Bluetooth support (DEVELOPMENT)"
 	default n
 	help
-		Say Y if you want to enable bes2600 testmode.
+		Enable Bluetooth USB support for BES2600.
+
 		If unsure, say N.
+
+config WIFI_BT_COEXIST_EPTA_FDD
+	bool "Enable EPTA FDD mode for WiFi/BT coexistence"
+	default n
+	depends on BES2600_BT
+	help
+		Enable Frequency Division Duplex (FDD) in EPTA for better WiFi/BT interference handling.
+		Say Y if experiencing issues with simultaneous WiFi/BT use.
+
+		If unsure, say N.
+
+config BES2600_BT_BOOT_ON
+	bool "Enable BT when driver loads."
+	default n
+	depends on BES2600_BT
+	help
+		Enable BlueTooth at driver load.
+
+		If unsure, say N.
+
+config BES2600_GPIO_WAKEUP_AP
+	bool "Enable GPIO wakeup for AP mode"
+	default n
+	depends on BES2600_WOWLAN
+	help
+		Enable GPIO-based wakeup signaling for Access Point (AP) mode in the BES2600 driver.
+		This allows the driver to use a dedicated GPIO to wake the microcontroller unit (MCU)
+		during low-power states in AP configurations, improving power management responsiveness.
+
+		If unsure, say N.
+
+config BES2600_WRITE_DPD_TO_FILE
+	bool "Enable writing DPD calibration to file"
+	default n
+	help
+		Enable writing Digital Pre-Distortion (DPD) calibration data to a file.
+		This is useful for persisting RF/power calibration results across boots or for debugging.
+
+		If unsure, say N.
+
+config BES2600_DPD_PATH
+	string "Path for DPD calibration file"
+	default "/data/cfg/bes2600_dpd.bin"
+	depends on BES2600_WRITE_DPD_TO_FILE
+	help
+		Specify the file path for writing DPD calibration data.
+		Change if needed for custom storage locations.
+
+config BES2600_DEFAULT_DPD_PATH
+	string "Default path for DPD calibration file"
+	default "/lib/firmware/bes2600_dpd.bin"
+	depends on BES2600_WRITE_DPD_TO_FILE
+	help
+		Specify the default fallback file path for DPD calibration data.
+		Used if the primary path is unavailable.
+
+config BES2600_DPD_GOLDEN_PATH
+	string "Golden path for DPD calibration file"
+	default "/data/cfg/bes2600_dpd_golden.bin"
+	depends on BES2600_WRITE_DPD_TO_FILE
+	help
+		Specify the path for the golden (reference) DPD calibration file.
+		Used for comparison or fallback in calibration processes.
+
+config BES2600_MCAST_FWDING
+	bool "Enable multicast forwarding support (DEVELOPMENT)"
+	default n
+	help
+		Enable multicast packet forwarding and offloading (e.g., group address filters).
+		Useful for AP mode or IPv4/IPv6 multicast scenarios.
+
+		If unsure, say N. This code may not even work, untested.
 
 menu "Driver debug features"
 
 config BES2600_DEBUGFS
 	bool "Expose driver internals to DebugFS (DEVELOPMENT)"
 	default y
+	depends on DEBUG_FS
+	help
+		Enable DebugFS for BES2600 stats/debug.
+
+		If unsure, say N.
 
 config BES2600_ENABLE_DEVEL_LOGS
-    bool "Enable development debug logs (DEVELOPMENT)"
-    default n
-    help
-        Enable detailed debug logging for the BES2600 driver using bes_devel().
-        This increases log verbosity for development and debugging.
-        If unsure, say N.
+	bool "Enable development debug logs (DEVELOPMENT)"
+	default n
+	help
+		Enable detailed debug logging for the BES2600 driver using bes_devel().
+		This increases log verbosity for development and debugging.
+
+		If unsure, say N.
 
 config BES2600_BH_DEBUG
 	bool "Enable low-level device communication logs (DEVELOPMENT)"
+	default n
+	help
+		Enable debug logs for bottom-half (BH) handling in the BES2600 driver.
+
+		If unsure, say N.
 
 config BES2600_WSM_DEBUG
 	bool "Enable WSM API debug messages (DEVELOPMENT)"
+	default n
+	help
+		Enable debug messages for the Wireless State Machine (WSM) API.
+
+		If unsure, say N.
 
 config BES2600_WSM_DUMPS
 	bool "Verbose WSM API logging (DEVELOPMENT)"
+	default n
+	help
+		Enable verbose dumping of WSM API interactions.
+
+		If unsure, say N.
 
 config BES2600_WSM_DUMPS_SHORT
 	bool "Dump only first x bytes (default 20) (DEVELOPMENT)"
+	default n
+	depends on BES2600_WSM_DUMPS
+	help
+		Limit WSM dumps to the first 20 bytes for brevity.
+
+		If unsure, say N.
 
 config BES2600_TXRX_DEBUG
 	bool "Enable TX/RX debug messages (DEVELOPMENT)"
+	default n
+	help
+		Enable debug logs for transmit/receive operations.
+
+		If unsure, say N.
 
 config BES2600_TX_POLICY_DEBUG
 	bool "Enable TX policy debug (DEVELOPMENT)"
+	default n
+	help
+		Enable debug for TX policy and queuing.
+		
+		If unsure, say N.
 
 config BES2600_STA_DEBUG
 	bool "Enable STA/AP debug (DEVELOPMENT)"
+	default n
+	help
+		If unsure, say N.
 
 config BES2600_DUMP_ON_ERROR
 	bool "Dump kernel in case of critical error (DEVELOPMENT)"
+	default n
+	help
+		Dump kernel state on critical driver errors.
+
+		If unsure, say N.
 
 config BES2600_ITP
 	bool "Enable ITP DebugFS"
+	default n
 	help
-		Say Y if you want to include ITP code.
+		Enable ITP (Internal Test Point?) DebugFS entries.
+
+		If unsure, say N.
+
+config BES2600_TESTMODE
+	bool "Enable BES2600 testmode support"
+	select NL80211_TESTMODE
+	default n
+	help
+		Enable testmode features for the BES2600 driver, including vendor-specific RF commands
+		(e.g., calibration, power, frequency testing), advanced scan modes (passive/active measurements),
+		and Traffic Stream Metrics (TSM) for analyzing association, roaming, packet delays,
+		and media/queue statistics.  This is primarily for development and testing purposes,
+		allowing interaction via nl80211 tools like 'iw' for debugging WiFi performance and hardware behavior.
+
+		If unsure, say N.
+
+config BES2600_KEEP_ALIVE
+	bool "Enable keep-alive support under testmode"
+	default n
+	depends on BES2600_TESTMODE
+	help
+		Enable TCP/UDP keepalive features in testmode, including vendor-specific extensions
+		(e.g., for Xiaomi compatibility).
+		For testing association/packet delays or keepalive behavior.
+
 		If unsure, say N.
 
 endmenu

@@ -38,6 +38,7 @@ struct bes2600_scan {
 	struct delayed_work probe_work;
 	int direct_probe;
 	u8 if_id;
+	bool saved_ps;  // Save PS state for auto-restore after scan
 };
 
 int bes2600_hw_scan(struct ieee80211_hw *hw,

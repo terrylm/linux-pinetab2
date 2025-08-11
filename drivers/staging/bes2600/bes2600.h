@@ -61,13 +61,6 @@
 /* extern */ struct bes2600_debug_common;
 /* extern */ struct firmware;
 
-/* #define ROC_DEBUG */
-
-/* hidden ssid is only supported when separate probe resp IE
-   configuration is supported */
-#ifdef PROBE_RESP_EXTRA_IE
-#define HIDDEN_SSID	1
-#endif
 
 #if defined(CONFIG_BES2600_TXRX_DEBUG)
 #define txrx_printk(...) printk(__VA_ARGS__)
@@ -110,14 +103,10 @@
 #define WSM_MAX_BUF		30
 #endif
 
-#ifdef BSS_LOSS_CHECK
 #define BSS_LOSS_CK_THR		1
 #define BSS_LOSS_CK_INV		2000
 #define BSS_LOSS_CFM_THR	1
 #define BSS_LOSS_CFM_INV	200
-#else
-#define BSS_LOSS_CFM_INV	0
-#endif
 
 /* Please keep order */
 enum bes2600_join_status {

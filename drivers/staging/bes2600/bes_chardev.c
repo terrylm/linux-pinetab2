@@ -69,7 +69,7 @@ struct bes_cdev {
 	struct delayed_work probe_timeout_work;
 	enum bus_probe_state bus_probe;
 	struct work_struct wifi_force_close_work;
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 	int no_dpd;
 #endif
 	enum pend_read_op read_flag;
@@ -77,7 +77,7 @@ struct bes_cdev {
 	u16 wakeup_state; /* for userspace check wakeup reason */
 	wait_queue_head_t wakeup_reason_wq;
 	u16 src_port;
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 	u8 *dpd_log;
 	u16 dpd_log_len;
 #endif
@@ -91,7 +91,7 @@ struct bes2600_op_map {
 
 static struct bes_cdev bes2600_cdev;
 module_param_named(fw_type, bes2600_cdev.fw_type, int, 0644);
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 module_param_named(no_dpd, bes2600_cdev.no_dpd, int, 0644);
 #endif
 
@@ -726,7 +726,7 @@ static struct file_operations bes2600_chardev_fops =
 	.release = bes2600_chrdev_release,
 };
 
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 static int bes2600_chrdev_write_dpd_data_to_file(const char *path, void *buffer, int size)
 {
 	int ret = 0;
@@ -790,7 +790,7 @@ static int bes2600_chrdev_read_and_check_dpd_data(const char *file, u8 **data, u
 		return -1;
 	}
 
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 	if (fp->f_inode->i_size != DPD_BIN_FILE_SIZE) {
 		bes_err(
 			"bes2600 dpd data file size check failed, read_size: %lld file_size: %d\n",
@@ -842,7 +842,7 @@ err1:
 
 const u8* bes2600_chrdev_get_dpd_data(u32 *len)
 {
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 	if (!bes2600_cdev.dpd_calied && bes2600_cdev.no_dpd) {
 		/* read dpd data from file that stores factory dpd calibration data */
 		if ((bes2600_chrdev_read_and_check_dpd_data(BES2600_DPD_GOLDEN_PATH,
@@ -917,7 +917,7 @@ int bes2600_chrdev_update_dpd_data(void)
 	}
 	spin_unlock(&bes2600_cdev.status_lock);
 
-#ifdef BES2600_WRITE_DPD_TO_FILE
+#ifdef CONFIG_BES2600_WRITE_DPD_TO_FILE
 	/* write dpd data to file */
 	memset(bes2600_cdev.dpd_data + DPD_BIN_SIZE, 0, DPD_BIN_FILE_SIZE - DPD_BIN_SIZE);
 	bes2600_chrdev_write_dpd_data_to_file(BES2600_DPD_PATH,
@@ -928,7 +928,7 @@ int bes2600_chrdev_update_dpd_data(void)
 	return 0;
 }
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 void bes2600_free_dpd_log_buffer(void)
 {
 	if (bes2600_cdev.dpd_log)
@@ -964,7 +964,7 @@ void bes2600_get_dpd_log(char **data, size_t *len)
 		*len = (size_t)bes2600_cdev.dpd_log_len;
 	}
 }
-#endif /* BES2600_DUMP_FW_DPD_LOG */
+#endif /* CONFIG_BES2600_DUMP_FW_DPD_LOG */
 
 void bes2600_chrdev_set_sbus_priv_data(struct sbus_priv *priv, bool error)
 {
@@ -1304,11 +1304,7 @@ int bes2600_chrdev_init(struct sbus_ops *ops)
 	INIT_DELAYED_WORK(&bes2600_cdev.probe_timeout_work, bes2600_probe_timeout_work);
 	init_waitqueue_head(&bes2600_cdev.wakeup_reason_wq);
 	bes2600_chrdev_wakeup_by_event_set(WAKEUP_EVENT_NONE);
-#ifdef CONFIG_BES2600_WIFI_BOOT_ON
 	bes2600_cdev.wifi_opened = true;
-#else
-	bes2600_cdev.wifi_opened = false;
-#endif
 #ifdef CONFIG_BES2600_BT_BOOT_ON
 	bes2600_cdev.bt_opened = true;
 	bes2600_cdev.bton_pending = true;
@@ -1340,7 +1336,7 @@ fail:
 void bes2600_chrdev_free(void)
 {
 	cancel_delayed_work_sync(&bes2600_cdev.probe_timeout_work);
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 	bes2600_free_dpd_log_buffer();
 #endif
 	bes2600_chrdev_free_dpd_data();

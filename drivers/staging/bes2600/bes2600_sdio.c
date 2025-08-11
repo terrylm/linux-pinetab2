@@ -98,9 +98,6 @@ struct sbus_priv {
 	u32 tx_proc_cnt;
 	long unsigned int last_tx_data_timestamp;
 #endif
-#ifndef SDIO_HOST_ADMA_SUPPORT
-	u8 *single_gathered_buffer;
-#endif
 	bool unregister_in_process;
 };
 
@@ -124,7 +121,7 @@ static const struct sdio_device_id bes2600_sdio_ids[] = {
 };
 MODULE_DEVICE_TABLE(sdio, bes2600_sdio_ids);
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 static int bes2600_gpio_wakeup_ap_config(struct sbus_priv *priv);
 #endif
 
@@ -157,16 +154,11 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 	struct mmc_command cmd;
 	struct mmc_data data;
 	struct scatterlist sg[2];
-
-#ifdef SDIO_HOST_ADMA_SUPPORT
 	struct scatterlist *next;
-#endif
 
-#ifdef SDIO_HOST_ADMA_SUPPORT
 	u8 *pad_buf = (u8 *)kmalloc(func->cur_blksize, GFP_KERNEL);
 	if (!pad_buf)
 		return -ENOMEM;
-#endif
 
 	if (!func || (func->num > 7) || (!data_buf) || (!size)) {
 		ret = -EINVAL;
@@ -227,7 +219,6 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 
 		data.sg = sg;
 		data.sg_len = 1;
-#ifdef SDIO_HOST_ADMA_SUPPORT
 		sg_init_table(sg, 2);
 		sg_set_buf(sg, data_buf, size);
 		if (pads) {
@@ -235,20 +226,6 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 			sg_set_buf(next, pad_buf, pads);
 			data.sg_len = 2;
 		}
-#else
-		sg_init_table(sg, 1);
-		if (unlikely(pads)) {
-			if (unlikely(size > MAX_SDIO_TRANSFER_LEN)) {
-				WARN_ON(1);
-				return -EINVAL;
-			}
-			if (write)
-				memcpy(self->single_gathered_buffer, data_buf, size);
-			sg_set_buf(sg, self->single_gathered_buffer, size + pads);
-		} else {
-			sg_set_buf(sg, data_buf, size);
-		}
-#endif
 
 		mmc_set_data_timeout(&data, func->card);
 
@@ -274,13 +251,6 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 			ret = -ERANGE;
 			goto out;
 		}
-
-#ifndef SDIO_HOST_ADMA_SUPPORT
-		if (pads && (!write)) {
-			memcpy(data_buf, self->single_gathered_buffer, size);
-		}
-#endif
-
 	} else {
 		while (remainder) {
 			size = min(remainder, sdio_max_byte_size(func));
@@ -317,9 +287,8 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 		}
 	}
 out:
-#ifdef SDIO_HOST_ADMA_SUPPORT
 	kfree(pad_buf);
-#endif
+
 	if (ret) {
 		bes_err("%s, err=%d(%d:%p:%d)",
 				__func__, ret, func->num, data_buf, size);
@@ -978,12 +947,7 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 	struct sbus_priv *self = NULL;
 #endif
 
-#ifdef SDIO_HOST_ADMA_SUPPORT
 	u32 sg_compensate_num = sg_num;
-#else
-	int i, already, separate;
-	struct scatterlist sg_copy, *element;
-#endif
 
 	struct mmc_request mrq;
 	struct mmc_command cmd;
@@ -998,29 +962,11 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 		align_blocks = (size + func->cur_blksize - 1) / func->cur_blksize;
 		bes_devel("%s sz=%u blk=%u", __func__, size, align_blocks);
 		compensate = align_blocks * func->cur_blksize - size;
-#ifdef SDIO_HOST_ADMA_SUPPORT
 		if (compensate) {
 			sg_set_buf(&sg[sg_num], self->tx_buffer, compensate);
 			sg_compensate_num = sg_num + 1;
 		}
 		sg_mark_end(&sg[sg_compensate_num - 1]);
-#else
-		if (WARN_ON(size + compensate > MAX_SDIO_TRANSFER_LEN))
-			return -EINVAL;
-		already = 0;
-		separate = origin_size & 3;
-		if (separate == 3)
-			separate = 1632;
-		else
-			separate = (separate + 1) * 512;
-		for (i = 0; i < sg_num; i++) {
-			element = &sg[i];
-			memcpy(&self->single_gathered_buffer[already], page_address(sg_page(element)) + element->offset,
-					element->length);
-			already += separate;
-		}
-		sg_set_buf(&sg_copy, self->single_gathered_buffer, size + compensate);
-#endif
 
 		memset(&mrq, 0, sizeof(mrq));
 		memset(&cmd, 0, sizeof(cmd));
@@ -1050,16 +996,9 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 		data.blocks = align_blocks;
 		data.flags = MMC_DATA_WRITE;
 
-#ifdef SDIO_HOST_ADMA_SUPPORT
 		data.sg = sg;
 		data.sg_len = sg_compensate_num;
-#else
-		data.sg = &sg_copy;
-		data.sg_len = 1;
-#endif
-
 		mmc_set_data_timeout(&data, func->card);
-
 		mmc_wait_for_req(func->card->host, &mrq);
 
 		if (cmd.error){
@@ -1552,7 +1491,7 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 		ret = 0;
 	}
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 	if (sub_system == SUBSYSTEM_WIFI ||
 		sub_system == SUBSYSTEM_BT)
 		ret = bes2600_gpio_wakeup_ap_config(self);
@@ -1615,7 +1554,7 @@ static void bes2600_sdio_empty_work(struct sbus_priv *self)
 #endif
 }
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 static void bes2600_wlan_bt_hostwake_unregister(void);
 #endif
 
@@ -1868,16 +1807,6 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	self->unregister_in_process = false;
 	mutex_init(&self->io_mutex);
 	mutex_init(&self->sbus_mutex);
-#ifndef SDIO_HOST_ADMA_SUPPORT
-	if ((MAX_SDIO_TRANSFER_LEN < 1632 * BES_SDIO_RX_MULTIPLE_NUM) ||
-			(MAX_SDIO_TRANSFER_LEN < 1632 * BES_SDIO_TX_MULTIPLE_NUM)) {
-		bes_err("gathered buffer is too small.\n");
-		return -EINVAL;
-	}
-	self->single_gathered_buffer = (u8 *)__get_dma_pages(GFP_KERNEL, get_order(MAX_SDIO_TRANSFER_LEN));
-	if (!self->single_gathered_buffer)
-		return -ENOMEM;
-#endif
 #ifdef BES_SDIO_RXTX_TOGGLE
 	self->fw_started = false;
 #endif
@@ -2009,16 +1938,11 @@ static void bes2600_sdio_remove(struct sdio_func *func)
 		if (self->retune_protected == true) {
 			sdio_retune_release(func);
 		}
-#ifndef SDIO_HOST_ADMA_SUPPORT
-		if (self->single_gathered_buffer) {
-			free_pages((unsigned long)self->single_gathered_buffer, get_order(MAX_SDIO_TRANSFER_LEN));
-		}
-#endif
 		kfree(self);
 	}
 }
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 
 static irqreturn_t bes2600_wlan_bt_hostwake_thread(int irq, void *dev_id)
 {
@@ -2156,7 +2080,7 @@ static int bes2600_sdio_suspend(struct device *dev)
 		}
 	}
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 	return bes2600_wlan_bt_hostwake_register();
 #endif
 
@@ -2213,7 +2137,7 @@ static int bes2600_sdio_resume(struct device *dev)
 	if (func->num > 1)
 		return 0;
 
-#ifdef BES2600_GPIO_WAKEUP_AP
+#ifdef CONFIG_BES2600_GPIO_WAKEUP_AP
 	bes2600_wlan_bt_hostwake_unregister();
 #endif
 

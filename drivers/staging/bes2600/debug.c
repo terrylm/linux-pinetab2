@@ -438,7 +438,7 @@ static const struct file_operations fops_short_dump = {
 };
 #endif /* CONFIG_BES2600_WSM_DUMPS_SHORT */
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 extern void bes2600_get_dpd_log(char **data, size_t *len);
 static ssize_t bes2600_dpd_log_read(struct file *file,
 	char __user *user_buf, size_t count, loff_t *ppos)
@@ -461,7 +461,7 @@ static const struct file_operations dpd_log_dump = {
 	.read = bes2600_dpd_log_read,
 	.llseek = default_llseek,
 };
-#endif /* BES2600_DUMP_FW_DPD_LOG */
+#endif /* CONFIG_BES2600_DUMP_FW_DPD_LOG */
 
 int bes2600_debug_init_common(struct bes2600_common *hw_priv)
 {
@@ -505,7 +505,7 @@ int bes2600_debug_init_common(struct bes2600_common *hw_priv)
 		goto err;
 #endif
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 	if (!debugfs_create_file("dpd_log", S_IRUSR, d->debugfs_phy,
 			hw_priv, &dpd_log_dump))
 		goto err;

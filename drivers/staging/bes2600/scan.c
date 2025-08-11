@@ -240,9 +240,8 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 
 	if (frame.skb)
 		dev_kfree_skb(frame.skb);
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
+
 	bwifi_change_current_status(hw_priv, BWIFI_STATUS_SCANNING);
-#endif
 	queue_work(hw_priv->workqueue, &hw_priv->scan.work);
 
 	return 0;
@@ -355,7 +354,6 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
     else
 		wiphy_info(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
     if (priv->join_status == BES2600_JOIN_STATUS_STA) {
 		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
 	    	bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP_5G);
@@ -364,7 +362,7 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
     } else {
 		bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
     }
-#endif
+
     bes_devel("%s %d %d.", __func__, __LINE__, hw_priv->ht_info.channel_type);
     if (hw_priv->scan_switch_if_id >= 0) {
 		struct wsm_switch_channel channel;
@@ -397,9 +395,7 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
     const u32 ProbeRequestTime = 2;
     const u32 ChannelRemainTime = 15;
     u32 maxChannelTime;
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
     u32 minChannelTime;
-#endif
 
     struct ieee80211_channel *first = *hw_priv->scan.curr;
     for (it = hw_priv->scan.curr + 1, i = 1; it != hw_priv->scan.end &&
@@ -446,14 +442,12 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
 		     ChannelRemainTime;
     maxChannelTime = (maxChannelTime < 35) ? 35 : maxChannelTime;
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
     if (scan->band == NL80211_BAND_2GHZ) {
 	coex_calc_wifi_scan_time(&minChannelTime, &maxChannelTime);
     } else {
 	minChannelTime = 100;
 	maxChannelTime = 100;
     }
-#endif
 
     for (i = 0; i < scan->numOfChannels; ++i) {
 	scan->ch[i].number = hw_priv->scan.curr[i]->hw_value;
@@ -463,18 +457,8 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
 	    scan->ch[i].maxChannelTime = hw_priv->advanceScanElems.duration;
 	} else {
 #endif
-#ifndef WIFI_BT_COEXIST_EPTA_ENABLE
-	    if (hw_priv->scan.curr[i]->flags & IEEE80211_CHAN_NO_IR) {
-		scan->ch[i].minChannelTime = 40;
-		scan->ch[i].maxChannelTime = 100;
-	    } else {
-		scan->ch[i].minChannelTime = 15;
-		scan->ch[i].maxChannelTime = maxChannelTime;
-	    }
-#else
 	    scan->ch[i].minChannelTime = minChannelTime;
 	    scan->ch[i].maxChannelTime = maxChannelTime;
-#endif
 #ifdef CONFIG_BES2600_TESTMODE
 	}
 #endif
@@ -537,8 +521,8 @@ void bes2600_scan_work(struct work_struct *work)
     priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, hw_priv->scan.if_id);
     /* Problematic: Potential race if vif is removed, needs locking */
     if (!priv) {
-	wiphy_warn(hw_priv->hw->wiphy, "[SCAN] interface removed, ignoring scan work\n");
-	return;
+		wiphy_warn(hw_priv->hw->wiphy, "[SCAN] interface removed, ignoring scan work\n");
+		return;
     }
 
     down(&hw_priv->conf_lock);
@@ -551,25 +535,25 @@ void bes2600_scan_work(struct work_struct *work)
 
     if (first_run) {
 	/* Problematic: Firmware sensitive to scan during unassociated STA state */
-	if (cancel_delayed_work_sync(&priv->join_timeout) > 0) {
-	    bes2600_join_timeout(&priv->join_timeout.work);
-	}
+		if (cancel_delayed_work_sync(&priv->join_timeout) > 0) {
+	    	bes2600_join_timeout(&priv->join_timeout.work);
+		}
     }
 
     if (!bes2600_scan_setup(hw_priv, priv, first_run)) {
-	up(&hw_priv->conf_lock);
-	return;
+		up(&hw_priv->conf_lock);
+		return;
     }
 
     if (!hw_priv->scan.req || (hw_priv->scan.curr == hw_priv->scan.end)) {
-	bes2600_scan_finish(hw_priv, priv, hw_priv->scan.status ? 1 : 0);
-	up(&hw_priv->conf_lock);
-	return;
+		bes2600_scan_finish(hw_priv, priv, hw_priv->scan.status ? 1 : 0);
+		up(&hw_priv->conf_lock);
+		return;
     }
 
     if (bes2600_scan_configure_channels(hw_priv, priv, &scan)) {
-	up(&hw_priv->conf_lock);
-	return;
+		up(&hw_priv->conf_lock);
+		return;
     }
 
     bes2600_scan_execute(hw_priv, priv, &scan);

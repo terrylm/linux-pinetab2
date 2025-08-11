@@ -454,400 +454,336 @@ err1:
 	return ret;
 }
 
-static int bes_firmware_download(struct platform_fw_t *fw_data, const char *fw_name, bool auto_run)
-{
-	u8 frame_num = 0;
-	u8 last_frame_num = 0;
-	u8 buf_cnt = 0;
+/* Helpers */
+static int wait_slave_rx_ready(struct platform_fw_t *fw_data, u8 *buf_cnt, u16 *tx_size) {
+    int ret = bes_slave_rx_ready(fw_data, buf_cnt, tx_size, HZ);
+    if (!ret) {
+        bes_info("sdio slave rx buf cnt:%d,buf len max:%d\n", *buf_cnt, *tx_size);
+    } else {
+        bes_info("wait bes sdio slave rx ready timeout:%d\n", ret);
+    }
+    return ret;
+}
 
-	u16 tx_size = 0;
-	u16 rx_size = 0;
+static int wait_slave_tx_ready(struct platform_fw_t *fw_data, u16 *rx_size) {
+    int ret = bes_slave_tx_ready(fw_data, rx_size, HZ);
+    if (!ret) {
+        bes_devel("sdio slave tx ready %d bytes\n", *rx_size);
+    } else {
+        bes_devel("wait slave process failed:%d\n", ret);
+    }
+#ifdef BES_SLAVE_TX_DOUBLE_CHECK
+    if (*rx_size != 8)
+        *rx_size = 8;
+#endif
+    return ret;
+}
 
-	u32 length = 0;
-	u32 code_length = 0;
-	u32 retry_cnt = 0;
-	int ret;
-	const u8 *fw_ver_ptr;
-	const u8 *data_p;
-	u8 *short_buf = NULL;
-	u8 *long_buf = NULL;
+static void send_frame_header(u8 *buf, u8 type, u8 seq, u16 len, const void *payload, size_t payload_size) {
+    struct fw_msg_hdr_t header = { .type = type, .seq = seq, .len = len };
+    memcpy(buf, &header, sizeof(header));
+    if (payload && payload_size > 0) {
+        memcpy(buf + sizeof(header), payload, payload_size);
+    }
+}
 
-	const struct firmware *fw_bin = NULL;
+static int tx_data(u8 *buf, u32 len) {
+    len = (len > 512) ? len : 512;
+    int ret = bes2600_data_write(buf, len);
+    if (ret) {
+        bes_err("tx error:%d\n", ret);
+    }
+    return ret;
+}
 
+static int rx_response(u8 *buf, u16 rx_size, u8 expected_seq) {
+    int ret = bes2600_data_read(buf, rx_size);
+    if (ret) {
+        bes_err("rx error:%d\n", ret);
+        return ret;
+    }
+    ret = bes_frame_rsp_check(buf, expected_seq);
+    if (ret) {
+        bes_err("rsp check error:%d\n", ret);
+    }
+    return ret;
+}
+
+/* Sub-functions */
+static int load_and_parse_firmware(const char *fw_name, const struct firmware **fw_bin,
+                                   struct fw_info_t *fw_info, struct fw_crc_t *crc32_t,
+                                   const u8 **data_p, u32 *code_length) {
+    int ret = request_firmware_direct(fw_bin, fw_name, NULL);
+    if (ret) {
+        bes_err("%s: Firmware load failed (%d)\n", __func__, ret);
+        return ret;
+    }
+
+    bes_parse_fw_info((*fw_bin)->data, (*fw_bin)->size, &fw_info->addr, &crc32_t->crc32);
+
+    const u8 *fw_ver_ptr = bes2600_get_firmware_version_info((*fw_bin)->data, (*fw_bin)->size);
+    if (fw_ver_ptr == NULL) {
+        bes_err("------Firmware version get failed\n");
+    } else {
+        bes_info("------Firmware: %s version :%s\n", fw_name, fw_ver_ptr);
+    }
+
+    bes_info("------load addr	:0x%08X\n", fw_info->addr);
+    bes_info("------data crc	:0x%08X\n", crc32_t->crc32);
+
+    *code_length = (*fw_bin)->size - CODE_DATA_USELESS_SIZE;
+    bes_info("------code size	:%d\n", *code_length);
+
+    fw_info->len = *code_length;
+    *data_p = (*fw_bin)->data;
+
+    return 0;
+}
+
+static int send_download_info(struct platform_fw_t *fw_data, u8 *frame_num, u8 *last_frame_num,
+                              u8 *short_buf, struct fw_info_t *fw_info) {
+    u32 length;
+    u16 tx_size;
+	u8 dummy_cnt=0;  // Local dummy for unused buf_cnt
+
+    int ret = wait_slave_rx_ready(fw_data, &dummy_cnt, &tx_size);
+    if (ret) return ret;
+
+    send_frame_header(short_buf, FRAME_HEADER_DOWNLOAD_INFO, *frame_num, sizeof(*fw_info), fw_info, sizeof(*fw_info));
+    *last_frame_num = *frame_num;
+    (*frame_num)++;
+
+    length = BES_FW_MSG_TOTAL_LEN((struct fw_msg_hdr_t){ .len = sizeof(*fw_info) });
+
+    print_hex_dump(KERN_DEBUG, "FW info: ", DUMP_PREFIX_NONE, 16, 1, short_buf, length, false);
+
+    if (tx_size <= length) {
+        bes_devel("%s:%d bes slave has no enough buffer%d/%d\n", __func__, __LINE__, tx_size, length);
+        return -EINVAL;
+    }
+
+    bes_devel("%s", "tx download firmware info\n");
+
+    ret = tx_data(short_buf, length);
+    if (ret) return ret;
+
+    u16 rx_size;
+    ret = wait_slave_tx_ready(fw_data, &rx_size);
+    if (ret) return ret;
+
+    return rx_response(short_buf, rx_size, *last_frame_num);
+}
+
+static int download_data_loop(struct platform_fw_t *fw_data, u8 *frame_num, u8 *last_frame_num,
+                              const u8 **data_p, u32 *code_length, struct fw_info_t *fw_info,
+                              u8 *short_buf, u8 *long_buf
 #ifdef DATA_DUMP_OBSERVE
-	char *observe;
-	size_t observe_len;
-	loff_t observe_off = 0;
-	mm_segment_t old_fs;
-	struct file *observe_file = NULL;
+                              , struct file *observe_file
+#endif
+                              ) {
+    struct download_fw_t download_addr = { .addr = fw_info->addr };
+#ifdef DATA_DUMP_OBSERVE
+    loff_t observe_off = 0;
+    mm_segment_t old_fs;
+    char *observe;
+    size_t observe_len;
 #endif
 
-	struct fw_msg_hdr_t header;
-	struct fw_info_t fw_info;
-	struct download_fw_t download_addr;
-	struct fw_crc_t crc32_t;
-	struct run_fw_t run_addr;
+    while (*code_length) {
+        u32 length;
+        u16 tx_size;
+        u8 buf_cnt;
+
+        int ret = wait_slave_rx_ready(fw_data, &buf_cnt, &tx_size);
+        if (ret) return ret;
+
+#ifdef BES_SLAVE_RX_DOUBLE_CHECK
+        tx_size = 512;
+#endif
+
+        if ((tx_size < 4) || (tx_size % 4)) {
+            bes_err("%s:%d tx size=%d\n", __func__, __LINE__, tx_size);
+            return -EINVAL;
+        }
+
+        length = min(*code_length + sizeof(download_addr), (u32)(tx_size - sizeof(struct fw_msg_hdr_t)));
+
+        send_frame_header(long_buf, FRAME_HEADER_DOWNLOAD_DATA, *frame_num, length, &download_addr.addr, sizeof(download_addr.addr));
+        *last_frame_num = *frame_num;
+        (*frame_num)++;
+
+        u32 data_len = length - sizeof(download_addr.addr);
+        memcpy(long_buf + sizeof(struct fw_msg_hdr_t) + sizeof(download_addr.addr), *data_p, data_len);
+
+        length += sizeof(struct fw_msg_hdr_t);  // Total for TX
+
+        bes_devel("tx_download_firmware_data:%x %d\n", download_addr.addr, length);
+
+#ifdef DATA_DUMP_OBSERVE
+        if (observe_file) {
+            observe = (char *)(long_buf + sizeof(struct fw_msg_hdr_t) + sizeof(download_addr.addr));
+            observe_len = data_len;
+            old_fs = get_fs();
+            set_fs(KERNEL_DS);
+            vfs_write(observe_file, observe, observe_len, &observe_off);
+            set_fs(old_fs);
+        }
+#endif
+
+        ret = tx_data(long_buf, length);
+        if (ret) return ret;
+
+        u16 rx_size;
+        ret = wait_slave_tx_ready(fw_data, &rx_size);
+        if (ret) return ret;
+
+        ret = rx_response(short_buf, rx_size, *last_frame_num);
+        if (ret) return ret;
+
+        *code_length -= data_len;
+        *data_p += data_len;
+        download_addr.addr += data_len;
+        bes_devel("already tx fw size:%x/%x\n", download_addr.addr - fw_info->addr, fw_info->len);
+    }
+
+    return 0;
+}
+
+static int send_download_end(struct platform_fw_t *fw_data, u8 *frame_num, u8 *last_frame_num,
+                             u8 *short_buf, struct fw_crc_t *crc32_t) {
+    u32 length;
+    u16 tx_size;
+	u8 dummy_cnt=0;  // Local dummy for unused buf_cnt
+
+    int ret = wait_slave_rx_ready(fw_data, &dummy_cnt, &tx_size);
+    if (ret) return ret;
+
+#ifdef BES_SLAVE_RX_DOUBLE_CHECK
+    tx_size = 512;
+#endif
+
+    send_frame_header(short_buf, FRAME_HEADER_DOWNLOAD_END, *frame_num, sizeof(*crc32_t), &crc32_t->crc32, sizeof(crc32_t->crc32));
+    *last_frame_num = *frame_num;
+    (*frame_num)++;
+
+    length = BES_FW_MSG_TOTAL_LEN((struct fw_msg_hdr_t){ .len = sizeof(*crc32_t) });
+
+    bes_devel("%s", "tx download firmware complete command\n");
+
+    ret = tx_data(short_buf, length);
+    if (ret) return ret;
+
+    u16 rx_size;
+    ret = wait_slave_tx_ready(fw_data, &rx_size);
+    if (ret) return ret;
+
+    return rx_response(short_buf, rx_size, *last_frame_num);
+}
+
+static int send_run_firmware(struct platform_fw_t *fw_data, u8 *frame_num, u8 *last_frame_num,
+                             u8 *short_buf, struct fw_info_t *fw_info, bool auto_run) {
+    if (!auto_run) {
+        bes_devel("partial firmware is downloaded successfully\n");  // Assume fw_name in fw_data if needed
+        return 0;
+    }
+
+    u32 length;
+    u16 tx_size;
+	u8 dummy_cnt=0;  // Local dummy for unused buf_cnt
+    struct run_fw_t run_addr = { .addr = fw_info->addr };
+
+    int ret = wait_slave_rx_ready(fw_data, &dummy_cnt, &tx_size);
+    if (ret) return ret;
+
+#ifdef BES_SLAVE_RX_DOUBLE_CHECK
+    tx_size = 512;
+#endif
+
+    send_frame_header(short_buf, FRAME_HEADER_RUN_CODE, *frame_num, sizeof(run_addr), &run_addr.addr, sizeof(run_addr.addr));
+    *last_frame_num = *frame_num;
+    (*frame_num)++;
+
+    length = BES_FW_MSG_TOTAL_LEN((struct fw_msg_hdr_t){ .len = sizeof(run_addr) });
+
+    bes_devel("tx run firmware command:0x%X\n", run_addr.addr);
+
+    ret = tx_data(short_buf, length);
+    if (ret) return ret;
+
+    u16 rx_size;
+    ret = wait_slave_tx_ready(fw_data, &rx_size);
+    if (ret) return ret;
+
+    ret = rx_response(short_buf, rx_size, *last_frame_num);
+    if (ret) return ret;
+
+    bes_devel("%s", "firmware is downloaded successfully and is already running\n");
+    msleep(500);
+
+    return 0;
+}
+
+/* Main function */
+static int bes_firmware_download(struct platform_fw_t *fw_data, const char *fw_name, bool auto_run) {
+    u8 frame_num = 0;
+    u8 last_frame_num = 0;
+    u32 retry_cnt = 0;
+    int ret;
+    const struct firmware *fw_bin = NULL;
+    struct fw_info_t fw_info;
+    struct fw_crc_t crc32_t;
+    const u8 *data_p;
+    u32 code_length;
+    u8 *short_buf = kzalloc(512, GFP_KERNEL);
+    u8 *long_buf = kmalloc(1024 * 32, GFP_KERNEL);
+#ifdef DATA_DUMP_OBSERVE
+    struct file *observe_file = filp_open("/lib/firmware/bes2002_fw_write.bin", O_CREAT | O_RDWR, 0);
+    if (IS_ERR(observe_file)) {
+        bes_err("create data_dump file err:%ld\n", IS_ERR(observe_file));
+        observe_file = NULL;
+    }
+#endif
+
+    if (!short_buf || !long_buf) {
+        ret = -ENOMEM;
+        goto cleanup;
+    }
 
 retry:
-	bes_info("%s: Requesting firmware: %s\n", __func__, fw_name);
-	ret = request_firmware_direct(&fw_bin, fw_name, NULL);
-	if (ret) {
-		bes_err("%s: Firmware load failed (%d)\n", __func__, ret);
-		goto err1;
-	}
+    ret = load_and_parse_firmware(fw_name, &fw_bin, &fw_info, &crc32_t, &data_p, &code_length);
+    if (ret) goto cleanup;
 
-	bes_parse_fw_info(fw_bin->data, fw_bin->size, &fw_info.addr, &crc32_t.crc32);
+    ret = send_download_info(fw_data, &frame_num, &last_frame_num, short_buf, &fw_info);
+    if (ret) goto release_fw;
 
-	fw_ver_ptr = bes2600_get_firmware_version_info(fw_bin->data, fw_bin->size);
-	if(fw_ver_ptr == NULL)
-		bes_err("------Firmware version get failed\n");
-	else
-		bes_info("------Firmware: %s version :%s\n", fw_name ,fw_ver_ptr);
-
-	bes_info("------load addr	:0x%08X\n", fw_info.addr);
-	bes_info("------data crc	:0x%08X\n", crc32_t.crc32);
-
-	code_length = fw_bin->size - CODE_DATA_USELESS_SIZE;
-	bes_info("------code size	:%d\n", code_length);
-
-	fw_info.len = code_length;
-	data_p = fw_bin->data;
-
-	ret = bes_slave_rx_ready(fw_data, &buf_cnt, &tx_size, HZ);
-	if (!ret) {
-		bes_info("sdio slave rx buf cnt:%d,buf len max:%d\n", buf_cnt, tx_size);
-	} else {
-		bes_info("wait bes sdio slave rx ready timeout:%d\n", ret);
-		goto err1;
-	}
-
-	header.type = FRAME_HEADER_DOWNLOAD_INFO;
-	header.seq = frame_num;
-	header.len = sizeof(struct fw_info_t);
-	last_frame_num = frame_num;
-	frame_num++;
-
-	short_buf = kzalloc(512, GFP_KERNEL);
-	if (!short_buf) {
-		ret = -ENOMEM;
-		goto err1;
-	}
-	memcpy(short_buf, (u8 *)&header, sizeof(struct fw_msg_hdr_t));
-	memcpy(short_buf + sizeof(struct fw_msg_hdr_t), (u8 *)&fw_info, sizeof(struct fw_info_t));
-	length = BES_FW_MSG_TOTAL_LEN(header);
-
-	//mdelay(5000);
-	print_hex_dump(KERN_DEBUG, "FW info: ", DUMP_PREFIX_NONE, 16, 1, short_buf, length, false);
-
-	if (tx_size > length) {
-		bes_devel("%s", "tx download firmware info\n");
-	} else {
-		bes_devel("%s:%d bes slave has no enough buffer%d/%d\n", __func__, __LINE__, tx_size, length);
-		goto err1;
-	}
-
-	length = length > 512 ? length : 512;
-	ret = bes2600_data_write(short_buf, length);
-	if (ret) {
-		bes_err("tx download firmware info err:%d\n", ret);
-		goto err1;
-	}
-
-#if 1
-	ret = bes_slave_tx_ready(fw_data, &rx_size, HZ);
-	if (!ret) {
-		bes_devel("sdio slave tx ready %d bytes\n", rx_size);
-	} else {
-		bes_devel("wait slave process failed:%d\n", ret);
-		goto err1;
-	}
-#ifdef BES_SLAVE_TX_DOUBLE_CHECK
-	if (rx_size != 8)
-		rx_size = 8;
-#endif
-#else
-	mdelay(100);
-	rx_size = 8;
-#endif
-
-	ret = bes2600_data_read(short_buf, rx_size);
-	if (ret) {
-		bes_err("rx download firmware info rsp err:%d\n", ret);
-		goto err1;
-	}
-
-	//check device rx status
-	ret = bes_frame_rsp_check(short_buf, last_frame_num);
-	if (ret) {
-		bes_err("rsp download firmware info err:%d\n", ret);
-		goto err1;
-	}
-
-	//download firmware
-	long_buf = kmalloc(1024 * 32, GFP_KERNEL);
-	if (!long_buf) {
-		bes_err("%s:%d fw failed to allocate memory\n",__func__, __LINE__);
-		ret = -ENOMEM;
-		goto err1;
-	}
-	download_addr.addr = fw_info.addr;
-
+    ret = download_data_loop(fw_data, &frame_num, &last_frame_num, &data_p, &code_length, &fw_info, short_buf, long_buf
 #ifdef DATA_DUMP_OBSERVE
-	observe_file = filp_open("/lib/firmware/bes2002_fw_write.bin", O_CREAT | O_RDWR, 0);
-	if (IS_ERR(observe_file)) {
-		bes_err("create data_dump file err:%ld\n", IS_ERR(observe_file));
-		observe_file = NULL;
-	}
+                             , observe_file
 #endif
+                             );
+    if (ret) goto release_fw;
 
-	while (code_length) {
+    ret = send_download_end(fw_data, &frame_num, &last_frame_num, short_buf, &crc32_t);
+    if (ret) goto release_fw;
 
-#if 1
-		ret = bes_slave_rx_ready(fw_data, &buf_cnt, &tx_size, HZ);
-		if (ret) {
-			goto err2;
-		} else {
-			bes_devel("bes salve rx ready %d bytes\n", tx_size);
-		}
-#endif
-#ifdef BES_SLAVE_RX_DOUBLE_CHECK
-		tx_size = 512;
-#endif
+    ret = send_run_firmware(fw_data, &frame_num, &last_frame_num, short_buf, &fw_info, auto_run);
+    if (ret) goto release_fw;
 
-		if ((tx_size < 4) || (tx_size % 4)) {
-			bes_err("%s:%d tx size=%d\n", __func__, __LINE__, tx_size);
-			ret = -EINVAL; /* Use standard error code */
-			goto err2;
-		}
+release_fw:
+    if (fw_bin) release_firmware(fw_bin);
 
-		if ((code_length + sizeof(struct fw_msg_hdr_t) + sizeof(struct download_fw_t)) < tx_size) {
-			length = code_length + sizeof(struct download_fw_t);
-		} else {
-			length = tx_size - sizeof(struct fw_msg_hdr_t);
-		}
+    if (ret && retry_cnt < 3) {
+        retry_cnt++;
+        goto retry;
+    }
 
-		header.type = FRAME_HEADER_DOWNLOAD_DATA;
-		header.seq = frame_num;
-		header.len = length;
-		last_frame_num = frame_num;
-		frame_num++;
-
-		memcpy(long_buf, (u8 *)&header, sizeof(struct fw_msg_hdr_t));
-		memcpy(long_buf + sizeof(struct fw_msg_hdr_t), &download_addr.addr, sizeof(struct download_fw_t));
-		length -= sizeof(struct download_fw_t);//real data length
-		memcpy(long_buf + sizeof(struct fw_msg_hdr_t) + sizeof(struct download_fw_t), data_p, length);
-
-		length += (sizeof(struct fw_msg_hdr_t) + sizeof(struct download_fw_t));
-
-		//mdelay(5000);
-		bes_devel("tx_download_firmware_data:%x %d\n", download_addr.addr, length);
-
+cleanup:
+    kfree(short_buf);
+    kfree(long_buf);
 #ifdef DATA_DUMP_OBSERVE
-		if (observe_file) {
-			observe = (char *)(long_buf + sizeof(struct fw_msg_hdr_t) + sizeof(struct download_fw_t));
-			observe_len = length - sizeof(struct fw_msg_hdr_t) - sizeof(struct download_fw_t);
-			old_fs = get_fs();
-			set_fs(KERNEL_DS);
-			vfs_write(observe_file, observe, observe_len, &observe_off);
-			set_fs(old_fs);
-		}
+    if (observe_file) filp_close(observe_file, NULL);
 #endif
-
-		ret = bes2600_data_write(long_buf, length > 512 ? length : 512);
-		if (ret) {
-			bes_err("tx download fw data err:%d\n", ret);
-			goto err2;
-		}
-		length -= (sizeof(struct fw_msg_hdr_t) + sizeof(struct download_fw_t));
-
-#if 1
-		ret = bes_slave_tx_ready(fw_data, &rx_size, HZ);
-		if (!ret) {
-			bes_devel("bes_slave ready tx %d bytes\n", rx_size);
-		} else {
-			bes_err("wait slave process download fw data err:%d\n", ret);
-			goto err2;
-		}
-#ifdef BES_SLAVE_TX_DOUBLE_CHECK
-		if (rx_size != 8)
-			rx_size = 8;
-#endif
-#else
-		mdelay(100);
-		rx_size = 8;
-#endif
-
-		ret = bes2600_data_read(short_buf, rx_size);
-		if (ret) {
-			bes_err("rx tx download fw data rsp err:%d\n", ret);
-			goto err2;
-		}
-
-		//check device rx status
-		ret = bes_frame_rsp_check(short_buf, last_frame_num);
-		if (ret) {
-			bes_err("rsp tx download fw err:%d\n", ret);
-			goto err2;
-		}
-
-		code_length -= length;
-		data_p += length;
-		download_addr.addr += length;
-		bes_devel("already tx fw size:%x/%x\n", download_addr.addr - fw_info.addr, fw_info.len);
-	}
-
-	//Notify Device:The firmware download is complete
-
-#if 1
-	ret = bes_slave_rx_ready(fw_data, &buf_cnt, &tx_size, HZ);
-	if (ret) {
-		goto err2;
-	} else {
-		bes_devel("bes salve rx ready %d bytes\n", tx_size);
-	}
-#endif
-#ifdef BES_SLAVE_RX_DOUBLE_CHECK
-		tx_size = 512;
-#endif
-
-	header.type = FRAME_HEADER_DOWNLOAD_END;
-	header.seq = frame_num;
-	header.len = sizeof(struct fw_crc_t);
-	last_frame_num = frame_num;
-	frame_num++;
-
-	memcpy(short_buf, (u8 *)&header, sizeof(struct fw_msg_hdr_t));
-	memcpy(short_buf + sizeof(struct fw_msg_hdr_t), (u8 *)&crc32_t.crc32, sizeof(struct fw_crc_t));
-	length = BES_FW_MSG_TOTAL_LEN(header);
-
-	bes_devel("%s", "tx download firmware complete command\n");
-
-	length = length > 512 ? length : 512;
-	ret = bes2600_data_write(short_buf, length);
-	if (ret) {
-		bes_err("tx downlod firmware complete command err:%d\n", ret);
-		goto err2;
-	}
-
-#if 1
-	ret = bes_slave_tx_ready(fw_data, &rx_size, HZ);
-	if (!ret) {
-		bes_devel("bes_slave ready tx %d bytes\n", rx_size);
-	} else {
-		bes_err("wait slave process download fw data err:%d\n", ret);
-		goto err2;
-	}
-#ifdef BES_SLAVE_TX_DOUBLE_CHECK
-		if (rx_size != 8)
-			rx_size = 8;
-#endif
-#else
-	mdelay(100);
-	rx_size = 8;
-	bes_devel("enter sdio irqs:%d", enter_sdio_irqs);
-#endif
-
-	ret = bes2600_data_read(short_buf, rx_size);
-	if (ret) {
-		bes_err("rx run firmware command err:%d\n", ret);
-		goto err2;
-	}
-
-	//check device rx status
-	ret = bes_frame_rsp_check(short_buf, last_frame_num);
-	if (ret) {
-		bes_err("rsp run firmware command err:%d\n", ret);
-		goto err2;
-	}
-
-	if (auto_run == false) {
-		bes_devel("partial firmware(%s) is downloaded successfully\n", fw_name);
-		goto err2;
-	}
-
-#if 1
-	ret = bes_slave_rx_ready(fw_data, &buf_cnt, &tx_size, HZ);
-	if (ret) {
-		goto err2;
-	} else {
-		bes_devel("bes salve rx ready %d bytes\n", tx_size);
-	}
-#endif
-#ifdef BES_SLAVE_RX_DOUBLE_CHECK
-	tx_size = 512;
-#endif
-
-	//Notify Device:Run firmware
-	run_addr.addr = fw_info.addr;
-
-	header.type = FRAME_HEADER_RUN_CODE;
-	header.seq = frame_num;
-	header.len = sizeof(struct run_fw_t);
-	last_frame_num = frame_num;
-	frame_num++;
-
-	memcpy(short_buf, (u8 *)&header, sizeof(struct fw_msg_hdr_t));
-	memcpy(short_buf + sizeof(struct fw_msg_hdr_t), (u8 *)&run_addr.addr, sizeof(struct run_fw_t));
-	length = BES_FW_MSG_TOTAL_LEN(header);
-
-	bes_devel("tx run firmware command:0x%X\n", run_addr.addr);
-
-	length = length > 512 ? length : 512;
-	ret = bes2600_data_write(short_buf, length);
-	if (ret) {
-		bes_err("tx run firmware command err:%d\n", ret);
-		goto err2;
-	}
-
-#if 1
-	ret = bes_slave_tx_ready(fw_data, &rx_size, HZ);
-	if (!ret) {
-		bes_devel("bes_slave ready tx %d bytes\n", rx_size);
-	} else {
-		bes_err("wait slave process run fw cmd err:%d\n", ret);
-		goto err2;
-	}
-#ifdef BES_SLAVE_TX_DOUBLE_CHECK
-		if (rx_size != 8)
-			rx_size = 8;
-#endif
-#else
-	mdelay(100);
-	rx_size = 8;
-#endif
-
-	ret = bes2600_data_read(short_buf, rx_size);
-	if (ret) {
-		bes_err("rx run firmware command err:%d\n", ret);
-		goto err2;
-	}
-
-	//check device rx status
-	ret = bes_frame_rsp_check(short_buf, last_frame_num);
-	if (ret) {
-		bes_err("rsp run firmware command err:%d\n", ret);
-		goto err2;
-	}
-
-	bes_devel("%s", "firmware is downloaded successfully and is already running\n");
-	msleep(500);
-
-err2:
-	kfree(long_buf);
-#ifdef DATA_DUMP_OBSERVE
-	if (observe_file) {
-		filp_close(observe_file, NULL);
-	}
-#endif
-err1:
-	kfree(short_buf);
-	if (fw_bin)
-		release_firmware(fw_bin);
-	if (ret && retry_cnt < 3) {
-		retry_cnt++;
-		goto retry;
-	}
-	return ret;
+    return ret;
 }
 
 static int bes_read_dpd_data(struct platform_fw_t *fw_data)
@@ -911,7 +847,7 @@ static int bes_read_dpd_data(struct platform_fw_t *fw_data)
 	return ret;
 }
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 static int bes_read_dpd_log(struct platform_fw_t *fw_data)
 {
 	u16 dpd_log_size = 0;
@@ -958,7 +894,7 @@ static int bes_read_dpd_log(struct platform_fw_t *fw_data)
 
 	return ret;
 }
-#endif /* BES2600_DUMP_FW_DPD_LOG */
+#endif /* CONFIG_BES2600_DUMP_FW_DPD_LOG */
 
 static int bes2600_load_wifi_firmware(struct platform_fw_t *fw_data)
 {
@@ -982,7 +918,7 @@ static int bes2600_load_wifi_firmware(struct platform_fw_t *fw_data)
 			bes_err("read dpd data failed\n");
 	}
 
-#ifdef BES2600_DUMP_FW_DPD_LOG
+#ifdef CONFIG_BES2600_DUMP_FW_DPD_LOG
 	if (!ret) {
 		bes_devel("bes2600 read dpd log data\n");
 		ret = bes_read_dpd_log(fw_data);
@@ -1054,11 +990,9 @@ int bes2600_load_firmware_sdio(struct sbus_ops *ops, struct sbus_priv *priv)
 	u32 dpd_data_len = 0;
 	const u8 *dpd_data = NULL;
 	int fw_type = bes2600_chrdev_get_fw_type();
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 	u8 *factory_data = NULL;
 	u8 *file_buffer = NULL;
 	u32 factory_data_len = 0;
-#endif
 
 	temp_fw_data = kzalloc(sizeof(struct platform_fw_t), GFP_KERNEL);
 	if (!temp_fw_data)
@@ -1074,7 +1008,6 @@ int bes2600_load_firmware_sdio(struct sbus_ops *ops, struct sbus_priv *priv)
 	bes_firmware_download_write_reg(temp_fw_data, 0x40100000, 0x802006);
 	bes_firmware_download_write_reg(temp_fw_data, 0x4008602C, 0x3E00C000);
 
-#ifdef CONFIG_BES2600_CALIB_FROM_LINUX
 	file_buffer = bes2600_factory_get_file_buffer();
 	if (!file_buffer) {
 		ret = -ENOMEM;
@@ -1082,7 +1015,7 @@ int bes2600_load_firmware_sdio(struct sbus_ops *ops, struct sbus_priv *priv)
 	}
 
 	bes2600_factory_lock();
-	factory_data = bes2600_get_factory_cali_data(file_buffer, &factory_data_len, FACTORY_PATH);
+	factory_data = bes2600_get_factory_cali_data(file_buffer, &factory_data_len, CONFIG_FACTORY_PATH);
 	if (!factory_data) {
 		bes_warn("factory cali data get failed\n");
 	} else {
@@ -1095,7 +1028,6 @@ int bes2600_load_firmware_sdio(struct sbus_ops *ops, struct sbus_priv *priv)
 
 	bes2600_factory_free_file_buffer(file_buffer);
 	bes2600_factory_unlock();
-#endif
 
 	bes_devel("%s fw_type:%d\n", __func__, fw_type);
 	if(fw_type == BES2600_FW_TYPE_BT) {

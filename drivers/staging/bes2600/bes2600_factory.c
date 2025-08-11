@@ -100,12 +100,10 @@ static int bes2600_factory_head_info_check(struct factory_t *factory_data)
 
 static int bes2600_factory_crc_check(struct factory_t *factory_data)
 {
-#ifdef FACTORY_CRC_CHECK
+/* #ifdef FACTORY_CRC_CHECK, this was not defined, so disabled. FACTORY_CRC_CHECK removed from Makefile.
 	u32 cal_crc = 0;
-	u32 crc_len = sizeof(struct factory_data_t); /* Fixed type */
-#ifndef STANDARD_FACTORY_EFUSE_FLAG
+	u32 crc_len = sizeof(struct factory_data_t); // Fixed type
 	crc_len = (crc_len - sizeof(u16) + 3) & (~0x3);
-#endif
 
 	if (!factory_data) {
 		bes_err("%s: NULL pointer\n", __func__);
@@ -120,9 +118,8 @@ static int bes2600_factory_crc_check(struct factory_t *factory_data)
 		return -EINVAL;
 	}
 	return 0;
-#else
+# else */
 	return 0;
-#endif
 }
 
 /**
@@ -247,16 +244,8 @@ static inline int factory_parse(uint8_t *source_buf, struct factory_t *factory)
 		&factory->data.bt_tx_power[0],
 		&factory->data.bt_tx_power[1],
 		&factory->data.bt_tx_power[2],
-		&factory->data.bt_tx_power[3]
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
-		, &factory->data.select_efuse);
-#else
-		);
-#endif
-
-#ifndef STANDARD_FACTORY_EFUSE_FLAG
-	factory->data.select_efuse = 0;
-#endif
+		&factory->data.bt_tx_power[3],
+		&factory->data.select_efuse);
 
 	if (ret != FACTORY_MEMBER_NUM) {
 		bes_err("%s: parse failed, ret:%d expected:%d\n",
@@ -485,21 +474,8 @@ static bool bes2600_factory_file_status_read(u8 *file_buffer)
 	uint32_t len;
 	bool ret = true;
 
-#ifdef FACTORY_SAVE_MULTI_PATH
-	factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_PATH);
-	if (!factory_temp) {
-		bes_warn("%s: get factory cali from first path failed\n", __func__);
-		factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_DEFAULT_PATH);
-		/* clear the flag of the file in the default path, and then create a new file */
-		if (factory_temp) {
-			((struct factory_t *)factory_temp)->data.tx_power_type = 0xff;
-			((struct factory_t *)factory_temp)->data.freq_cal_flags = 0;
-			((struct factory_t *)factory_temp)->data.tx_power_flags_5G = 0;
-		}
-	}
-#else
-	factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, FACTORY_PATH);
-#endif
+	factory_temp = bes2600_get_factory_cali_data(file_buffer, &len, CONFIG_FACTORY_PATH);
+
 	if (!factory_temp) {
 		bes_warn("%s: get factory data failed, check whether the file exists\n", __func__);
 		ret = false;
@@ -539,9 +515,7 @@ static int bes2600_factory_cali_file_hdr_fill(struct factory_t **factory_head)
 	(*factory_head)->data.bt_tx_power[1] = 0x10;
 	(*factory_head)->data.bt_tx_power[2] = 0x05;
 	(*factory_head)->data.bt_tx_power[3] = 0x15;
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 	(*factory_head)->data.select_efuse = 0;
-#endif
 
 	return 0;
 }
@@ -765,7 +739,6 @@ err:
 	return ret;
 }
 
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
 int16_t bes2600_select_efuse_flag_write(uint16_t select_efuse_flag)
 {
 	struct factory_t *factory_flag_p = NULL;
@@ -818,7 +791,6 @@ err:
 	bes2600_factory_free_file_buffer(file_buffer);
 	return ret;
 }
-#endif
 
 int16_t vendor_set_power_cali_flag(struct wifi_power_cali_flag_t *cali_flag)
 {
@@ -913,12 +885,8 @@ static inline int factory_build(uint8_t *dest_buf, struct factory_t *factory)
 		factory->data.bt_tx_power[0],
 		factory->data.bt_tx_power[1],
 		factory->data.bt_tx_power[2],
-		factory->data.bt_tx_power[3]
-#ifdef STANDARD_FACTORY_EFUSE_FLAG
-		, factory->data.select_efuse);
-#else
-		);
-#endif
+		factory->data.bt_tx_power[3],
+		factory->data.select_efuse);
 
 	if (ret < 0 || ret >= FACTORY_MAX_SIZE) {
 		bes_err("%s: snprintf failed, ret:%d max_size:%d\n",
@@ -934,9 +902,6 @@ static int bes2600_wifi_cali_table_save(u8 *file_buffer, struct factory_t *facto
 	int ret = 0;
 	int w_size;
 	u32 crc_len = sizeof(factory_data_t);
-#ifndef STANDARD_FACTORY_EFUSE_FLAG
-	crc_len = (crc_len - sizeof(u16) + 3) & (~0x3);
-#endif
 
 	bes_devel("%s: enter\n", __func__);
 
@@ -966,13 +931,7 @@ static int bes2600_wifi_cali_table_save(u8 *file_buffer, struct factory_t *facto
 		return -ETXTBSY;
 	}
 
-#ifdef FACTORY_SAVE_MULTI_PATH
-	/* avoid trailing characters '\0' */
-	file_buffer[w_size] = 32;
-	ret = factory_section_write_file(FACTORY_PATH, file_buffer, FACTORY_MAX_SIZE);
-#else
-	ret = factory_section_write_file(FACTORY_PATH, file_buffer, w_size);
-#endif
+	ret = factory_section_write_file(CONFIG_FACTORY_PATH, file_buffer, w_size);
 	if (ret < 0) {
 		bes_err("%s: write failed, ret:%d\n", __func__, ret);
 		bes2600_factory_free_file_buffer(file_buffer);

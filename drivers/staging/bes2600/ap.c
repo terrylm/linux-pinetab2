@@ -39,9 +39,6 @@
 #endif /*IPV6_FILTERING*/
 
 static int bes2600_upload_beacon(struct bes2600_vif *priv);
-#ifdef PROBE_RESP_EXTRA_IE
-static int bes2600_upload_proberesp(struct bes2600_vif *priv);
-#endif
 static int bes2600_upload_pspoll(struct bes2600_vif *priv);
 static int bes2600_upload_null(struct bes2600_vif *priv);
 static int bes2600_upload_qosnull(struct bes2600_vif *priv);
@@ -97,7 +94,8 @@ int bes2600_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	while ((skb = skb_dequeue(&entry->rx_queue)))
 		ieee80211_rx_irqsafe(priv->hw, skb);
 	spin_unlock_bh(&priv->ps_state_lock);
-#ifdef AP_AGGREGATE_FW_FIX
+
+	/* Start HW limitations fix. */
 	hw_priv->connected_sta_cnt++;
 	if(hw_priv->connected_sta_cnt>1) {
 			wsm_lock_tx(hw_priv);
@@ -107,7 +105,7 @@ int bes2600_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 					priv->if_id));
 			wsm_unlock_tx(hw_priv);
 	}
-#endif
+	/* End HW limitations fix. */
 
 	return 0;
 }
@@ -140,7 +138,8 @@ int bes2600_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		wsm_unlock_tx(hw_priv);
 	spin_unlock_bh(&priv->ps_state_lock);
 	flush_workqueue(hw_priv->workqueue);
-#ifdef AP_AGGREGATE_FW_FIX
+
+	/* Start HW limitations fix. */
 	hw_priv->connected_sta_cnt--;
 	if(hw_priv->connected_sta_cnt <= 1) {
 		if ((priv->if_id != 1) ||
@@ -153,7 +152,7 @@ int bes2600_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 			wsm_unlock_tx(hw_priv);
 		}
 	}
-#endif
+	/* End HW limitations fix. */
 
 	return 0;
 }
@@ -388,7 +387,7 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct ieee80211_conf *conf = &dev->conf;
-	const u8 override_fpsm_timeout = BES2600_FASTPS_IDLE_TIME;
+	const u8 override_fpsm_timeout = CONFIG_BES2600_FASTPS_IDLE_TIME;
 	struct ieee80211_vif_cfg *cfg = &vif->cfg;
 
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
@@ -422,11 +421,10 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		bes_devel("[STA] BSS_CHANGED_ARP_FILTER cnt: %d",
 				     cfg->arp_addr_cnt);
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 		if (cfg->arp_addr_cnt > 0) {
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP);
 		}
-#endif
+
 		/* Currently only one IP address is supported by firmware.
 		 * In case of more IPs arp filtering will be disabled. */
 		if (cfg->arp_addr_cnt > 0 &&
@@ -598,13 +596,8 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		wsm_unlock_tx(hw_priv);
 
 		if (!cfg->assoc /* && !info->ibss_joined */) {
-			#ifdef P2P_STA_COEX
-			priv->cqm_link_loss_count = 400;
-			priv->cqm_beacon_loss_count = 200;
-			#else
 			priv->cqm_link_loss_count = 100;
 			priv->cqm_beacon_loss_count = 50;
-			#endif
 			priv->cqm_tx_failure_thold = 0;
 		}
 		priv->cqm_tx_failure_count = 0;
@@ -668,14 +661,12 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 				if (hw_priv->ht_info.operation_mode != info->ht_operation_mode)
 					hw_priv->ht_info.operation_mode = info->ht_operation_mode;
 
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 				if (changed & BSS_CHANGED_ASSOC) {
 					if (hw_priv->channel->band != NL80211_BAND_2GHZ)
 						bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTED_5G);
 					else
 						bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTED);
 				}
-#endif
 			} else {
 				rcu_read_unlock();
 
@@ -817,10 +808,9 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 			}
 
 		} else {
-#ifdef WIFI_BT_COEXIST_EPTA_ENABLE
 			if (changed & BSS_CHANGED_ASSOC)
 				bwifi_change_current_status(hw_priv, BWIFI_STATUS_DISCONNECTED);
-#endif
+
 			memset(&hw_priv->ht_info, 0,
 				sizeof(hw_priv->ht_info));
 			memset(&priv->association_mode, 0,
@@ -1069,12 +1059,11 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 			modeinfo->interval = 0;
 		}
 
-#if defined(CONFIG_BES2600_STA_DEBUG)
 		print_hex_dump_bytes("p2p_set_ps_modeinfo: ",
 				     DUMP_PREFIX_NONE,
 				     (u8 *)modeinfo,
 				     sizeof(*modeinfo));
-#endif /* CONFIG_BES2600_STA_DEBUG */
+
 		if (priv->join_status == BES2600_JOIN_STATUS_STA ||
 		    priv->join_status == BES2600_JOIN_STATUS_AP) {
 			WARN_ON(wsm_set_p2p_ps_modeinfo(hw_priv, modeinfo,
@@ -1286,9 +1275,6 @@ static int bes2600_upload_beacon(struct bes2600_vif *priv)
 
 	ret = wsm_set_template_frame(hw_priv, &frame, priv->if_id);
 	if (!ret) {
-#ifdef PROBE_RESP_EXTRA_IE
-		ret = bes2600_upload_proberesp(priv);
-#else
 		/* TODO: Distille probe resp; remove TIM
 		 * and other beacon-specific IEs */
 		*(__le16 *)frame.skb->data =
@@ -1307,63 +1293,12 @@ static int bes2600_upload_beacon(struct bes2600_vif *priv)
 					priv->if_id);
 			WARN_ON(wsm_set_probe_responder(priv, false));
 		}
-#endif
 	}
 	dev_kfree_skb(frame.skb);
 
 	return ret;
 }
 
-#ifdef PROBE_RESP_EXTRA_IE
-static int bes2600_upload_proberesp(struct bes2600_vif *priv)
-{
-	int ret = 0;
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-	struct wsm_template_frame frame = {
-		.frame_type = WSM_FRAME_TYPE_PROBE_RESPONSE,
-	};
-#ifdef HIDDEN_SSID
-	u8 *ssid_ie;
-#endif
-	if (priv->vif->p2p || hw_priv->channel->band == NL80211_BAND_5GHZ)
-		frame.rate = WSM_TRANSMIT_RATE_6;
-
-	frame.skb = ieee80211_proberesp_get(priv->hw, priv->vif);
-	if (WARN_ON(!frame.skb))
-		return -ENOMEM;
-
-#ifdef HIDDEN_SSID
-	if (priv->hidden_ssid) {
-		int offset;
-		u8 ssid_len;
-		/* we are assuming beacon from upper layer will always contain
-		   zero filled ssid for hidden ap. The beacon shall never have
-		   ssid len = 0.
-		  */
-
-		offset = offsetof(struct ieee80211_mgmt, u.probe_resp.variable);
-		ssid_ie = (u8 *)cfg80211_find_ie(WLAN_EID_SSID,
-				frame.skb->data + offset,
-				frame.skb->len - offset);
-		ssid_len = ssid_ie[1];
-		if (ssid_len && (ssid_len == priv->ssid_length)) {
-			memcpy(ssid_ie + 2, priv->ssid, ssid_len);
-		} else {
-			bes_devel("%s: hidden ssid with mismatched ssid_len %d\n",
-					__func__, ssid_len);
-			dev_kfree_skb(frame.skb);
-			return -1;
-		}
-	}
-#endif
-	ret = wsm_set_template_frame(hw_priv, &frame,  priv->if_id);
-	WARN_ON(wsm_set_probe_responder(priv, false));
-
-	dev_kfree_skb(frame.skb);
-
-	return ret;
-}
-#endif
 
 static int bes2600_upload_pspoll(struct bes2600_vif *priv)
 {
@@ -1551,22 +1486,24 @@ static int bes2600_start_ap(struct bes2600_vif *priv)
 		wsm_set_inactivity(hw_priv, &inactivity, priv->if_id);
 	}
 	if (!ret) {
-#ifndef AP_AGGREGATE_FW_FIX
+		/* If below HW fix were to not be needed, do this instead:
 		WARN_ON(wsm_set_block_ack_policy(hw_priv,
 			BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
-			BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID, priv->if_id));
-#else
+			BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID, priv->if_id)); */
+
+		/* Start HW limitations fix. */
 		if ((priv->if_id ==2) && !hw_priv->is_go_thru_go_neg)
 			WARN_ON(wsm_set_block_ack_policy(hw_priv,
 				BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
 				BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
 				priv->if_id));
 		else
-		WARN_ON(wsm_set_block_ack_policy(hw_priv,
-			BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
-			BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
-			priv->if_id));
-#endif
+			WARN_ON(wsm_set_block_ack_policy(hw_priv,
+				BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
+				BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
+				priv->if_id));
+		/* End HW limitations fix. */
+
 		priv->join_status = BES2600_JOIN_STATUS_AP;
 		bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_AP);
 		/* bes2600_update_filtering(priv); */
@@ -1790,12 +1727,11 @@ void bes2600_notify_noa(struct bes2600_vif *priv, int delay)
 		msleep(delay);
 
 	if (!WARN_ON(wsm_get_p2p_ps_modeinfo(hw_priv, modeinfo))) {
-#if defined(CONFIG_BES2600_STA_DEBUG)
 		print_hex_dump_bytes("[AP] p2p_get_ps_modeinfo: ",
 				     DUMP_PREFIX_NONE,
 				     (u8 *)modeinfo,
 				     sizeof(*modeinfo));
-#endif /* CONFIG_BES2600_STA_DEBUG */
+
 		p2p_ps.opp_ps = !!(modeinfo->oppPsCTWindow & BIT(7));
 		p2p_ps.ctwindow = modeinfo->oppPsCTWindow & (~BIT(7));
 		p2p_ps.count = modeinfo->count;

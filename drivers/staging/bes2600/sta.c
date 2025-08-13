@@ -320,10 +320,11 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 			static int vif_attempts=0;
 			if (vif_attempts++ > 3) {
 				bes_info("Too many VIF creation attempts (%d), ignoring.\n", vif_attempts);
+				bes_info("Ignoring extra VIF request: type=%d, addr=%pM – dumping stack\n", vif->type, vif->addr);
 				dump_stack(); // Full trace for analysis.
 				spin_unlock(&hw_priv->vif_list_lock);
 				up(&hw_priv->conf_lock);
-				return -EEXIST;
+				return 0;
 			}
 			if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
 				bes_warn("Fixing VIF addr=%pM to addr[0]=%pM\n", vif->addr, hw_priv->addresses[0].addr);
@@ -2459,6 +2460,11 @@ int bes2600_set_uapsd_param(struct bes2600_vif *priv,
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int ret;
 	u16 uapsdFlags = 0;
+
+	if (!priv || !hw_priv) {  // NULL guard
+		bes_err("UAPSD param skip: NULL priv/hw_priv\n");
+		return -EINVAL;  // Return error code (e.g., invalid argument) on NULL
+	}
 
 	/* Here's the mapping AC [queue, bit]
 	VO [0,3], VI [1, 2], BE [2, 1], BK [3, 0]*/

@@ -1339,15 +1339,19 @@ static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self, int flag)
 
 	/* do wakeup mcu operation */
 	if(gpio_wakeup) {
-		bes_devel("pull high gpio by flag:%d\n", flag);
+		bes_info("pull high gpio by flag:%d\n", flag);
 		gpiod_direction_output(pdata->wakeup, GPIOD_OUT_HIGH);
-		msleep(10);
 	}
 
 	/* set flag of gpio_wakeup_flags */
 	self->gpio_wakup_flags |= BIT(flag);
 
 	mutex_unlock(&self->io_mutex);
+
+	// Delay after unlock for MCU wake stabilization (atomic-safe if usleep)
+	if(gpio_wakeup) {
+		usleep_range(10000, 12000);  // 10ms busy-wait; safe post-unlock
+	}
 }
 
 static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self, int flag)

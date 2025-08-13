@@ -167,7 +167,9 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	};
 	int i;
 
-	bes_info("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__, priv->if_id, req->n_channels, req->n_ssids);
+	bes_info("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__,
+		priv->if_id, req->n_channels, req->n_ssids);
+
 	for (size_t i = 0; i < req->n_channels; i++)
 		bes_info("[SCAN] Channel %zu: %u MHz\n", i, req->channels[i]->center_freq);
 
@@ -281,6 +283,13 @@ static void bes2600_scan_update_vif_flags(struct bes2600_common *hw_priv, struct
 static bool bes2600_scan_setup(struct bes2600_common *hw_priv, struct bes2600_vif *priv,
 			      bool first_run)
 {
+	// Always save and force PS off for reliable scans
+	hw_priv->scan.saved_ps = priv->powersave_mode;
+	struct wsm_set_pm pm = priv->powersave_mode;
+	pm.pmMode = WSM_PSM_ACTIVE;  // Force PS off (active mode)
+	bes2600_set_pm(priv, &pm);
+	bes_devel("[SCAN] Auto-disabled PS for scan (saved pmMode=%d)\n", hw_priv->scan.saved_ps.pmMode);
+
     if (first_run) {
 #ifdef CONFIG_BES2600_TESTMODE
 	u16 advance_scan_req_channel = hw_priv->scan.begin[0]->hw_value;
@@ -611,12 +620,11 @@ static void bes2600_scan_complete(struct bes2600_common *hw_priv, int if_id)
 		down(&hw_priv->conf_lock);
 		priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
 		if (priv) {
-			wiphy_dbg(priv->hw->wiphy, "[SCAN] Direct probe "
-				  "complete.\n");
+			wiphy_dbg(priv->hw->wiphy, "[SCAN] Direct probe complete.\n");
 			bes2600_scan_restart_delayed(priv);
 		} else {
-			wiphy_dbg(priv->hw->wiphy, "[SCAN] Direct probe "
-				  "complete without interface!\n");
+			wiphy_dbg(priv->hw->wiphy,
+				"[SCAN] Direct probe complete without interface!\n");
 		}
 		up(&hw_priv->conf_lock);
 		hw_priv->scan.direct_probe = 0;
@@ -634,8 +642,10 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);
 
-	if (unlikely(!priv))
+	if (unlikely(!priv)) {
+		wiphy_err(hw_priv->hw->wiphy, "Scan complete ignored: NULL priv\n");
 		return;
+	}
 
 	if (unlikely(priv->mode == NL80211_IFTYPE_UNSPECIFIED)) {
 		/* STA is stopped. */
@@ -667,6 +677,10 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			empty_scans = 0;
 		}
 	}
+
+	// Restore PS
+	bes2600_set_pm(priv, &hw_priv->scan.saved_ps);
+	bes_devel("[SCAN] Restored PS after scan (to pmMode %d)\n", hw_priv->scan.saved_ps.pmMode);
 
 	if(hw_priv->scan.status == -ETIMEDOUT)
 		wiphy_warn(hw_priv->hw->wiphy,

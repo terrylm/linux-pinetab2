@@ -1629,7 +1629,7 @@ static void bes2600_rx_set_rx_fields(struct ieee80211_rx_status *hdr, struct wsm
 static void bes2600_rx_log_probe_resp(struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct ieee80211_rx_status *hdr)
 {
 	if (ieee80211_is_probe_resp(frame->frame_control))
-		bes_info("Received probe response during scan, RCPI/RSSI (raw)=%d, signal (dBm)=%d\n", arg->rcpiRssi, hdr->signal);
+		bes_info("Received probe response during scan, RCPI/RSSI (raw)=%d, signal %d dBm\n", arg->rcpiRssi, hdr->signal);
 }
 
 static bool bes2600_rx_handle_decryption(struct bes2600_vif *priv, struct ieee80211_rx_status *hdr, struct wsm_rx *arg, struct sk_buff *skb, struct ieee80211_hdr *frame, size_t hdrlen)
@@ -1832,11 +1832,11 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		goto drop;
 
 	if (ieee80211_is_probe_resp(frame->frame_control)) {
-		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, dBm=%d)\n",
+		bes_info("%s: Probe resp rx'ed (raw RCPI/RSSI=%u, %d dBm)\n",
 			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
 	}
 	else if (ieee80211_is_beacon(frame->frame_control)) {
-		bes_info("%s: Beacon rx'ed (raw RCPI/RSSI=%u, dBm=%d)\n",
+		bes_info("%s: Beacon rx'ed (raw RCPI/RSSI=%u, %d dBm)\n",
 			__func__, arg->rcpiRssi, arg->rcpiRssi - 256);
 	}
 

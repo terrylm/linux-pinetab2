@@ -405,7 +405,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 	int rx = 0;
 	u32 confirm_label = 0x0; /* wsm to mcu cmd cnfirm label */
 
-#if defined(BES_SDIO_RX_MULTIPLE_ENABLE)
+#if defined(CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE)
 	skb = (struct sk_buff *)priv->sbus_ops->pipe_read(priv->sbus_priv);
 	if (!skb)
 		return 0;
@@ -567,9 +567,7 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	wsm = (struct wsm_hdr *)data;
 	BUG_ON(tx_len < sizeof(*wsm));
 	BUG_ON(__le16_to_cpu(wsm->len) != tx_len);
-#ifdef BES2600_HOST_TIMESTAMP_DEBUG
 	tx_len += 4;
-#endif
 
 	atomic_add(1, &hw_priv->bh_tx);
 
@@ -585,7 +583,7 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 
 	bes_devel("%s id:0x%04x seq:%d\n", __func__, wsm->id, hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]);
 
-#ifndef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifndef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	if (WARN_ON(bes2600_data_write(data, tx_len))) {
 #else
 	if (WARN_ON(hw_priv->sbus_ops->pipe_send(hw_priv->sbus_priv, 1, tx_len, data))) {
@@ -857,11 +855,7 @@ static int bes2600_bh(void *arg)
 
 				bes2600_chrdev_wifi_force_close(hw_priv, false);
 			}
-#ifdef BES2600_RX_IN_BH
 			goto rx;
-#else
-			goto done;
-#endif
 		} else if (suspend) {
 			bes_devel("[BH] Device suspend.\n");
 
@@ -885,7 +879,6 @@ static int bes2600_bh(void *arg)
 	rx:
 		tx += pending_tx;
 		pending_tx = 0;
-#ifdef BES2600_RX_IN_BH
 #ifdef CONFIG_BES2600_WLAN_SPI
 		if (rx) {
 #endif
@@ -907,7 +900,6 @@ static int bes2600_bh(void *arg)
 		rx_cont = 0;
 #ifdef CONFIG_BES2600_WLAN_SPI
 		}
-#endif
 #endif
 	tx:
 		if (1) {

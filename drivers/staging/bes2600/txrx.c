@@ -1740,7 +1740,6 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 
 static void bes2600_rx_handle_ap_ht_cap(struct bes2600_vif *priv, struct bes2600_common *hw_priv, struct ieee80211_hdr *frame, struct wsm_rx *arg, struct sk_buff *skb)
 {
-#ifdef AP_HT_CAP_UPDATE
 	if (priv->mode == NL80211_IFTYPE_AP
 		&& ieee80211_is_beacon(frame->frame_control)
 		&& !arg->status){
@@ -1756,7 +1755,6 @@ static void bes2600_rx_handle_ap_ht_cap(struct bes2600_vif *priv, struct bes2600
 
 		queue_work(hw_priv->workqueue, &priv->ht_info_update_work);
 		}
-#endif
 }
 
 static void bes2600_rx_handle_discon_power(struct bes2600_common *hw_priv, struct ieee80211_hdr *frame)
@@ -1864,7 +1862,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 	bes2600_rx_update_debug(priv, arg);
 	bes2600_rx_handle_beacon(priv, hw_priv, frame, arg, skb);
-	bes2600_rx_handle_ap_ht_cap(priv, hw_priv, frame, arg, skb); /* AP_HT_CAP_UPDATE, or empty function. */
+	bes2600_rx_handle_ap_ht_cap(priv, hw_priv, frame, arg, skb);
 	bes2600_rx_handle_discon_power(hw_priv, frame);
 	bes2600_rx_handle_data_stats(priv, frame, hdrlen, skb);
 

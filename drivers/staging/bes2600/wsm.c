@@ -343,7 +343,6 @@ nomem:
  // wifi cpu sleep control
 // UNUSED
 /*
- #ifdef BES_UNIFIED_PM
 struct wsm_sleep_ctrl {
 	u16 msgid;
 	u16 msglen;
@@ -370,7 +369,6 @@ nomem:
 	wsm_cmd_unlock(hw_priv);
 	return -ENOMEM;
 }
-#endif
 */
 /* ******************************************************************** */
 
@@ -1816,10 +1814,8 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 					((is_hardware_cw1250(hw_priv)|| is_hardware_cw1260(hw_priv)) ?
 						(if_id << 6) : 0));
 
-#ifdef BES2600_HOST_TIMESTAMP_DEBUG
 	if (buf->end >= buf->data + 4)
 		*(u32 *)buf->data = (u32)jiffies_to_msecs(jiffies);
-#endif
 
 	spin_lock(&hw_priv->wsm_cmd.lock);
 	BUG_ON(hw_priv->wsm_cmd.ptr);
@@ -2259,10 +2255,8 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		case 0x0C27:
 			ret = wsm_driver_rf_cmd_confirm(hw_priv, wsm_arg, &wsm_buf);
 			break;
-#ifdef BES_UNIFIED_PM
 		case 0x0424: /* wifi sleep disable */
 			break;
-#endif
 		default:
 			BUG_ON(1);
 		}

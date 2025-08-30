@@ -456,6 +456,7 @@ static void bes2600_itp_tx_stop(struct bes2600_common *priv)
 	flush_workqueue(priv->workqueue);
 
 	/* time for FW to confirm all tx requests */
+    bes_info("Sleeping in: %s\n", __func__);
 	msleep(500);
 
 	__bes2600_itp_tx_stop(priv);

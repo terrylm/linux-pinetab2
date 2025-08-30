@@ -19,11 +19,9 @@
 #include "epta_coex.h"
 #include "txrx_opt.h"
 
-#ifdef AP_HT_CAP_UPDATE
 #define HT_INFO_OFFSET 4
 #define HT_INFO_MASK 0x0011
 #define HT_INFO_IE_LEN 22
-#endif
 #define BES2600_LINK_ID_GC_TIMEOUT ((unsigned long)(10 * HZ))
 
 #define BES2600_ENABLE_ARP_FILTER_OFFLOAD	3
@@ -34,9 +32,7 @@
 #define ERP_INFO_BYTE_OFFSET 2
 #endif
 
-#ifdef IPV6_FILTERING
 #define BES2600_ENABLE_NDP_FILTER_OFFLOAD	3
-#endif /*IPV6_FILTERING*/
 
 static int bes2600_upload_beacon(struct bes2600_vif *priv);
 static int bes2600_upload_pspoll(struct bes2600_vif *priv);
@@ -486,81 +482,6 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_GET_IP);
 	}
 
-// #if (defined(IPV6_FILTERING) && LINUX_VERSION_CODE > KERNEL_VERSION(4,19,0))
-#if 0
-	if (changed & BSS_CHANGED_NDP_FILTER) {
-		struct wsm_ndp_ipv6_filter filter = {0};
-		int i;
-		u16 *ipv6addr = NULL;
-
-		bes_devel("[STA] BSS_CHANGED_NDP_FILTER "
-				     "enabled: %d, cnt: %d\n",
-				     info->ndp_filter_enabled,
-				     info->ndp_addr_cnt);
-
-		if (info->ndp_filter_enabled) {
-			if (vif->type == NL80211_IFTYPE_STATION)
-				filter.enable = (u32)BES2600_ENABLE_NDP_FILTER_OFFLOAD;
-			else if ((vif->type == NL80211_IFTYPE_AP))
-				filter.enable = (u32)(1<<1);
-			else
-				filter.enable = 0;
-		}
-
-		/* Currently only one IP address is supported by firmware.
-		 * In case of more IPs ndp filtering will be disabled. */
-		if (info->ndp_addr_cnt > 0 &&
-		    info->ndp_addr_cnt <= WSM_MAX_NDP_IP_ADDRTABLE_ENTRIES) {
-			for (i = 0; i < info->ndp_addr_cnt; i++) {
-				priv->filter6.ipv6Address[i] = filter.ipv6Address[i] = info->ndp_addr_list[i];
-				ipv6addr = (u16 *)(&filter.ipv6Address[i]);
-				bes_devel("[STA] ipv6 addr[%d]: %x:%x:%x:%x:%x:%x:%x:%x\n", \
-									i, cpu_to_be16(*(ipv6addr + 0)), cpu_to_be16(*(ipv6addr + 1)), \
-									cpu_to_be16(*(ipv6addr + 2)), cpu_to_be16(*(ipv6addr + 3)), \
-									cpu_to_be16(*(ipv6addr + 4)), cpu_to_be16(*(ipv6addr + 5)), \
-									cpu_to_be16(*(ipv6addr + 6)), cpu_to_be16(*(ipv6addr + 7)));
-			}
-		} else {
-			filter.enable = 0;
-			for (i = 0; i < info->ndp_addr_cnt; i++) {
-				ipv6addr = (u16 *)(&info->ndp_addr_list[i]);
-				bes_devel("[STA] ipv6 addr[%d]: %x:%x:%x:%x:%x:%x:%x:%x\n", \
-									i, cpu_to_be16(*(ipv6addr + 0)), cpu_to_be16(*(ipv6addr + 1)), \
-									cpu_to_be16(*(ipv6addr + 2)), cpu_to_be16(*(ipv6addr + 3)), \
-									cpu_to_be16(*(ipv6addr + 4)), cpu_to_be16(*(ipv6addr + 5)), \
-									cpu_to_be16(*(ipv6addr + 6)), cpu_to_be16(*(ipv6addr + 7)));
-			}
-		}
-
-		bes_devel("[STA] ndp ip filter enable: %d\n",
-			  __le32_to_cpu(filter.enable));
-
-		if (filter.enable)
-			bes2600_set_na(dev, vif);
-
-		priv->filter6.enable = filter.enable;
-
-		if (wsm_set_ndp_ipv6_filter(hw_priv, &filter, priv->if_id))
-			WARN_ON(1);
-#if 0 /*Commented out to disable Power Save in IPv6*/
-		if (filter.enable && (priv->join_status == BES2600_JOIN_STATUS_STA) && (priv->vif->p2p) &&
-				!(priv->firmware_ps_mode.pmMode & WSM_PSM_FAST_PS)) {
-			if(priv->setbssparams_done) {
-				struct wsm_set_pm pm = priv->powersave_mode;
-				int ret = 0;
-
-				priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
-				ret = bes2600_set_pm(priv, &priv->powersave_mode);
-				if(ret) {
-					priv->powersave_mode = pm;
-				}
-			} else {
-				priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
-			}
-		}
-#endif
-	}
-#endif /*IPV6_FILTERING*/
 
 	if (changed & BSS_CHANGED_BEACON) {
 		bes_devel("BSS_CHANGED_BEACON\n");
@@ -1723,8 +1644,10 @@ void bes2600_notify_noa(struct bes2600_vif *priv, int delay)
 	if (priv->join_status != BES2600_JOIN_STATUS_AP)
 		return;
 
-	if (delay)
+	if (delay) {
+    	bes_info("Sleeping in: %s\n", __func__);
 		msleep(delay);
+	}
 
 	if (!WARN_ON(wsm_get_p2p_ps_modeinfo(hw_priv, modeinfo))) {
 		print_hex_dump_bytes("[AP] p2p_get_ps_modeinfo: ",
@@ -1770,7 +1693,6 @@ int cw12xx_unmap_link(struct bes2600_vif *priv, int link_id)
 		return ret;
 	}
 }
-#ifdef AP_HT_CAP_UPDATE
 void bes2600_ht_info_update_work(struct work_struct *work)
 {
         struct sk_buff *skb;
@@ -1805,5 +1727,4 @@ void bes2600_ht_info_update_work(struct work_struct *work)
         }
 	dev_kfree_skb(skb);
 }
-#endif
 

@@ -63,12 +63,12 @@ struct sbus_priv {
 	long unsigned int gpio_wakup_flags;
 	struct mutex sbus_mutex;
 	bool retune_protected;
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	u8 next_toggle;
 	int tx_data_toggle;
 	int rx_data_toggle;
 #endif
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 	spinlock_t rx_queue_lock;
 	struct sk_buff_head rx_queue;
 	u8 *rx_buffer;
@@ -85,7 +85,7 @@ struct sbus_priv {
 	long unsigned int last_irq_timestamp;
 	long unsigned int last_rx_data_timestamp;
 #endif
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	u8 *tx_buffer;
 	struct list_head tx_bufferlist;
 	struct kmem_cache *tx_bufferlistpool;
@@ -146,7 +146,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 	unsigned remainder = size;
 	unsigned max_blocks, align_blocks, pads;
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	struct sbus_priv *self = NULL;
 #endif
 
@@ -165,7 +165,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 		goto out;
 	}
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self = sdio_get_drvdata(func);
 	BUG_ON(!self);
 #endif
@@ -197,7 +197,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 		cmd.arg |= 0x04000000;
 		cmd.arg |= size << 9;
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 		if (likely(self->fw_started == true)) {
 			cmd.arg &= ~(1 << 25);
 			if (write) {
@@ -257,7 +257,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 
 			bes_devel("%s size=%d dir=%d", __func__, size, write);
 			if (write) {
-#ifndef BES_SDIO_RXTX_TOGGLE
+#ifndef CONFIG_BES_SDIO_RXTX_TOGGLE
 				ret = sdio_memcpy_toio(func, size, data_buf, size);
 #else
 				if (likely(self->fw_started == true)) {
@@ -268,7 +268,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 				}
 #endif
 			} else {
-#ifndef BES_SDIO_RXTX_TOGGLE
+#ifndef CONFIG_BES_SDIO_RXTX_TOGGLE
 				ret = sdio_memcpy_fromio(func, data_buf, size, size);
 #else
 				if (likely(self->fw_started == true)) {
@@ -292,7 +292,7 @@ out:
 	if (ret) {
 		bes_err("%s, err=%d(%d:%p:%d)",
 				__func__, ret, func->num, data_buf, size);
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 				if (self && self->fw_started == true) {
 					if (write)
 						--self->tx_data_toggle;
@@ -515,6 +515,7 @@ static void bes2600_sdio_off(const struct bes2600_platform_data_sdio *pdata)
     if (func) {
         sdio_claim_host(func);
         sdio_writeb(func, 0x08, SDIO_CCCR_ABORT, NULL);  // IO reset
+    	bes_info("Sleeping in: %s\n", __func__);
         msleep(10);
         sdio_release_host(func);
         // Force bus rescan
@@ -578,108 +579,21 @@ void sdio_work_debug(struct sbus_priv *self)
 	mutex_unlock(&self->sbus_mutex);
 }
 
-#ifndef BES_SDIO_OPTIMIZED_LEN
-static u8 const crc8_table[256] = {
-	0x00, 0x07, 0x0E, 0x09, 0x1C, 0x1B, 0x12, 0x15,
-	0x38, 0x3F, 0x36, 0x31, 0x24, 0x23, 0x2A, 0x2D,
-	0x70, 0x77, 0x7E, 0x79, 0x6C, 0x6B, 0x62, 0x65,
-	0x48, 0x4F, 0x46, 0x41, 0x54, 0x53, 0x5A, 0x5D,
-	0xE0, 0xE7, 0xEE, 0xE9, 0xFC, 0xFB, 0xF2, 0xF5,
-	0xD8, 0xDF, 0xD6, 0xD1, 0xC4, 0xC3, 0xCA, 0xCD,
-	0x90, 0x97, 0x9E, 0x99, 0x8C, 0x8B, 0x82, 0x85,
-	0xA8, 0xAF, 0xA6, 0xA1, 0xB4, 0xB3, 0xBA, 0xBD,
-	0xC7, 0xC0, 0xC9, 0xCE, 0xDB, 0xDC, 0xD5, 0xD2,
-	0xFF, 0xF8, 0xF1, 0xF6, 0xE3, 0xE4, 0xED, 0xEA,
-	0xB7, 0xB0, 0xB9, 0xBE, 0xAB, 0xAC, 0xA5, 0xA2,
-	0x8F, 0x88, 0x81, 0x86, 0x93, 0x94, 0x9D, 0x9A,
-	0x27, 0x20, 0x29, 0x2E, 0x3B, 0x3C, 0x35, 0x32,
-	0x1F, 0x18, 0x11, 0x16, 0x03, 0x04, 0x0D, 0x0A,
-	0x57, 0x50, 0x59, 0x5E, 0x4B, 0x4C, 0x45, 0x42,
-	0x6F, 0x68, 0x61, 0x66, 0x73, 0x74, 0x7D, 0x7A,
-	0x89, 0x8E, 0x87, 0x80, 0x95, 0x92, 0x9B, 0x9C,
-	0xB1, 0xB6, 0xBF, 0xB8, 0xAD, 0xAA, 0xA3, 0xA4,
-	0xF9, 0xFE, 0xF7, 0xF0, 0xE5, 0xE2, 0xEB, 0xEC,
-	0xC1, 0xC6, 0xCF, 0xC8, 0xDD, 0xDA, 0xD3, 0xD4,
-	0x69, 0x6E, 0x67, 0x60, 0x75, 0x72, 0x7B, 0x7C,
-	0x51, 0x56, 0x5F, 0x58, 0x4D, 0x4A, 0x43, 0x44,
-	0x19, 0x1E, 0x17, 0x10, 0x05, 0x02, 0x0B, 0x0C,
-	0x21, 0x26, 0x2F, 0x28, 0x3D, 0x3A, 0x33, 0x34,
-	0x4E, 0x49, 0x40, 0x47, 0x52, 0x55, 0x5C, 0x5B,
-	0x76, 0x71, 0x78, 0x7F, 0x6A, 0x6D, 0x64, 0x63,
-	0x3E, 0x39, 0x30, 0x37, 0x22, 0x25, 0x2C, 0x2B,
-	0x06, 0x01, 0x08, 0x0F, 0x1A, 0x1D, 0x14, 0x13,
-	0xAE, 0xA9, 0xA0, 0xA7, 0xB2, 0xB5, 0xBC, 0xBB,
-	0x96, 0x91, 0x98, 0x9F, 0x8A, 0x8D, 0x84, 0x83,
-	0xDE, 0xD9, 0xD0, 0xD7, 0xC2, 0xC5, 0xCC, 0xCB,
-	0xE6, 0xE1, 0xE8, 0xEF, 0xFA, 0xFD, 0xF4, 0xF3
-};
-
-static u8 bes_crc8(const u8 *data, unsigned len)
-{
-	u8 crc = 0;
-
-	while(len--)
-		crc = crc8_table[crc ^ *data++];
-
-	return crc;
-}
-#endif
 
 static int bes2600_sdio_read_ctrl(struct sbus_priv *self, u32 *ctrl_reg)
 {
 	u8 data[4];
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	u8 check;
-	u16 pkts, len;
-	#endif
 	int ret = 0, again = 0;
 	*ctrl_reg = 0;
 
 	/* clear sdio slave gen interrupt */
 	ret = bes2600_sdio_reg_read(self, BES_TX_CTRL_REG_ID + 1, data, 1);
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	ret = bes2600_sdio_reg_read(self, BES_TX_NEXT_LEN_REG_ID, data, 4);
-	#endif
 	if (unlikely(ret)) {
 		bes_err("[SBUS] Failed(%d) to read control register.\n", ret);
 		return ret;
 	}
 	self->rx_total_ctrl_cnt++;
 
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	check = bes_crc8((const u8 *)data, 3);
-	if (data[3] == check) {
-		/* length field crc8 pass */
-		*ctrl_reg = *(u32 *)data;
-		if (((data[2] >> 7) & 0x1) == self->next_toggle) {
-			/* toggle valid */
-			*ctrl_reg &= (~0xff800000);
-		} else {
-			/* last toggle */
-			*ctrl_reg = 0;
-			again = 1;
-		}
-
-		if (*ctrl_reg) {
-			/* length field valid */
-			again = 1;
-			pkts = ((*ctrl_reg) >> 16) & 0x7f;
-			len = (*ctrl_reg) & 0xffff;
-			if (pkts && len) {
-				self->next_toggle_debug = *(u32 *)data;
-				self->next_toggle ^= 1;
-			} else {
-				*ctrl_reg = 0;
-			}
-		}
-	} else {
-		/* length field crc fail */
-		//bes_err("%s, crc err:%x,%x,%x,%x,%x\n", __func__, data[0], data[1], data[2], data[3], check);
-		//msleep(1);
-		*ctrl_reg = 0;
-		again = 1;
-	}
-	#else
 	if (data[0] & 0x7f) {
 		/* length field valid */
 		again = 1;
@@ -702,11 +616,11 @@ static int bes2600_sdio_read_ctrl(struct sbus_priv *self, u32 *ctrl_reg)
 			again = 1;
 	}
 	self->rx_last_ctrl = data[0];
-	#endif
+
 	return again;
 }
 
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 
 static int bes2600_sdio_packets_check(u32 ctrl_reg, u8 *packets)
 {
@@ -717,13 +631,7 @@ static int bes2600_sdio_packets_check(u32 ctrl_reg, u8 *packets)
 
 	/* bit 23-16 indicate count of packets */
 	u32 packets_cnt;
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	packets_cnt = PACKET_COUNT(ctrl_reg);
-	if (WARN_ON(packets_cnt > BES_SDIO_RX_MULTIPLE_NUM))
-		return -200;
-	#else
 	packets_cnt = BES_SDIO_RX_MULTIPLE_NUM;
-	#endif
 
 	/* bit 15-0 indicate totoal length of packets */
 	packets_length = PACKET_TOTAL_LEN(ctrl_reg);
@@ -745,25 +653,17 @@ static int bes2600_sdio_packets_check(u32 ctrl_reg, u8 *packets)
 			}
 		}
 		total_cal += single;
-		#ifdef BES_SDIO_OPTIMIZED_LEN
 		if ((!pMsg->MsgLen) || (total_cal == packets_length)) {
 			//bes_devel("%s, contain %d packets\n", __func__, i);
 			break;
 		}
-		#endif
 	}
 	bes_devel("%s, %d,%u,%u\n", __func__, packets_cnt, packets_length, total_cal);
 
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	if (WARN_ON(packets_length != total_cal)) {
-		return -202;
-	}
-	#else
 	if (packets_length < total_cal) {
 		bes_err("%s,%d pkt len=%u, total len=%u", __func__, __LINE__, packets_length, total_cal);
 		return -202;
 	}
-	#endif
 
 	return 0;
 }
@@ -771,25 +671,21 @@ static int bes2600_sdio_packets_check(u32 ctrl_reg, u8 *packets)
 static int bes2600_sdio_extract_packets(struct sbus_priv *self, u32 ctrl_reg, u8 *data)
 {
 	int i, alloc_retry = 0;
-	#ifndef BES_SDIO_OPTIMIZED_LEN
-	u8 packets_cnt = PACKET_COUNT(ctrl_reg);
-	#else
 	u8 packets_cnt = BES_SDIO_RX_MULTIPLE_NUM;
-	#endif
 	u16 packet_len, pos = 0;
 	struct sk_buff *skb;
 
 	for (i = 0; i < packets_cnt; i++) {
 		packet_len = ((struct HI_MSG_HDR *)&(data[pos]))->MsgLen;
-		#ifdef BES_SDIO_OPTIMIZED_LEN
 		if (!packet_len)
 			break;
-		#endif
+
 		do {
 			skb = dev_alloc_skb(packet_len);
 			if (likely(skb))
 				break;
 			bes_warn("%s,%d no memory and sleep\n", __func__, __LINE__);
+    		bes_info("Sleeping in: %s\n", __func__);
 			msleep(100);
 			++alloc_retry;
 		} while(alloc_retry < 10);
@@ -806,10 +702,8 @@ static int bes2600_sdio_extract_packets(struct sbus_priv *self, u32 ctrl_reg, u8
 		spin_unlock(&self->rx_queue_lock);
 		packet_len = (packet_len + 3) & (~0x3);
 		pos += packet_len;
-		#ifdef BES_SDIO_OPTIMIZED_LEN
 		if (pos == PACKET_TOTAL_LEN(ctrl_reg))
 			break;
-		#endif
 	}
 	return 0;
 }
@@ -928,7 +822,7 @@ static void *bes2600_sdio_pipe_read(struct sbus_priv *self)
 
 #endif
 
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 
 struct bes_sdio_tx_list_t {
 	struct list_head node;
@@ -943,7 +837,7 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 	u32 compensate;
 	unsigned size = origin_size & (~0x3);
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	struct sbus_priv *self = NULL;
 #endif
 
@@ -953,7 +847,7 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 	struct mmc_command cmd;
 	struct mmc_data data;
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self = sdio_get_drvdata(func);
 #endif
 
@@ -981,7 +875,7 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 		cmd.arg |= 0x04000000;
 		cmd.arg |= (origin_size) << 9;
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 		if (likely(self->fw_started == true)) {
 			cmd.arg &= ~(1 << 25);
 			cmd.arg |= ((self->tx_data_toggle & 0x1) << 25);
@@ -1026,7 +920,7 @@ static int bes_sdio_memcpy_to_io_helper(struct sdio_func *func, unsigned origin_
 		ret = -EINVAL;
 	}
 out:
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	if (unlikely(ret))
 		self->tx_data_toggle--;
 #endif
@@ -1176,12 +1070,12 @@ static int bes2600_sdio_pipe_send(struct sbus_priv *self, u8 pipe, u32 len, u8 *
 
 static int bes2600_sdio_misc_init(struct sbus_priv *self, struct bes2600_common *core)
 {
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self->rx_data_toggle = 0;
 	self->tx_data_toggle = 0;
 	self->next_toggle = 0;
 #endif
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 	spin_lock_init(&self->rx_queue_lock);
 	skb_queue_head_init(&self->rx_queue);
 	self->rx_buffer = (u8 *)__get_dma_pages(GFP_KERNEL, get_order(1632 * BES_SDIO_RX_MULTIPLE_NUM));
@@ -1189,7 +1083,7 @@ static int bes2600_sdio_misc_init(struct sbus_priv *self, struct bes2600_common 
 		return -ENOMEM;
 	INIT_WORK(&self->rx_work, sdio_rx_work);
 #endif
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	INIT_LIST_HEAD(&self->tx_bufferlist);
 	spin_lock_init(&self->tx_bufferlock);
 	self->tx_buffer = (u8 *)kmalloc(512, GFP_KERNEL);
@@ -1349,9 +1243,11 @@ static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self, int flag)
 	mutex_unlock(&self->io_mutex);
 
 	// Delay after unlock for MCU wake stabilization (atomic-safe if usleep)
-	if(gpio_wakeup) {
+/*	if(gpio_wakeup) {
+    	bes_info("Sleeping in: %s\n", __func__);
 		usleep_range(10000, 12000);  // 10ms busy-wait; safe post-unlock
 	}
+*/
 }
 
 static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self, int flag)
@@ -1392,7 +1288,7 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 	int ret = 0, retries = 0;
 	u8 tmp_val = 0;
 	u32 cnt = 0;
-	u32 delay_cnt = 2;
+//	u32 delay_cnt = 2;
 
 	/* nosignal mode only allow SUBSYSTEM_WIFI */
 	if (!bes2600_chrdev_is_signal_mode() && sub_system != SUBSYSTEM_WIFI)
@@ -1409,19 +1305,19 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 	if (sub_system == SUBSYSTEM_MCU) {
 		cfg = BES_HOST_INT | BES_SUBSYSTEM_MCU_ACTIVE;
 		cfm = BES_SLAVE_STATUS_MCU_WAKEUP_READY;
-		delay_cnt = 2;
+		//delay_cnt = 2;
 	} else if (sub_system == SUBSYSTEM_WIFI) {
 		cfg = BES_HOST_INT | BES_SUBSYSTEM_WIFI_ACTIVE;
 		cfm = BES_SLAVE_STATUS_WIFI_READY;
-		delay_cnt = 25;
+		//delay_cnt = 25;
 	} else if(sub_system == SUBSYSTEM_BT) {
 		cfg = BES_HOST_INT | BES_SUBSYSTEM_BT_ACTIVE;
 		cfm = BES_SLAVE_STATUS_BT_READY;
-		delay_cnt = 25;
+		//delay_cnt = 25;
 	} else if(sub_system == SUBSYSTEM_BT_LP) {
 		cfg = BES_HOST_INT | BES_SUBSYSTEM_BT_WAKEUP;
 		cfm = BES_SLAVE_STATUS_BT_WAKE_READY;
-		delay_cnt = 2;
+		//delay_cnt = 2;
 	} else {
 		mutex_unlock(&self->sbus_mutex);
 		return -EINVAL;
@@ -1468,8 +1364,10 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 		/* release sdio host */
 		sdio_release_host(self->func);
 
-		/* wait device to response */
-		msleep(delay_cnt);
+		/* wait for device to response */
+    	bes_info("Sleeping in: %s\n", __func__);
+		usleep_range(10000, 12000);  // Atomic-safe
+		//msleep(delay_cnt);
 
 		/* read device response result */
 		sdio_claim_host(self->func);
@@ -1514,14 +1412,14 @@ err:
 
 static void bes2600_sdio_empty_work(struct sbus_priv *self)
 {
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 	struct sk_buff *skb;
 #endif
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	struct bes_sdio_tx_list_t *tx_buffer, *temp;
 #endif
 
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 	cancel_work_sync(&self->rx_work);
 	while (1) {
 		skb = skb_dequeue(&self->rx_queue);
@@ -1540,7 +1438,7 @@ static void bes2600_sdio_empty_work(struct sbus_priv *self)
 	self->rx_proc_cnt = 0;
 #endif
 
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	cancel_work_sync(&self->tx_work);
 	list_for_each_entry_safe(tx_buffer, temp, &self->tx_bufferlist, node) {
 		list_del_init(&tx_buffer->node);
@@ -1551,7 +1449,7 @@ static void bes2600_sdio_empty_work(struct sbus_priv *self)
 	self->tx_proc_cnt = 0;
 #endif
 
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self->rx_data_toggle = 0;
 	self->tx_data_toggle = 0;
 	self->next_toggle = 0;
@@ -1569,7 +1467,7 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 	u8 tmp_val = 0;
 	u16 retries = 0;
 	u32 cnt = 0;
-	u32 delay_cnt = 2;
+	// u32 delay_cnt = 2;
 	int ret;
 
 	/* don't read/write sdio when sdio error */
@@ -1637,7 +1535,9 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 			sdio_release_host(self->func);
 
 			/* wait device to response */
-			msleep(delay_cnt);
+    		bes_info("Sleeping in: %s\n", __func__);
+			usleep_range(10000, 12000);  // Atomic-safe
+			//msleep(delay_cnt);
 
 			/* read device response result */
 			sdio_claim_host(self->func);
@@ -1700,6 +1600,7 @@ static void bes2600_sdio_power_down(struct sbus_priv *self)
 	// gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
 #endif
 
+    bes_info("Sleeping in: %s\n", __func__);
 	msleep(10);
 
 	self->func->card->host->caps &= ~MMC_CAP_NONREMOVABLE;
@@ -1748,10 +1649,10 @@ static struct sbus_ops bes2600_sdio_sbus_ops = {
 	.sbus_reg_read		= bes2600_sdio_reg_read,
 	.sbus_reg_write		= bes2600_sdio_reg_write,
 	.init			= bes2600_sdio_misc_init,
-#ifdef BES_SDIO_RX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_RX_MULTIPLE_ENABLE
 	.pipe_read		= bes2600_sdio_pipe_read,
 #endif
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	.pipe_send		= bes2600_sdio_pipe_send,
 #endif
 	.sbus_active		= bes2600_sdio_active,
@@ -1811,7 +1712,7 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	self->unregister_in_process = false;
 	mutex_init(&self->io_mutex);
 	mutex_init(&self->sbus_mutex);
-#ifdef BES_SDIO_RXTX_TOGGLE
+#ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self->fw_started = false;
 #endif
 	bes2600_gpio_wakeup_mcu(self, GPIO_WAKE_FLAG_SDIO_PROBE);
@@ -1894,7 +1795,7 @@ int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 			bus_priv->rx_buffer = NULL;
 		}
 
-#ifdef BES_SDIO_TX_MULTIPLE_ENABLE
+#ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 		if (bus_priv->tx_buffer) {
 			kfree(bus_priv->tx_buffer);
 			bus_priv->tx_buffer = NULL;

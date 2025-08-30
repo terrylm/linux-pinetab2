@@ -97,7 +97,7 @@ config BES2600_WAPI_SUPPORT
 	default n
 	help
 		Enable support for WAPI (WLAN Authentication and Privacy Infrastructure),
-		a Chinese national standard for wireless LAN security.  This is an alternative
+		a Chinese national standard for wireless LAN security.	This is an alternative
 		to WPA/WPA2, mandatory in some Chinese networks.
 
 		If unsure, and not in China, say N.
@@ -221,6 +221,68 @@ config BES2600_MCAST_FWDING
 		Useful for AP mode or IPv4/IPv6 multicast scenarios.
 
 		If unsure, say N. This code may not even work, untested.
+
+config BES2600_WLAN_BES
+	bool "Enable BES WLAN features"
+	default y
+	help
+	  Core flag for BES-specific WLAN ops (e.g., bus optims).
+	  Say Y for standard use.
+
+config BES_SDIO_RXTX_TOGGLE
+	bool "Enable SDIO RX/TX toggle optimization"
+	default y
+	help
+		Enable toggling between RX and TX operations in SDIO mode for the BES2600 driver.
+		This feature optimizes SDIO bus handling by alternating RX/TX to improve throughput and avoid conflicts.
+		Say Y for better performance on SDIO hardware; N to disable. If unsure, say Y.
+
+config BES_SDIO_RX_MULTIPLE_ENABLE
+    bool "Enable multiple RX transfers in SDIO"
+    default y
+    help
+      Optimize SDIO RX for multiple transfers (throughput gain).
+      Say Y for performance; N to disable.
+
+config BES_SDIO_TX_MULTIPLE_ENABLE
+    bool "Enable multiple TX transfers in SDIO"
+    default y
+    help
+      Optimize SDIO TX for multiple transfers.
+      Say Y for performance; N to disable.
+
+config BES2600_EXTRA_FEATURES
+	bool "Enable extra BES2600 features"
+	default n
+	help
+	  Enable additional features for the BES2600 driver, such as multicast forwarding, SDIO optimizations, or vendor extensions.
+	  If disabled, all sub-features are forced off regardless of their defaults.
+
+if BES2600_EXTRA_FEATURES
+
+config BES2600_KEEP_ALIVE
+	bool "Enable keep-alive support in testmode"
+	default n
+	depends on BES2600_TESTMODE
+	help
+	  Enable TCP/UDP keepalive features in testmode for maintaining connections and analyzing packet delays.
+
+	  This is a vendor extension, useful for testing association/roaming behavior.
+
+	  If unsure, say N.
+
+config VENDOR_XM_KEEPALIVE
+	bool "Enable Xiaomi-specific keepalive extensions"
+	default n
+	depends on BES2600_KEEP_ALIVE
+	help
+	  Enable Xiaomi (XM) vendor-specific TCP/UDP keepalive patterns and filters for compatibility or testing.
+
+	  Only relevant if using Xiaomi hardware or test setups; otherwise disable to save code size.
+
+	  If unsure, say N.
+
+endif # BES2600_EXTRA_FEATURES
 
 menu "Driver debug features"
 

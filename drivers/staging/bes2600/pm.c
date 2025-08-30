@@ -92,7 +92,6 @@ static struct wsm_ether_type_filter_hdr bes2600_ether_type_filter_off = {
 	.nrFilters = 0,
 };
 
-#ifdef IPV6_FILTERING
 static struct wsm_ipv6_filter bes2600_ipv6_filter_on = {
 	.hdr.numfilter = 1,
 	.hdr.action_mode = WSM_FILTER_ACTION_FILTER_IN,
@@ -109,7 +108,6 @@ static struct wsm_ipv6_filter bes2600_ipv6_filter_off = {
 	.hdr.numfilter = 0,
 	.hdr.action_mode = WSM_FILTER_ACTION_IGNORE,
 };
-#endif
 
 static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 				struct cfg80211_wowlan *wowlan);
@@ -418,9 +416,7 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 				&bes2600_udp_port_filter_on.hdr, priv->if_id);
 
 	/* Set ipv6 filer */
-#ifdef IPV6_FILTERING
 	wsm_set_ipv6_filter(hw_priv, &bes2600_ipv6_filter_on.hdr, priv->if_id);
-#endif
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		WARN_ON(wsm_set_keepalive_filter(priv, true));
@@ -549,9 +545,7 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 				  priv->if_id);
 
 	/* Remove ipv6 filer */
-#ifdef IPV6_FILTERING
 	wsm_set_ipv6_filter(hw_priv, &bes2600_ipv6_filter_off.hdr, priv->if_id);
-#endif
 
 	/* Free memory */
 	kfree(state);

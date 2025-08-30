@@ -121,10 +121,8 @@ void bes2600_iterate_vifs(void *data, u8 *mac,
 			 struct ieee80211_vif *vif);
 void bes2600_rem_chan_timeout(struct work_struct *work);
 int bes2600_set_macaddrfilter(struct bes2600_common *hw_priv, struct bes2600_vif *priv, u8 *data);
-#ifdef IPV6_FILTERING
 int bes2600_set_na(struct ieee80211_hw *hw,
 			struct ieee80211_vif *vif);
-#endif /*IPV6_FILTERING*/
 #ifdef CONFIG_BES2600_TESTMODE
 void bes2600_device_power_calc(struct bes2600_common *priv,
 			      s16 max_output_power, s16 fe_cor, u32 band);

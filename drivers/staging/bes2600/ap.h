@@ -47,8 +47,6 @@ void bes2600_link_id_gc_work(struct work_struct *work);
 void bes2600_notify_noa(struct bes2600_vif *priv, int delay);
 #endif
 int cw12xx_unmap_link(struct bes2600_vif *priv, int link_id);
-#ifdef AP_HT_CAP_UPDATE
 void bes2600_ht_info_update_work(struct work_struct *work);
-#endif
 
 #endif

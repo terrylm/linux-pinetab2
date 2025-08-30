@@ -250,9 +250,7 @@ static const struct ieee80211_ops bes2600_ops = {
 	/*.channel_switch	= bes2600_channel_switch,		*/
 	.remain_on_channel	= bes2600_remain_on_channel,
 	.cancel_remain_on_channel = bes2600_cancel_remain_on_channel,
-#ifdef IPV6_FILTERING
 	//.set_data_filter		  = bes2600_set_data_filter,
-#endif /*IPV6_FILTERING*/
 #ifdef CONFIG_BES2600_TESTMODE
 	.testmode_cmd  = bes2600_testmode_cmd,
 #endif
@@ -289,9 +287,8 @@ static void bes2600_reset_timer_cb(struct timer_list *t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, reset_timer);
 	bes_info("%s: Periodic FW reset\n", __func__);
-	struct wsm_reset reset = { .reset_statistics = true, .link_id = -1 };
-	wsm_reset(hw_priv, &reset, -1);
-	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(1800000));
+	queue_work(hw_priv->workqueue, &hw_priv->reset_work);  // Queue non-atomic
+	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));
 }
 
 static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
@@ -677,6 +674,12 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 	return ret;
 }
 
+static void bes2600_reset_handler(struct work_struct *work) {
+    struct bes2600_common *hw_priv = container_of(work, struct bes2600_common, reset_work);
+	struct wsm_reset arg = { .link_id = 0, .reset_statistics = 0 };  // Fix NULL deref/bes2600_reset_timer_cb
+    wsm_reset(hw_priv, &arg, 0);  // Do the reset here (non-atomic)
+}
+
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 			  struct sbus_priv *sbus,
 			  struct device *pdev,
@@ -694,6 +697,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	global_dev = pdev;
 
 	hw_priv = dev->priv;
+	INIT_WORK(&hw_priv->reset_work, bes2600_reset_handler);  // Insert here: Initialize the reset work
 	hw_priv->sbus_ops = sbus_ops;
 	hw_priv->sbus_priv = sbus;
 	hw_priv->pdev = pdev;
@@ -708,7 +712,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	hw_priv->wsm_cbc.channel_switch = bes2600_channel_switch_cb;
 
 	timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
-	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(1800000));	// 30 mins
+	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 30 mins
 	bes_info("%s: Forced FW reset on probe\n", __func__);
 
 

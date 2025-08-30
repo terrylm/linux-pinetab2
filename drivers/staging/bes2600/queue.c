@@ -432,13 +432,13 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 			item->generation, item - queue->pool,
 			txpriv->if_id, txpriv->raw_link_id);
 		item->queue_timestamp = jiffies;
-#ifdef BES2600_HOST_TIMESTAMP_DEBUG
+
 		if (skb_tailroom(skb) >= 4) {
 			u32 *extra_data;
 			extra_data = (u32 *)skb_tail_pointer(skb);
 			*extra_data = (u32)jiffies_to_msecs(item->queue_timestamp);
 		}
-#endif
+
 #ifdef CONFIG_BES2600_TESTMODE
 		ktime_get_real_ts64(&tmval);
 		item->qdelay_timestamp = tmval.tv_nsec / 1000;

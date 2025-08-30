@@ -673,6 +673,7 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			bes_warn("%s: Too many empties - forcing reset\n", __func__);
 			struct wsm_reset reset = { .reset_statistics = true, .link_id = -1 };
 			wsm_reset(hw_priv, &reset, -1);
+    		bes_info("Sleeping in: %s\n", __func__);
 			msleep(50);
 			empty_scans = 0;
 		}

@@ -677,7 +677,9 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 static void bes2600_reset_handler(struct work_struct *work) {
     struct bes2600_common *hw_priv = container_of(work, struct bes2600_common, reset_work);
 	struct wsm_reset arg = { .link_id = 0, .reset_statistics = 0 };  // Fix NULL deref/bes2600_reset_timer_cb
+	down(&hw_priv->conf_lock);  // Lock to serialize with scans and VIF creation.
     wsm_reset(hw_priv, &arg, 0);  // Do the reset here (non-atomic)
+	up(&hw_priv->conf_lock);  // Unlock
 }
 
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,

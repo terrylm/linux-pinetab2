@@ -159,6 +159,13 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 		bes_info("%s %d hw_req is NULL!\n", __func__, __LINE__);
 		return -EINVAL;
 	}
+
+	if (!vif) {
+		bes_err("NULL vif/bss_conf in hw_scan\n");
+		dump_stack();
+		return -EINVAL;
+	}
+
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct cfg80211_scan_request *req = &hw_req->req;

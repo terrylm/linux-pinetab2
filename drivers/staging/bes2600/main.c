@@ -677,7 +677,30 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 static void bes2600_reset_handler(struct work_struct *work) {
     struct bes2600_common *hw_priv = container_of(work, struct bes2600_common, reset_work);
 	struct wsm_reset arg = { .link_id = 0, .reset_statistics = 0 };  // Fix NULL deref/bes2600_reset_timer_cb
+
 	down(&hw_priv->conf_lock);  // Lock to serialize with scans and VIF creation.
+
+    // Cancel any queued scan work to prevent it from starting/running concurrently
+    cancel_work_sync(&hw_priv->scan.work);
+
+    // If a scan is in progress, stop it and abort
+    if (atomic_read(&hw_priv->scan.in_progress)) {
+        wsm_stop_scan(hw_priv, hw_priv->scan.if_id);
+        // Wait for scan completion lock
+        down(&hw_priv->scan.lock);
+        up(&hw_priv->scan.lock);
+        // Abort the scan request to mac80211
+        hw_priv->scan.status = -EINTR;
+
+		struct cfg80211_scan_info info = {
+			.aborted = true
+		};
+
+		ieee80211_scan_completed(hw_priv->hw, &info);
+        hw_priv->scan.req = NULL;
+        atomic_set(&hw_priv->scan.in_progress, 0);
+    }
+
     wsm_reset(hw_priv, &arg, 0);  // Do the reset here (non-atomic)
 	up(&hw_priv->conf_lock);  // Unlock
 }

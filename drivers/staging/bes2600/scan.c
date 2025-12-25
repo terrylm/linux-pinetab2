@@ -168,6 +168,14 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
+	if (!priv) {  // Or whatever indicates bad state
+		bes_info("Scan skipped: Invalid state (priv=%p, channel=%p)\n", priv, hw_priv->channel);
+		//dump_stack();
+		return -EBUSY;  // Fail scan request
+	}
+
+	bes_info("Scan state: (priv=%p, channel=%p)\n", priv, hw_priv->channel);
+
 	struct cfg80211_scan_request *req = &hw_req->req;
 	struct wsm_template_frame frame = {
 		.frame_type = WSM_FRAME_TYPE_PROBE_REQUEST,
@@ -685,6 +693,9 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			empty_scans = 0;
 		}
 	}
+
+	// NEW: Signal completion to waiters (e.g., reset handler)
+	wake_up(&hw_priv->scan.wq);
 
 	// Restore PS
 	bes2600_set_pm(priv, &hw_priv->scan.saved_ps);

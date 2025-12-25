@@ -386,6 +386,11 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	bool is_htcapie = false;
 	struct bes2600_vif *tmp_priv;
 
+	if (hw_priv->in_reset) {
+		// Skip flush_workqueue, power ops, etc.
+		return;
+	}
+
 	bes_devel(" !!! %s: type %d p2p %d addr %pM\n",
 		__func__, vif->type, vif->p2p, vif->addr);
 	atomic_set(&priv->enabled, 0);

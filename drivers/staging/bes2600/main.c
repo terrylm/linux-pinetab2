@@ -287,7 +287,7 @@ static void bes2600_reset_timer_cb(struct timer_list *t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, reset_timer);
 	bes_info("%s: Periodic FW reset\n", __func__);
-	queue_work(hw_priv->workqueue, &hw_priv->reset_work);  // Queue non-atomic
+	queue_work(hw_priv->reset_wq, &hw_priv->reset_work);
 	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));
 }
 
@@ -674,35 +674,50 @@ static int bes2600_sbus_comm_init(struct bes2600_common *hw_priv)
 	return ret;
 }
 
-static void bes2600_reset_handler(struct work_struct *work) {
-    struct bes2600_common *hw_priv = container_of(work, struct bes2600_common, reset_work);
-	struct wsm_reset arg = { .link_id = 0, .reset_statistics = 0 };  // Fix NULL deref/bes2600_reset_timer_cb
+static void bes2600_reset_handler(struct work_struct *work)
+{
+	struct bes2600_common *hw_priv = container_of(work, struct bes2600_common, reset_work);
+	// Fix NULL deref/bes2600_reset_timer_cb
+	struct wsm_reset arg = { .link_id = 0, .reset_statistics = 0 };
 
-	down(&hw_priv->conf_lock);  // Lock to serialize with scans and VIF creation.
+	hw_priv->in_reset = true;		// Set flag
+	down(&hw_priv->conf_lock);		// Lock to serialize with scans and VIF creation.
 
-    // Cancel any queued scan work to prevent it from starting/running concurrently
-    cancel_work_sync(&hw_priv->scan.work);
+	// Pause queues (road closed for TX)
+	ieee80211_stop_queues(hw_priv->hw);
 
-    // If a scan is in progress, stop it and abort
-    if (atomic_read(&hw_priv->scan.in_progress)) {
-        wsm_stop_scan(hw_priv, hw_priv->scan.if_id);
-        // Wait for scan completion lock
-        down(&hw_priv->scan.lock);
-        up(&hw_priv->scan.lock);
-        // Abort the scan request to mac80211
-        hw_priv->scan.status = -EINTR;
+	// Disable monitors
+	del_timer_sync(&hw_priv->lmac_mon_timer);
+	del_timer_sync(&hw_priv->mcu_mon_timer);
 
-		struct cfg80211_scan_info info = {
-			.aborted = true
-		};
+	// Cancel any queued scan work to prevent it from starting/running concurrently
+	cancel_work(&hw_priv->scan.work);
+	cancel_work(&hw_priv->bh_work);
+    cancel_work(&hw_priv->power_down_work);  // Stop power down to avoid lockup
 
+    bes2600_unregister_bh(hw_priv);
+
+	// If a scan is in progress, stop it and abort
+	if (atomic_read(&hw_priv->scan.in_progress)) {
+		wsm_stop_scan(hw_priv, hw_priv->scan.if_id);
+		if (down_timeout(&hw_priv->scan.lock, HZ * 5) != 0) {
+			bes_info("Scan timeout during reset—forcing abort\n");
+			atomic_set(&hw_priv->scan.in_progress, 0);
+		}
+
+		up(&hw_priv->scan.lock);
+		hw_priv->scan.status = -EINTR;
+		struct cfg80211_scan_info info = { .aborted = true };
 		ieee80211_scan_completed(hw_priv->hw, &info);
-        hw_priv->scan.req = NULL;
-        atomic_set(&hw_priv->scan.in_progress, 0);
-    }
+		hw_priv->scan.req = NULL;
+	}
 
-    wsm_reset(hw_priv, &arg, 0);  // Do the reset here (non-atomic)
-	up(&hw_priv->conf_lock);  // Unlock
+	wsm_reset(hw_priv, &arg, 0);	// Do the reset here (non-atomic)
+	msleep(1000);
+	bes2600_register_bh(hw_priv);
+	up(&hw_priv->conf_lock);		// Unlock
+	hw_priv->in_reset = false;		// Clear flag
+	ieee80211_wake_queues(hw_priv->hw);
 }
 
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,
@@ -722,7 +737,6 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	global_dev = pdev;
 
 	hw_priv = dev->priv;
-	INIT_WORK(&hw_priv->reset_work, bes2600_reset_handler);  // Insert here: Initialize the reset work
 	hw_priv->sbus_ops = sbus_ops;
 	hw_priv->sbus_priv = sbus;
 	hw_priv->pdev = pdev;
@@ -737,7 +751,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	hw_priv->wsm_cbc.channel_switch = bes2600_channel_switch_cb;
 
 	timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
-	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 30 mins
+	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 5 mins
 	bes_info("%s: Forced FW reset on probe\n", __func__);
 
 
@@ -756,6 +770,20 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 		if (bes2600_wifi_start(hw_priv))
 			goto err3;
 	}
+
+	hw_priv->reset_wq = alloc_workqueue("bes2600_reset", WQ_MEM_RECLAIM, 0);
+	if (!hw_priv->reset_wq) {
+		err = -ENOMEM;
+		goto err3;
+	}
+
+	INIT_WORK(&hw_priv->reset_work, bes2600_reset_handler);
+
+	hw_priv->in_reset = false;
+	hw_priv->channel = ieee80211_get_channel(hw_priv->hw->wiphy, 2412);  // Default
+	bes_info("Default channel set to ch1 (2412 MHz)\n");
+
+	init_waitqueue_head(&hw_priv->scan.wq);  // NEW: Initialize scan completion wait queue
 
 	err = bes2600_register_common(dev);
 	if (err)
@@ -779,6 +807,7 @@ err:
 
 void bes2600_core_release(struct bes2600_common *self)
 {
+	destroy_workqueue(self->reset_wq);
 	bes2600_unregister_common(self->hw);
 	bes2600_free_common(self->hw);
 	return;

@@ -488,6 +488,9 @@ struct bes2600_common {
 #endif
 	struct timer_list reset_timer;
 	struct work_struct reset_work;  // For non-atomic FW reset
+	struct work_struct power_down_work;
+	struct workqueue_struct *reset_wq; // Dedicated queue for reset
+	bool in_reset;  /* Set during reset to skip some ops */
 };
 
 /* Virtual Interface State. One copy per VIF */

@@ -23,6 +23,7 @@
 
 struct bes2600_scan {
 	struct semaphore lock;
+	wait_queue_head_t wq;  // New for waiting on completion. Grok 4.1
 	struct work_struct work;
 	struct delayed_work timeout;
 	struct cfg80211_scan_request *req;

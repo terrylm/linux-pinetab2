@@ -1192,7 +1192,7 @@ static int bes2600_sdio_readb_safe(struct sdio_func *func, unsigned int addr)
 	} while((ret < 0) && ++retry < SDIO_RETRY_MAX);
 
 	if (ret)
-		bes_err("%s failed, ret:%d\n", __func__, ret);
+		bes_err("%s failed addr=0x%x ret=%d retry=%d\n", __func__, addr, ret, retry);
 
 	return (ret < 0) ? ret : val;
 }

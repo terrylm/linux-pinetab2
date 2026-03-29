@@ -56,7 +56,8 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count);
 static void bes2600_bh_work(struct work_struct *work)
 {
 	struct bes2600_common *priv =
-	container_of(work, struct bes2600_common, bh_work);
+		container_of(work, struct bes2600_common, bh_work);
+
 	bes2600_bh(priv);
 }
 
@@ -783,6 +784,8 @@ static int bes2600_bh(void *arg)
 	int tx_cont = 0;
 	int rx_cont = 0;
 
+	bes_info("BH: Starting RX processing\n");
+
 	for (;;) {
 		rx_cont = 0;
 		tx_cont = 0;
@@ -968,5 +971,8 @@ static int bes2600_bh(void *arg)
 		atomic_set(&hw_priv->bh_error, 1);
 		/* TODO: schedule_work(recovery) */
 	}
+	else
+		bes_info("%s: At bottom, fail?\n", __func__);
+
 	return 0;
 }

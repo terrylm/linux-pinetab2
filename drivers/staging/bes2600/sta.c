@@ -261,7 +261,6 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 	bes2600_pwr_complete(hw_priv);
 }
 
-
 int bes2600_add_interface(struct ieee80211_hw *dev,
 			 struct ieee80211_vif *vif)
 {
@@ -269,7 +268,8 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
-	printk(KERN_DEBUG "Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
+
+	bes_info("Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
 	   vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
 
 	bes_devel(" !!! %s: type %d p2p %d addr %pM\n", __func__, vif->type, vif->p2p, vif->addr);
@@ -278,7 +278,6 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	atomic_set(&priv->enabled, 0);
 
 	*drv_priv = priv;
-	/* __le32 auto_calibration_mode = __cpu_to_le32(1); */
 
 	down(&hw_priv->conf_lock);
 
@@ -315,14 +314,14 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 			}
 			priv->if_id = 1;
 		} else {
-			static int vif_attempts=0;
-			if (vif_attempts++ > 3) {
-				bes_info("Too many VIF creation attempts (%d), ignoring.\n", vif_attempts);
-				bes_info("Ignoring extra VIF request: type=%d, addr=%pM – dumping stack\n", vif->type, vif->addr);
-				dump_stack(); // Full trace for analysis.
+			hw_priv->vif_attempts++;   // <-- now uses hw_priv (reset below)
+			if (hw_priv->vif_attempts > 3) {
+				bes_info("Too many VIF creation attempts (%d), ignoring.\n", hw_priv->vif_attempts);
+				bes_info("Ignoring extra VIF request: type=%d, addr=%pM\n", vif->type, vif->addr);
+				dump_stack(); // keep for now so we can see it
 				spin_unlock(&hw_priv->vif_list_lock);
 				up(&hw_priv->conf_lock);
-				return 0;
+				return -EBUSY;   // <-- CHANGED: was 0 (fake success) → now proper error
 			}
 			if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
 				bes_warn("Fixing VIF addr=%pM to addr[0]=%pM\n", vif->addr, hw_priv->addresses[0].addr);
@@ -353,14 +352,9 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 		up(&hw_priv->conf_lock);
 		return -EOPNOTSUPP;
 	}
-	/* TODO:COMBO :Check if MAC address matches the one expected by FW */
+
 	memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
 
-	/* Enable auto-calibration */
-	/* Exception in subsequent channel switch; disabled.
-	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_SET_AUTO_CALIBRATION_MODE,
-		&auto_calibration_mode, sizeof(auto_calibration_mode)));
-	*/
 	bes_devel("[STA] Interface ID:%d of type:%d added\n",
 		   priv->if_id, priv->mode);
 
@@ -387,24 +381,27 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	struct bes2600_vif *tmp_priv;
 
 	if (hw_priv->in_reset) {
-		// Skip flush_workqueue, power ops, etc.
 		return;
 	}
 
-	bes_devel(" !!! %s: type %d p2p %d addr %pM\n",
-		__func__, vif->type, vif->p2p, vif->addr);
+	bes_info("Removing VIF: type=%d p2p=%d addr=%pM if_id=%d\n",
+		vif->type, vif->p2p, vif->addr, priv->if_id);
+
 	atomic_set(&priv->enabled, 0);
 	down(&hw_priv->scan.lock);
 	down(&hw_priv->conf_lock);
+
 	if (!__cw12xx_hwpriv_to_vifpriv(hw_priv, priv->if_id)) {
 		bes_devel(" !!! %s: interface addr %pM already removed\n",
 				 __func__, vif->addr);
-			up(&hw_priv->conf_lock);
-			up(&hw_priv->scan.lock);
+		up(&hw_priv->conf_lock);
+		up(&hw_priv->scan.lock);
 		return;
 	}
+
 	bes2600_tx_queues_lock(hw_priv);
 	wsm_lock_tx(hw_priv);
+
 	switch (priv->join_status) {
 	case BES2600_JOIN_STATUS_STA:
 		wsm_lock_tx(hw_priv);
@@ -456,7 +453,7 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	default:
 		break;
 	}
-	/* TODO:COMBO: Change Queue Module */
+
 	if (!__bes2600_flush(hw_priv, false, priv->if_id))
 		wsm_unlock_tx(hw_priv);
 
@@ -468,9 +465,7 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	cancel_delayed_work_sync(&priv->pending_offchanneltx_work);
 
 	timer_delete_sync(&priv->mcast_timeout);
-	/* TODO:COMBO: May be reset of these variables "delayed_link_loss and
-	 * join_status to default can be removed as dev_priv will be freed by
-	 * mac80211 */
+
 	priv->delayed_link_loss = 0;
 	wsm_unlock_tx(hw_priv);
 
@@ -480,6 +475,10 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	}
 
 	flush_workqueue(hw_priv->workqueue);
+
+	/* NEW: reset VIF attempt counter so add_interface starts fresh */
+	hw_priv->vif_attempts = 0;
+
 	spin_lock(&hw_priv->vif_list_lock);
 	spin_lock(&priv->vif_lock);
 	hw_priv->vif_list[priv->if_id] = NULL;

@@ -373,6 +373,7 @@ struct bes2600_common {
 	struct timer_list		lmac_mon_timer;
 	int				hw_bufs_used;
 	int				hw_bufs_used_vif[CW12XX_MAX_VIFS];
+	int vif_attempts;
 	struct sk_buff			*skb_cache;
 	/* Keep bes2600 awake (WUP = 1) 1 second after each scan to avoid
 	 * FW issue with sleeping/waking up. */

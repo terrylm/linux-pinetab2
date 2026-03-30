@@ -449,6 +449,11 @@ static void bes2600_pwr_device_enter_lp_mode(struct bes2600_common *hw_priv)
 		.disableMoreFlagUsage = true,
 	};
 
+	if (hw_priv->in_reset) {
+		bes_info("Skipped power mode op during reset\n");
+		return;
+	}
+
 	bes_devel("host unlock lmac\n");
 	ret = wsm_set_operational_mode(hw_priv, &mode, 0);
 	if (ret)
@@ -555,6 +560,11 @@ static void bes2600_pwr_device_exit_lp_mode(struct bes2600_common *hw_priv)
 		.power_mode = wsm_power_mode_active,
 		.disableMoreFlagUsage = true,
 	};
+
+    if (hw_priv->in_reset) {
+        bes_info("Skipped exit_lp_mode during reset\n");
+        return;
+    }
 
 	bes_devel("host lock lmac\n");
 	if(hw_priv->sbus_ops->gpio_wake)

@@ -283,6 +283,7 @@ static void bes2600_init_wapi_cipher(struct ieee80211_hw *hw)
 }
 #endif
 
+/*
 static void bes2600_reset_timer_cb(struct timer_list *t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, reset_timer);
@@ -290,6 +291,7 @@ static void bes2600_reset_timer_cb(struct timer_list *t)
 	queue_work(hw_priv->reset_wq, &hw_priv->reset_work);
 	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));
 }
+*/
 
 static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
 {
@@ -343,6 +345,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->if_id_slot = 0;
 	hw_priv->roc_if_id = -1;
 	hw_priv->scan_switch_if_id = -1;
+	hw_priv->vif_attempts = 0;
 	atomic_set(&hw_priv->num_vifs, 0);
 	atomic_set(&hw_priv->netdevice_start, 0);
 
@@ -684,18 +687,14 @@ static void bes2600_reset_handler(struct work_struct *work)
 	down(&hw_priv->conf_lock);		// Lock to serialize with scans and VIF creation.
 
 	// Pause queues (road closed for TX)
-	ieee80211_stop_queues(hw_priv->hw);
-
-	// Disable monitors
-	del_timer_sync(&hw_priv->lmac_mon_timer);
-	del_timer_sync(&hw_priv->mcu_mon_timer);
+	//ieee80211_stop_queues(hw_priv->hw);
 
 	// Cancel any queued scan work to prevent it from starting/running concurrently
 	cancel_work(&hw_priv->scan.work);
 	cancel_work(&hw_priv->bh_work);
-    cancel_work(&hw_priv->power_down_work);  // Stop power down to avoid lockup
+	cancel_work(&hw_priv->power_down_work);  // Stop power down to avoid lockup
 
-    bes2600_unregister_bh(hw_priv);
+	bes2600_unregister_bh(hw_priv);
 
 	// If a scan is in progress, stop it and abort
 	if (atomic_read(&hw_priv->scan.in_progress)) {
@@ -714,10 +713,25 @@ static void bes2600_reset_handler(struct work_struct *work)
 
 	wsm_reset(hw_priv, &arg, 0);	// Do the reset here (non-atomic)
 	msleep(1000);
+
+	// Power cycle block here
+	bes_info("Reset: Power off for cycle\n");
+	hw_priv->sbus_ops->power_switch(hw_priv->sbus_priv, 0);  // Off
+	msleep(3000);  // Long delay for full shutdown
+	if (hw_priv->sbus_ops->reset)
+		hw_priv->sbus_ops->reset(hw_priv->sbus_priv);
+	bes_info("Reset: Power on for cycle\n");
+	hw_priv->sbus_ops->power_switch(hw_priv->sbus_priv, 1);  // On
+	msleep(1000);  // Settle
+
+	bes_info("Reset: Power on complete, BH register\n");
 	bes2600_register_bh(hw_priv);
+	bes_info("Reset: BH registered, wake queues\n");
 	up(&hw_priv->conf_lock);		// Unlock
 	hw_priv->in_reset = false;		// Clear flag
-	ieee80211_wake_queues(hw_priv->hw);
+	//ieee80211_wake_queues(hw_priv->hw);
+	//msleep(100);	// Short delay for NM to see up
+	//ieee80211_restart_hw(hw_priv->hw);  // Force re-open VIFs
 }
 
 int bes2600_core_probe(const struct sbus_ops *sbus_ops,
@@ -750,9 +764,9 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 	/* hw_priv->wsm_cbc.set_pm_complete = bes2600_set_pm_complete_cb; */
 	hw_priv->wsm_cbc.channel_switch = bes2600_channel_switch_cb;
 
-	timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
-	mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 5 mins
-	bes_info("%s: Forced FW reset on probe\n", __func__);
+	//timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
+	//mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 5 mins
+	bes_info("%s: Forced FW reset on probe. (no timer_setup() or mod_timer())\n", __func__);
 
 
 	bes2600_pwr_init(hw_priv);
@@ -878,7 +892,7 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 			}
 		}
 	}
-	bes2600_pwr_start(hw_priv);
+	//bes2600_pwr_start(hw_priv);
 
 err:
 	if (hw_priv->sbus_ops->gpio_sleep) {
@@ -901,7 +915,7 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_OFF);
 	}
 
-	bes2600_pwr_stop(hw_priv);
+	//bes2600_pwr_stop(hw_priv);
 
 	if (hw_priv->sbus_ops->sbus_deactive &&
 		WARN_ON(ret = hw_priv->sbus_ops->sbus_deactive(hw_priv->sbus_priv, SUBSYSTEM_WIFI))) {

@@ -867,7 +867,7 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 	int ret = 0, if_id;
 
 	if (hw_priv->sbus_ops->gpio_wake) {
-		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_ON);
+		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 	}
 
 	if (hw_priv->sbus_ops->sbus_active &&
@@ -896,7 +896,7 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 
 err:
 	if (hw_priv->sbus_ops->gpio_sleep) {
-		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_ON);
+		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 	}
 
 	return ret;
@@ -912,7 +912,7 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 		bes_err("communication exception!\n");
 
 	if(hw_priv->sbus_ops->gpio_wake) {
-		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_OFF);
+		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 	}
 
 	//bes2600_pwr_stop(hw_priv);
@@ -923,7 +923,7 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 	}
 
 	if(hw_priv->sbus_ops->gpio_sleep) {
-		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_OFF);
+		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 	}
 
 	memset(&hw_priv->wsm_caps, 0, sizeof(hw_priv->wsm_caps));
@@ -940,7 +940,7 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 
 err:
 	if(hw_priv->sbus_ops->gpio_sleep) {
-		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv, GPIO_WAKE_FLAG_WIFI_OFF);
+		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 	}
 
 	return ret;

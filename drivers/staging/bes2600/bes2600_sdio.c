@@ -41,8 +41,8 @@ struct bes2600_platform_data_sdio *bes2600_get_platform_data(void);
 int bes2600_register_net_dev(struct sbus_priv *bus_priv);
 int bes2600_unregister_net_dev(struct sbus_priv *bus_priv);
 bool bes2600_is_net_dev_created(struct sbus_priv *bus_priv);
-static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self, int falg);
-static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self, int falg);
+static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self);
+static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self);
 
 MODULE_AUTHOR("Dmitry Tarnyagin <dmitry.tarnyagin@stericsson.com>");
 MODULE_DESCRIPTION("mac80211 BES2600 SDIO driver");
@@ -60,7 +60,8 @@ struct sbus_priv {
 	struct workqueue_struct *sdio_wq;
 	bool fw_started;
 	struct mutex io_mutex;
-	long unsigned int gpio_wakup_flags;
+//	long unsigned int gpio_wakup_flags;
+	atomic_t gpio_wakeup_ref;   /* instead of unsigned long gpio_wakup_flags; */
 	struct mutex sbus_mutex;
 	bool retune_protected;
 #ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
@@ -720,7 +721,7 @@ static void sdio_rx_work(struct work_struct *work)
 	if (bes2600_chrdev_is_bus_error())
 		return;
 
-	bes2600_gpio_wakeup_mcu(self, GPIO_WAKE_FLAG_SDIO_RX);
+	bes2600_gpio_wakeup_mcu(self);
 
 	do {
 		bes2600_sdio_lock(self);
@@ -790,11 +791,11 @@ static void sdio_rx_work(struct work_struct *work)
 
 	} while (again);
 
-	bes2600_gpio_allow_mcu_sleep(self, GPIO_WAKE_FLAG_SDIO_RX);
+	bes2600_gpio_allow_mcu_sleep(self);
 	return;
 
 failed:
-	bes2600_gpio_allow_mcu_sleep(self, GPIO_WAKE_FLAG_SDIO_RX);
+	bes2600_gpio_allow_mcu_sleep(self);
 	bes2600_chrdev_wifi_force_close(self->core, false);
 	WARN_ON(1);
 }
@@ -1212,72 +1213,37 @@ static int bes2600_sdio_writeb_safe(struct sdio_func *func, unsigned int addr, u
 	return ret;
 }
 
-static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self, int flag)
+static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self)
 {
-	bool gpio_wakeup = false;
 	const struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
-
-	bes_devel("%s with %d\n", __func__, flag);
 
 	mutex_lock(&self->io_mutex);
 
-	/* error check */
-	if((self->gpio_wakup_flags & BIT(flag)) != 0) {
-		bes_err("repeat set gpio_wake_flag, sub_sys:%d", flag);
-		mutex_unlock(&self->io_mutex);
-		return;
-	}
-
-	/* check if this is the first subsystem that need mcu to keep awake */
-	gpio_wakeup = (self->gpio_wakup_flags == 0);
-
-	/* do wakeup mcu operation */
-	if(gpio_wakeup) {
-		bes_info("pull high gpio by flag:%d\n", flag);
+	if (atomic_inc_return(&self->gpio_wakeup_ref) == 1) {
+		bes_devel("pull high gpio (first user)\n");
 		gpiod_direction_output(pdata->wakeup, GPIOD_OUT_HIGH);
 	}
 
-	/* set flag of gpio_wakeup_flags */
-	self->gpio_wakup_flags |= BIT(flag);
-
+	//bes_info("gpio wakeup ref now: %d\n", atomic_read(&self->gpio_wakeup_ref));
 	mutex_unlock(&self->io_mutex);
-
-	// Delay after unlock for MCU wake stabilization (atomic-safe if usleep)
-/*	if(gpio_wakeup) {
-    	bes_info("Sleeping in: %s\n", __func__);
-		usleep_range(10000, 12000);  // 10ms busy-wait; safe post-unlock
-	}
-*/
 }
 
-static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self, int flag)
+static void bes2600_gpio_allow_mcu_sleep(struct sbus_priv *self)
 {
-	bool gpio_sleep = false;
 	const struct bes2600_platform_data_sdio *pdata = bes2600_get_platform_data();
-
-	bes_devel("%s with %d\n", __func__, flag);
 
 	mutex_lock(&self->io_mutex);
 
-	/* error check */
-	if((self->gpio_wakup_flags & BIT(flag)) == 0) {
-		bes_err(			"repeat clear gpio_wake_flag, sub_sys:%d", flag);
-		mutex_unlock(&self->io_mutex);
-		return;
-	}
-
-	/* clear flag of gpio_wakeup_flags */
-	self->gpio_wakup_flags &= ~BIT(flag);
-
-	/* check if this is the last subsystem that need mcu to keep awake */
-	gpio_sleep = (self->gpio_wakup_flags == 0);
-
-	/* do wakeup mcu operation */
-	if(gpio_sleep) {
-		bes_devel("pull low gpio by flag:%d\n", flag);
+	int ref = atomic_dec_return(&self->gpio_wakeup_ref);
+	if (ref == 0) {
+		bes_devel("pull low gpio (no more users)\n");
 		gpiod_direction_output(pdata->wakeup, GPIOD_OUT_LOW);
+	} else if (ref < 0) {
+		bes_err("gpio wakeup refcount went negative!\n");
+		atomic_set(&self->gpio_wakeup_ref, 0);
 	}
 
+	//bes_info("gpio wakeup ref now: %d\n", atomic_read(&self->gpio_wakeup_ref));
 	mutex_unlock(&self->io_mutex);
 }
 
@@ -1695,6 +1661,8 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 		bes_devel("Can't allocate SDIO sbus_priv.");
 		return -ENOMEM;
 	}
+
+	atomic_set(&self->gpio_wakeup_ref, 0);
 	spin_lock_init(&self->lock);
 
 	struct device *dev = &func->dev;
@@ -1707,7 +1675,6 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	self->pdata = bes2600_get_platform_data();
 	self->func = func;
 	self->dev = &func->dev;
-	self->gpio_wakup_flags = 0;
 	self->retune_protected = false;
 	self->unregister_in_process = false;
 	mutex_init(&self->io_mutex);
@@ -1715,7 +1682,7 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 #ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self->fw_started = false;
 #endif
-	bes2600_gpio_wakeup_mcu(self, GPIO_WAKE_FLAG_SDIO_PROBE);
+	bes2600_gpio_wakeup_mcu(self);
 
 	sdio_set_drvdata(func, self);
 	sdio_claim_host(func);
@@ -1740,7 +1707,7 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 
 out:
 	bes2600_chrdev_set_sbus_priv_data(self, false);
-	bes2600_gpio_allow_mcu_sleep(self, GPIO_WAKE_FLAG_SDIO_PROBE);
+	bes2600_gpio_allow_mcu_sleep(self);
 	return 0;
 
 err:
@@ -1749,7 +1716,7 @@ err:
 	sdio_claim_host(func);
 	sdio_disable_func(func);
 	sdio_release_host(func);
-	bes2600_gpio_allow_mcu_sleep(self, GPIO_WAKE_FLAG_SDIO_PROBE);
+	bes2600_gpio_allow_mcu_sleep(self);
 	sdio_set_drvdata(func, NULL);
 	bes2600_reg_set_object(NULL, NULL);
 	bes2600_chrdev_set_sbus_priv_data(NULL, true);
@@ -1951,7 +1918,7 @@ static int bes2600_sdio_prepare(struct device *dev)
 		return 0;
 
 	if(bes2600_sdio_sbus_ops.gpio_wake)
-		bes2600_sdio_sbus_ops.gpio_wake(self, GPIO_WAKE_FLAG_HOST_SUSPEND);
+		bes2600_sdio_sbus_ops.gpio_wake(self);
 
 	return 0;
 }
@@ -2009,7 +1976,7 @@ static int bes2600_sdio_suspend_noirq(struct device *dev)
 	}
 
 	if(bes2600_sdio_sbus_ops.gpio_sleep)
-		bes2600_sdio_sbus_ops.gpio_sleep(self, GPIO_WAKE_FLAG_HOST_SUSPEND);
+		bes2600_sdio_sbus_ops.gpio_sleep(self);
 
 	if (self->retune_protected == true)
 		bes_warn("retune is closed while ap sleep.\n");
@@ -2028,7 +1995,7 @@ static int bes2600_sdio_resume_noirq(struct device *dev)
 		return 0;
 
 	if(bes2600_sdio_sbus_ops.gpio_wake)
-		bes2600_sdio_sbus_ops.gpio_wake(self, GPIO_WAKE_FLAG_HOST_RESUME);
+		bes2600_sdio_sbus_ops.gpio_wake(self);
 
 	return 0;
 }
@@ -2064,7 +2031,7 @@ static void bes2600_sdio_complete(struct device *dev)
 
 	/* clear resume gpio wake flag */
 	if(bes2600_sdio_sbus_ops.gpio_sleep)
-		bes2600_sdio_sbus_ops.gpio_sleep(self, GPIO_WAKE_FLAG_HOST_RESUME);
+		bes2600_sdio_sbus_ops.gpio_sleep(self);
 }
 
 static const struct dev_pm_ops bes2600_pm_ops = {

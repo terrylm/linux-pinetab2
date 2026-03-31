@@ -112,7 +112,7 @@ static bool bes2600_bootup_end(void)
 	return end;
 }
 
-static int bes2600_chrdev_switch_subsys(int wake_flag, int subsys, bool active)
+static int bes2600_chrdev_switch_subsys(int subsys, bool active)
 {
 	int ret = 0;
 
@@ -121,22 +121,22 @@ static int bes2600_chrdev_switch_subsys(int wake_flag, int subsys, bool active)
 
 	if (active) {
 		if (bes2600_cdev.sbus_ops->gpio_wake)
-			bes2600_cdev.sbus_ops->gpio_wake(bes2600_cdev.sbus_priv, wake_flag);
+			bes2600_cdev.sbus_ops->gpio_wake(bes2600_cdev.sbus_priv);
 
 		if (bes2600_cdev.sbus_ops->sbus_active)
 			ret = bes2600_cdev.sbus_ops->sbus_active(bes2600_cdev.sbus_priv, subsys);
 
 		if (bes2600_cdev.sbus_ops->gpio_sleep)
-			bes2600_cdev.sbus_ops->gpio_sleep(bes2600_cdev.sbus_priv, wake_flag);
+			bes2600_cdev.sbus_ops->gpio_sleep(bes2600_cdev.sbus_priv);
 	} else {
 		if (bes2600_cdev.sbus_ops->gpio_wake)
-			bes2600_cdev.sbus_ops->gpio_wake(bes2600_cdev.sbus_priv, wake_flag);
+			bes2600_cdev.sbus_ops->gpio_wake(bes2600_cdev.sbus_priv);
 
 		if (bes2600_cdev.sbus_ops->sbus_deactive)
 			ret = bes2600_cdev.sbus_ops->sbus_deactive(bes2600_cdev.sbus_priv, subsys);
 
 		if (bes2600_cdev.sbus_ops->gpio_sleep)
-			bes2600_cdev.sbus_ops->gpio_sleep(bes2600_cdev.sbus_priv, wake_flag);
+			bes2600_cdev.sbus_ops->gpio_sleep(bes2600_cdev.sbus_priv);
 	}
 
 	return ret;
@@ -230,11 +230,11 @@ static int bes2600_switch_bt(bool on)
 			ret = (status <= 0 || bes2600_chrdev_is_bus_error()) ? -1 : 0;
 		} else {
 			bes_devel("bes2600 activate bt.\n");
-			ret = bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_ON, SUBSYSTEM_BT, true);
+			ret = bes2600_chrdev_switch_subsys(SUBSYSTEM_BT, true);
 		}
 	} else {
 		bes_devel("bes2600 deactivate bt.\n");
-		bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_OFF, SUBSYSTEM_BT, false);
+		bes2600_chrdev_switch_subsys(SUBSYSTEM_BT, false);
 	}
 
 	if (!ret) {
@@ -520,7 +520,7 @@ static int bes2600_op_bt_wakeup(const char *str)
 		return -EFAULT;
 
 	bes_devel("bes2600 wakeup bt.\n");
-	ret = bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_LP_ON, SUBSYSTEM_BT_LP, true);
+	ret = bes2600_chrdev_switch_subsys(SUBSYSTEM_BT_LP, true);
 
 	return ret;
 }
@@ -544,7 +544,7 @@ static int bes2600_op_bt_sleep(const char *str)
 		return -EFAULT;
 
 	bes_devel("bes2600 allow bt sleep.\n");
-	ret = bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_LP_OFF, SUBSYSTEM_BT_LP, false);
+	ret = bes2600_chrdev_switch_subsys(SUBSYSTEM_BT_LP, false);
 
 	return ret;
 }
@@ -972,7 +972,7 @@ void bes2600_chrdev_set_sbus_priv_data(struct sbus_priv *priv, bool error)
 	if (priv) {
 		if (bes2600_cdev.bton_pending) {
 			bes_devel("execute pending bt on operation.\n");
-			bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_ON, SUBSYSTEM_BT, true);
+			bes2600_chrdev_switch_subsys(SUBSYSTEM_BT, true);
 
 			bes2600_cdev.bton_pending = false;
 		}
@@ -1084,7 +1084,7 @@ void bes2600_chrdev_wakeup_bt(void)
 
 	if (bes2600_cdev.bt_opened && bes2600_cdev.sbus_priv) {
 		bes_devel("wakeup bt in resume flow\n");
-		ret = bes2600_chrdev_switch_subsys(GPIO_WAKE_FLAG_BT_LP_ON, SUBSYSTEM_BT_LP, true);
+		ret = bes2600_chrdev_switch_subsys(SUBSYSTEM_BT_LP, true);
 
 		if (ret)
 			bes_err("Wakeup BT fail in resume\n");

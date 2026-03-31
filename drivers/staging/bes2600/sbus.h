@@ -29,21 +29,6 @@ enum SUBSYSTEM {
 	SUBSYSTEM_BT_LP,
 };
 
-enum GPIO_WAKE_FLAG
-{
-	GPIO_WAKE_FLAG_MCU = 0,
-	GPIO_WAKE_FLAG_WIFI_ON,
-	GPIO_WAKE_FLAG_WIFI_OFF,
-	GPIO_WAKE_FLAG_BT_ON,
-	GPIO_WAKE_FLAG_BT_OFF,
-	GPIO_WAKE_FLAG_BT_LP_ON,
-	GPIO_WAKE_FLAG_BT_LP_OFF,
-	GPIO_WAKE_FLAG_HOST_SUSPEND,
-	GPIO_WAKE_FLAG_HOST_RESUME,
-	GPIO_WAKE_FLAG_SDIO_RX,
-	GPIO_WAKE_FLAG_SDIO_PROBE,
-};
-
 struct sbus_ops {
 	int (*init)(struct sbus_priv *self, struct bes2600_common *core);
 	int (*sbus_memcpy_fromio)(struct sbus_priv *self, unsigned int addr,
@@ -70,8 +55,8 @@ struct sbus_ops {
 	int (*sbus_deactive)(struct sbus_priv *self, int sub_system);
 	int (*power_switch)(struct sbus_priv *self, int on);
 	/* gpio wake, beacuse bes2600 sdio can't wakeup mcu, so add the two of interfaces */
-	void (*gpio_wake)(struct sbus_priv *self, int falg);
-	void (*gpio_sleep)(struct sbus_priv *self, int falg);
+	void (*gpio_wake)(struct sbus_priv *self);
+	void (*gpio_sleep)(struct sbus_priv *self);
 	/* halt device to get debug information */
 	void (*halt_device)(struct sbus_priv *self);
 	bool (*wakeup_source)(struct sbus_priv *self);

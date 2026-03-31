@@ -469,7 +469,7 @@ static void bes2600_pwr_device_enter_lp_mode(struct bes2600_common *hw_priv)
 	}
 
 	if(hw_priv->sbus_ops->gpio_sleep)
-		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv, GPIO_WAKE_FLAG_MCU);
+		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 	bes_devel("device enter sleep\n");
 }
 
@@ -568,7 +568,7 @@ static void bes2600_pwr_device_exit_lp_mode(struct bes2600_common *hw_priv)
 
 	bes_devel("host lock lmac\n");
 	if(hw_priv->sbus_ops->gpio_wake)
-		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_MCU);
+		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 
 	if(hw_priv->sbus_ops->sbus_active) {
 		ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv, SUBSYSTEM_MCU);
@@ -787,7 +787,7 @@ static void bes2600_power_mcu_down_work(struct work_struct *work)
 		mutex_lock(&hw_priv->bes_power.pwr_mutex);
 
 		if(hw_priv->sbus_ops->gpio_wake)
-			hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_MCU);
+			hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 
 		if(hw_priv->sbus_ops->sbus_active) {
 			ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv, SUBSYSTEM_MCU);
@@ -802,7 +802,7 @@ static void bes2600_power_mcu_down_work(struct work_struct *work)
 		}
 
 		if(hw_priv->sbus_ops->gpio_sleep)
-			hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv, GPIO_WAKE_FLAG_MCU);
+			hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 		mutex_unlock(&hw_priv->bes_power.pwr_mutex);
 	}
 }
@@ -884,7 +884,7 @@ void bes2600_pwr_start(struct bes2600_common *hw_priv)
 
 	/* set gpio and prevent device from entering sleep mode */
 	if(hw_priv->sbus_ops->gpio_wake)
-		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv, GPIO_WAKE_FLAG_MCU);
+		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 
 	/* start idle timer */
 	queue_delayed_work(hw_priv->workqueue,

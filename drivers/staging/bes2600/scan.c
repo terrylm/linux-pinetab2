@@ -656,7 +656,6 @@ static void bes2600_scan_complete(struct bes2600_common *hw_priv, int if_id)
 void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			struct wsm_scan_complete *arg)
 {
-    static bool mac_tested = false; // Remove this after testing. FIXME
 	static int empty_scans = 0;
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);
@@ -714,21 +713,6 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 		queue_delayed_work(hw_priv->workqueue,
 				&hw_priv->scan.timeout, 0);
 	}
-
-	// Remove this after testing. FIXME
-    if (!mac_tested) {
-        u8 mac[ETH_ALEN];
-        int ret;
-
-        bes_info("Testing wsm_get_station_id after first scan...\n");
-        ret = wsm_get_station_id(hw_priv, mac);
-        if (ret == 0 && is_valid_ether_addr(mac)) {
-            bes_info("Firmware MAC read SUCCESS after scan: %pM\n", mac);
-        } else {
-            bes_warn("wsm_get_station_id still failed after scan (%d)\n", ret);
-        }
-        mac_tested = true;
-    }
 }
 
 void bes2600_scan_timeout(struct work_struct *work)

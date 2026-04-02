@@ -459,7 +459,7 @@ err1:
 static int wait_slave_rx_ready(struct platform_fw_t *fw_data, u8 *buf_cnt, u16 *tx_size) {
     int ret = bes_slave_rx_ready(fw_data, buf_cnt, tx_size, HZ);
     if (!ret) {
-        bes_info("sdio slave rx buf cnt:%d,buf len max:%d\n", *buf_cnt, *tx_size);
+        bes_devel("sdio slave rx buf cnt:%d,buf len max:%d\n", *buf_cnt, *tx_size);
     } else {
         bes_info("wait bes sdio slave rx ready timeout:%d\n", ret);
     }

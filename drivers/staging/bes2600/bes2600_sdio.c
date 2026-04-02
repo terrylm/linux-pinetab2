@@ -1331,9 +1331,8 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 		sdio_release_host(self->func);
 
 		/* wait for device to response */
-    	bes_info("Sleeping in: %s\n", __func__);
+    	//bes_info("Sleeping in: %s\n", __func__);
 		usleep_range(10000, 12000);  // Atomic-safe
-		//msleep(delay_cnt);
 
 		/* read device response result */
 		sdio_claim_host(self->func);

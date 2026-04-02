@@ -184,10 +184,10 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 
 	bes_info("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__,
 		priv->if_id, req->n_channels, req->n_ssids);
-
+/*
 	for (size_t i = 0; i < req->n_channels; i++)
 		bes_info("[SCAN] Channel %zu: %u MHz\n", i, req->channels[i]->center_freq);
-
+*/
 	/* Scan when P2P_GO corrupt firmware MiniAP mode */
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		return -EOPNOTSUPP;
@@ -542,6 +542,9 @@ void bes2600_scan_work(struct work_struct *work)
     struct wsm_scan scan = {0};
     bool first_run;
 
+	bes_info("bes2600_scan_work started, num_vifs=%d, scan state=%p\n",
+		 atomic_read(&hw_priv->num_vifs), &hw_priv->scan);
+
     priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, hw_priv->scan.if_id);
     /* Problematic: Potential race if vif is removed, needs locking */
     if (!priv) {
@@ -653,6 +656,7 @@ static void bes2600_scan_complete(struct bes2600_common *hw_priv, int if_id)
 void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 			struct wsm_scan_complete *arg)
 {
+    static bool mac_tested = false; // Remove this after testing. FIXME
 	static int empty_scans = 0;
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);
@@ -710,6 +714,21 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 		queue_delayed_work(hw_priv->workqueue,
 				&hw_priv->scan.timeout, 0);
 	}
+
+	// Remove this after testing. FIXME
+    if (!mac_tested) {
+        u8 mac[ETH_ALEN];
+        int ret;
+
+        bes_info("Testing wsm_get_station_id after first scan...\n");
+        ret = wsm_get_station_id(hw_priv, mac);
+        if (ret == 0 && is_valid_ether_addr(mac)) {
+            bes_info("Firmware MAC read SUCCESS after scan: %pM\n", mac);
+        } else {
+            bes_warn("wsm_get_station_id still failed after scan (%d)\n", ret);
+        }
+        mac_tested = true;
+    }
 }
 
 void bes2600_scan_timeout(struct work_struct *work)

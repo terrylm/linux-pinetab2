@@ -77,7 +77,7 @@ static int bes_slave_tx_ready(struct platform_fw_t *fw_data, u16 *tx_len, int ti
 
 	bes_devel("%s now=%lu\n", __func__, jiffies);
 
-    bes_info("Sleeping in: %s\n", __func__);
+    //bes_info("Sleeping in: %s\n", __func__);
 	msleep(2);
 
 	ret = wait_for_completion_interruptible_timeout(&fw_data->completion_data, timeout);
@@ -719,7 +719,7 @@ static int send_run_firmware(struct platform_fw_t *fw_data, u8 *frame_num, u8 *l
     if (ret) return ret;
 
     bes_devel("%s", "firmware is downloaded successfully and is already running\n");
-    bes_info("Sleeping in: %s\n", __func__);
+    //bes_info("Sleeping in: %s\n", __func__);
     msleep(500);
 
     return 0;
@@ -799,7 +799,7 @@ static int bes_read_dpd_data(struct platform_fw_t *fw_data)
 	/* wait for device ready */
 	wait_timeout = jiffies + 15 * HZ;
 	do {
-    	bes_info("Sleeping in: %s\n", __func__);
+    	//bes_info("Sleeping in: %s\n", __func__);
 		msleep(100);
 		ret = bes2600_reg_read(BES_SLAVE_STATUS_REG_ID, &mcu_status, 1);
 	} while(((ret == 0) || (ret == BES_SDIO_CRC_ERROR)) &&
@@ -862,7 +862,7 @@ static int bes_read_dpd_log(struct platform_fw_t *fw_data)
 	/* wait for device ready */
 	wait_timeout = jiffies + 5 * HZ;
 	do {
-    	bes_info("Sleeping in: %s\n", __func__);
+    	//bes_info("Sleeping in: %s\n", __func__);
 		msleep(10);
 		ret = bes2600_reg_read(BES_SLAVE_STATUS_REG_ID, &mcu_status, 1);
 	} while(((ret == 0) || (ret == BES_SDIO_CRC_ERROR)) &&

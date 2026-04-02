@@ -269,11 +269,6 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
 
-	bes_info("Attempting to add VIF: addr=%pM, type=%d, p2p=%d, hw_mac=%pM\n",
-	   vif->addr, vif->type, vif->p2p, hw_priv->mac_addr);
-
-	bes_devel(" !!! %s: type %d p2p %d addr %pM\n", __func__, vif->type, vif->p2p, vif->addr);
-
 	priv = cw12xx_get_vif_from_ieee80211(vif);
 	atomic_set(&priv->enabled, 0);
 
@@ -285,78 +280,75 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 
 	spin_lock(&hw_priv->vif_list_lock);
 
-	if (atomic_read(&hw_priv->num_vifs) < CW12XX_MAX_VIFS) {
-		if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
-			if (hw_priv->vif_list[0]) {
-				bes_err("VIF if_id=0 already in use for addr[0]=%pM\n",
-					hw_priv->addresses[0].addr);
-				spin_unlock(&hw_priv->vif_list_lock);
-				up(&hw_priv->conf_lock);
-				return -EBUSY;
-			}
-			priv->if_id = 0;
-		} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr, ETH_ALEN)) {
-			if (hw_priv->vif_list[2]) {
-				bes_err("VIF if_id=2 already in use for addr[1]=%pM\n",
-					hw_priv->addresses[1].addr);
-				spin_unlock(&hw_priv->vif_list_lock);
-				up(&hw_priv->conf_lock);
-				return -EBUSY;
-			}
-			priv->if_id = 2;
-		} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr, ETH_ALEN)) {
-			if (hw_priv->vif_list[1]) {
-				bes_err("VIF if_id=1 already in use for addr[2]=%pM\n",
-					hw_priv->addresses[2].addr);
-				spin_unlock(&hw_priv->vif_list_lock);
-				up(&hw_priv->conf_lock);
-				return -EBUSY;
-			}
-			priv->if_id = 1;
-		} else {
-			hw_priv->vif_attempts++;   // <-- now uses hw_priv (reset below)
-			if (hw_priv->vif_attempts > 3) {
-				bes_info("Too many VIF creation attempts (%d), ignoring.\n", hw_priv->vif_attempts);
-				bes_info("Ignoring extra VIF request: type=%d, addr=%pM\n", vif->type, vif->addr);
-				dump_stack(); // keep for now so we can see it
-				spin_unlock(&hw_priv->vif_list_lock);
-				up(&hw_priv->conf_lock);
-				return -EBUSY;   // <-- CHANGED: was 0 (fake success) → now proper error
-			}
-			if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
-				bes_warn("Fixing VIF addr=%pM to addr[0]=%pM\n", vif->addr, hw_priv->addresses[0].addr);
-				if (hw_priv->vif_list[0]) {
-					bes_err("VIF if_id=0 already in use\n");
-					spin_unlock(&hw_priv->vif_list_lock);
-					up(&hw_priv->conf_lock);
-					return -EBUSY;
-				}
-				memcpy(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN);
-				priv->if_id = 0;
-			} else {
-				bes_err("No matching address for VIF addr=%pM\nPossible addresses are:\n", vif->addr);
-				for (int i = 0; i < 3; i++)
-					bes_err("Address %i = %pM\n", i, hw_priv->addresses[i].addr);
-
-				spin_unlock(&hw_priv->vif_list_lock);
-				up(&hw_priv->conf_lock);
-				return -EINVAL;
-			}
-		}
-
-		priv->hw_priv = hw_priv;
-		priv->hw = dev;
-		priv->vif = vif;
-	} else {
+	if (atomic_read(&hw_priv->num_vifs) >= CW12XX_MAX_VIFS) {
 		spin_unlock(&hw_priv->vif_list_lock);
 		up(&hw_priv->conf_lock);
 		return -EOPNOTSUPP;
 	}
 
+	/* For normal station interfaces, use our reliable base MAC */
+	if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
+		if (hw_priv->vif_list[0]) {
+			bes_err("VIF if_id=0 already in use\n");
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+
+		/* Use the base MAC we set in bes2600_get_base_mac() */
+		memcpy(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN);
+		priv->if_id = 0;
+
+		bes_devel("Using base MAC %pM for station VIF\n", vif->addr);
+	}
+	/* Handle other known address slots (mainly for P2P or special cases) */
+	else if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[0]) {
+			bes_err("VIF if_id=0 already in use\n");
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+		priv->if_id = 0;
+	} else if (!memcmp(vif->addr, hw_priv->addresses[1].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[2]) {
+			bes_err("VIF if_id=2 already in use\n");
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+		priv->if_id = 2;
+	} else if (!memcmp(vif->addr, hw_priv->addresses[2].addr, ETH_ALEN)) {
+		if (hw_priv->vif_list[1]) {
+			bes_err("VIF if_id=1 already in use\n");
+			spin_unlock(&hw_priv->vif_list_lock);
+			up(&hw_priv->conf_lock);
+			return -EBUSY;
+		}
+		priv->if_id = 1;
+	} else {
+		/* Unknown address - reject */
+		bes_err("No matching address slot for VIF addr=%pM\n", vif->addr);
+		bes_err("Available addresses:\n");
+		for (int i = 0; i < 3; i++)
+			bes_err("  Address %d = %pM\n", i, hw_priv->addresses[i].addr);
+
+		spin_unlock(&hw_priv->vif_list_lock);
+		up(&hw_priv->conf_lock);
+		return -EINVAL;
+	}
+
+	priv->hw_priv = hw_priv;
+	priv->hw = dev;
+	priv->vif = vif;
+
 	memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
 
 	bes_devel("[STA] Interface ID:%d of type:%d added\n",
 		   priv->if_id, priv->mode);
+
+	bes_info("%s: Added VIF: addr=%pM, type=%d, p2p=%d\n",
+		 __func__, vif->addr, vif->type, vif->p2p);
 
 	spin_unlock(&hw_priv->vif_list_lock);
 	up(&hw_priv->conf_lock);
@@ -475,9 +467,6 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	}
 
 	flush_workqueue(hw_priv->workqueue);
-
-	/* NEW: reset VIF attempt counter so add_interface starts fresh */
-	hw_priv->vif_attempts = 0;
 
 	spin_lock(&hw_priv->vif_list_lock);
 	spin_lock(&priv->vif_lock);

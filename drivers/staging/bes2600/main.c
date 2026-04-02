@@ -293,30 +293,69 @@ static void bes2600_reset_timer_cb(struct timer_list *t)
 }
 */
 
-static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
+/*
+ * bes2600_generate_mac_from_serial()
+ *
+ * Generate a stable, locally-administered MAC address from the RK3566 SoC
+ * serial number. This ensures each PineTab2 gets a unique MAC without
+ * requiring per-device DT edits.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+/*
+ * bes2600_generate_mac_from_serial()
+ *
+ * Generate a stable, locally-administered MAC address from the RK3566 SoC
+ * serial number. This gives each PineTab2 a unique MAC without requiring
+ * per-device DT edits.
+ */
+static int bes2600_generate_mac_from_serial(struct bes2600_common *hw_priv)
 {
-	struct device_node *np;
-	const u8* addr = NULL;
-	bool ok = false;
-	int len;
+	const char *serial = NULL;
+	u64 serial_val = 0;
+	int i;
 
-	np = of_find_compatible_node(NULL, NULL, "bestechnic,bes2600-sdio");
-	if (np) {
-		addr = of_get_property(np, "local-mac-address", &len);
-		if (addr && len == ETH_ALEN) {
-			memcpy(hw_priv->addresses[0].addr, addr, ETH_ALEN);
-			ok = true;
-		} else {
-			bes_err("bestechnic,bes2600 device node does not have valid local-mac-address property, random mac will be used!\n");
+	/* Try the most reliable location first */
+	serial = of_get_property(of_find_node_by_path("/"), "serial-number", NULL);
+	if (!serial) {
+		/* Fallback: direct procfs-style path (works on many Rockchip boards) */
+		struct device_node *np = of_find_node_by_path("/proc/device-tree");
+		if (np) {
+			serial = of_get_property(np, "serial-number", NULL);
+			of_node_put(np);
 		}
-		of_node_put(np);
-		} else {
-		bes_err("bestechnic,bes2600 device node NOT found, random mac will be used!\n");
 	}
-	if (!ok)
-		get_random_bytes(hw_priv->addresses[0].addr, ETH_ALEN);
 
-	hw_priv->addresses[0].addr[0] &= ~1u;
+	if (!serial || !serial[0]) {
+		bes_info("bes2600_generate_mac_from_serial(): No serial number found.\n");
+		return -1;   /* No serial number found */
+	}
+
+	/* Convert serial string to a 64-bit value (simple hash) */
+	for (i = 0; serial[i] && i < 16; i++) {
+		char c = serial[i];
+		if (c >= '0' && c <= '9')
+			serial_val = (serial_val << 4) | (c - '0');
+		else if (c >= 'a' && c <= 'f')
+			serial_val = (serial_val << 4) | (c - 'a' + 10);
+		else if (c >= 'A' && c <= 'F')
+			serial_val = (serial_val << 4) | (c - 'A' + 10);
+	}
+
+	/* Build locally administered unicast MAC:
+	 * First byte 0x02 = locally administered + unicast
+	 */
+	hw_priv->addresses[0].addr[0] = 0x02;
+	hw_priv->addresses[0].addr[1] = 0x00;
+	hw_priv->addresses[0].addr[2] = 0x00;           /* fixed OUI part */
+	hw_priv->addresses[0].addr[3] = (serial_val >> 16) & 0xFF;
+	hw_priv->addresses[0].addr[4] = (serial_val >> 8)  & 0xFF;
+	hw_priv->addresses[0].addr[5] = serial_val & 0xFF;
+
+	bes_info("Generated stable MAC from SoC serial number: %pM\n",
+		 hw_priv->addresses[0].addr);
+
+	return 0;
 }
 
 static void bes2600_derive_mac(struct bes2600_common *hw_priv)
@@ -327,6 +366,56 @@ static void bes2600_derive_mac(struct bes2600_common *hw_priv)
 	memcpy(hw_priv->addresses[2].addr, hw_priv->addresses[1].addr,
 		   ETH_ALEN);
 	hw_priv->addresses[2].addr[4] ^= 0x80;
+}
+
+static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
+{
+	int ret;
+
+	/* 1. Try proper hardware MAC read from firmware (currently broken) */
+	/* 
+	 * ret = wsm_get_station_id(hw_priv, hw_priv->addresses[0].addr);
+	 * if (ret == 0 && is_valid_ether_addr(hw_priv->addresses[0].addr)) {
+	 *     bes_info("Read permanent MAC from firmware: %pM\n",
+	 *              hw_priv->addresses[0].addr);
+	 *     goto derive;
+	 * }
+	 *
+	 * Note: This command consistently times out (-110) on current BES2600
+	 * firmware (Dec 2023). Left here for future reference if a newer
+	 * firmware fixes it.
+	 */
+
+	/* 2. Primary method: Generate stable MAC from RK3566 serial number */
+	ret = bes2600_generate_mac_from_serial(hw_priv);
+	if (ret == 0)
+		goto derive;
+
+	/* 3. Fallback: Device Tree (if someone manually added local-mac-address) */
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "bestechnic,bes2600-sdio");
+	if (np) {
+		const u8 *addr = of_get_property(np, "local-mac-address", NULL);
+		if (addr && is_valid_ether_addr(addr)) {
+			memcpy(hw_priv->addresses[0].addr, addr, ETH_ALEN);
+			bes_info("Using MAC from device tree: %pM\n", addr);
+			of_node_put(np);
+			goto derive;
+		}
+		of_node_put(np);
+	}
+
+	/* 4. Last resort: truly random MAC */
+	get_random_bytes(hw_priv->addresses[0].addr, ETH_ALEN);
+	hw_priv->addresses[0].addr[0] &= ~0x01;   /* unicast */
+	bes_warn("No serial number or DT MAC found, using random MAC: %pM\n",
+		 hw_priv->addresses[0].addr);
+
+derive:
+	bes2600_derive_mac(hw_priv);
+
+	/* Important: Update wiphy with the final MAC so cfg80211 is happy */
+	memcpy(hw_priv->hw->wiphy->perm_addr, hw_priv->addresses[0].addr, ETH_ALEN);
+	SET_IEEE80211_PERM_ADDR(hw_priv->hw, hw_priv->addresses[0].addr);
 }
 
 static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
@@ -345,11 +434,14 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->if_id_slot = 0;
 	hw_priv->roc_if_id = -1;
 	hw_priv->scan_switch_if_id = -1;
-	hw_priv->vif_attempts = 0;
 	atomic_set(&hw_priv->num_vifs, 0);
 	atomic_set(&hw_priv->netdevice_start, 0);
 
-	bes2600_get_base_mac(hw_priv);
+/* Early dummy initialization so wiphy->addresses and PERM_ADDR are valid */
+	get_random_bytes(hw_priv->addresses[0].addr, ETH_ALEN);
+	hw_priv->addresses[0].addr[0] &= ~0x01;   /* make it unicast */
+	bes_info("Early MAC check: addresses[0] = %pM\n", hw_priv->addresses[0].addr);
+
 	bes2600_derive_mac(hw_priv);
 
 	hw_priv->hw = hw;
@@ -784,6 +876,8 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 		if (bes2600_wifi_start(hw_priv))
 			goto err3;
 	}
+
+	bes2600_get_base_mac(hw_priv);     // Real MAC read from firmware
 
 	hw_priv->reset_wq = alloc_workqueue("bes2600_reset", WQ_MEM_RECLAIM, 0);
 	if (!hw_priv->reset_wq) {

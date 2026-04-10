@@ -103,7 +103,7 @@ void bes2600_join_timeout(struct work_struct *work);
 void bes2600_unjoin_work(struct work_struct *work);
 void bes2600_offchannel_work(struct work_struct *work);
 void bes2600_wep_key_work(struct work_struct *work);
-void bes2600_update_filtering(struct bes2600_vif *priv);
+int bes2600_update_filtering(struct bes2600_vif *priv);
 void bes2600_update_filtering_work(struct work_struct *work);
 int __bes2600_flush(struct bes2600_common *hw_priv, bool drop, int if_id);
 void bes2600_set_beacon_wakeup_period_work(struct work_struct *work);

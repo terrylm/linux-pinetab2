@@ -233,8 +233,7 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 
 	/* HACK! */
 	if (atomic_xchg(&hw_priv->tx_lock, 1) != 1)
-		bes_devel("[STA] TX is force-unlocked "
-			"due to stop request.\n");
+		bes_devel("[STA] TX is force-unlocked due to stop request.\n");
 
 	bes2600_for_each_vif(hw_priv, priv, i) {
 		if (!priv)
@@ -264,10 +263,12 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 int bes2600_add_interface(struct ieee80211_hw *dev,
 			 struct ieee80211_vif *vif)
 {
-	int ret;
 	struct bes2600_common *hw_priv = dev->priv;
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
+
+	bes_info("%s: Adding VIF: addr=%pM, type=%d, p2p=%d\n",
+		 __func__, vif->addr, vif->type, vif->p2p);
 
 	priv = cw12xx_get_vif_from_ieee80211(vif);
 	atomic_set(&priv->enabled, 0);
@@ -286,20 +287,25 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 		return -EOPNOTSUPP;
 	}
 
-	/* For normal station interfaces, use our reliable base MAC */
+	/* === Station interface handling === */
 	if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
+		/* Check if we already have a station VIF */
 		if (hw_priv->vif_list[0]) {
-			bes_err("VIF if_id=0 already in use\n");
+			bes_info("Station VIF already exists (if_id=0) - reusing it\n");
 			spin_unlock(&hw_priv->vif_list_lock);
 			up(&hw_priv->conf_lock);
-			return -EBUSY;
+			return 0;               /* success, reuse existing */
 		}
 
-		/* Use the base MAC we set in bes2600_get_base_mac() */
-		memcpy(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN);
-		priv->if_id = 0;
+		/* Use the random MAC provided by mac80211 unless it's obviously bad */
+		if (is_zero_ether_addr(vif->addr) || is_multicast_ether_addr(vif->addr)) {
+			bes_warn("Invalid MAC from mac80211 (%pM) - using base MAC instead\n", vif->addr);
+			memcpy(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN);
+		} else {
+			bes_devel("Using MAC provided by mac80211: %pM\n", vif->addr);
+		}
 
-		bes_devel("Using base MAC %pM for station VIF\n", vif->addr);
+		priv->if_id = 0;
 	}
 	/* Handle other known address slots (mainly for P2P or special cases) */
 	else if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
@@ -344,20 +350,14 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 
 	memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
 
-	bes_devel("[STA] Interface ID:%d of type:%d added\n",
-		   priv->if_id, priv->mode);
-
-	bes_info("%s: Added VIF: addr=%pM, type=%d, p2p=%d\n",
-		 __func__, vif->addr, vif->type, vif->p2p);
+	bes_devel("[STA] Interface ID:%d of type:%d added\n", priv->if_id, priv->mode);
 
 	spin_unlock(&hw_priv->vif_list_lock);
 	up(&hw_priv->conf_lock);
 
 	bes2600_vif_setup(priv);
 
-	ret = WARN_ON(bes2600_setup_mac_pvif(priv));
-
-	return ret;
+	return WARN_ON(bes2600_setup_mac_pvif(priv));
 }
 
 void bes2600_remove_interface(struct ieee80211_hw *dev,
@@ -605,22 +605,25 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 	return ret;
 }
 
-void bes2600_update_filtering(struct bes2600_vif *priv)
+/* Update beacon / BSSID / multicast filtering after join */
+int bes2600_update_filtering(struct bes2600_vif *priv)
 {
+	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int ret;
 
 	if (!priv->vif) {
 		bes_err("VIF is NULL in update_filtering\n");
-		return;
+		return -EINVAL;
 	}
 
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	bool bssid_filtering = !priv->rx_filter.bssid;
+	bool ap_mode = false;
+
 	static struct wsm_beacon_filter_control bf_disabled = {
 		.enabled = __cpu_to_le32(0),
 		.bcn_count = __cpu_to_le32(1),
 	};
-	bool ap_mode = 0;
+
 	static struct wsm_beacon_filter_table bf_table_auto = {
 		.numOfIEs = __cpu_to_le32(1),
 		.entry[0].ieId = WLAN_EID_VENDOR_SPECIFIC,
@@ -631,21 +634,24 @@ void bes2600_update_filtering(struct bes2600_vif *priv)
 		.entry[0].oui[1] = 0x6F,
 		.entry[0].oui[2] = 0x9A,
 	};
+
 	static struct wsm_beacon_filter_control bf_auto = {
 		.enabled = __cpu_to_le32(WSM_BEACON_FILTER_ENABLE |
 			WSM_BEACON_FILTER_AUTO_ERP | WSM_BEACON_FILTER_AUTO_HT),
 		// .bcn_count = __cpu_to_le32(priv->bf_control.bcn_count);
 	};
+
 	// bf_table_auto.numOfIEs = 0; /* No filtering to do - so discarding */
 	bf_auto.bcn_count = __cpu_to_le32(priv->bf_control.bcn_count);
 
 	if (priv->join_status == BES2600_JOIN_STATUS_PASSIVE)
-		return;
+		return 0;
 	else if (priv->join_status == BES2600_JOIN_STATUS_MONITOR)
 		bssid_filtering = false;
 
 	if (priv->vif && (priv->vif->type == NL80211_IFTYPE_AP))
 		ap_mode = true;
+
 	/*
 	* When acting as p2p client being connected to p2p GO, in order to
 	* receive frames from a different p2p device, turn off bssid filter.
@@ -655,52 +661,53 @@ void bes2600_update_filtering(struct bes2600_vif *priv)
 	* In that FW version even with bssid filter turned off,
 	* device will block most of the unwanted frames.
 	*/
+
+	/* P2P special case */
 	if (priv->vif && priv->vif->p2p)
 		bssid_filtering = false;
 
+	/* === RX filter === */
 	ret = wsm_set_rx_filter(hw_priv, &priv->rx_filter, priv->if_id);
-	if (!ret && !ap_mode) {
-		if (priv->vif) {
-			if (priv->vif->p2p || NL80211_IFTYPE_STATION != priv->vif->type)
-				ret = wsm_set_beacon_filter_table(hw_priv, &priv->bf_table,
-							priv->if_id);
-			else
-				ret = wsm_set_beacon_filter_table(hw_priv, &bf_table_auto,
-							priv->if_id);
-		} else
-			WARN_ON(1);
-	}
-	if (!ret && !ap_mode) {
-		if (priv->disable_beacon_filter)
-			ret = wsm_beacon_filter_control(hw_priv,
-					&bf_disabled, priv->if_id);
-		else {
-			if (priv->vif) {
-				if (priv->vif->p2p || NL80211_IFTYPE_STATION != priv->vif->type)
-					ret = wsm_beacon_filter_control(hw_priv,
-						&priv->bf_control, priv->if_id);
-				else
-					ret = wsm_beacon_filter_control(hw_priv,
-						&bf_auto, priv->if_id);
-			} else
-				WARN_ON(1);
-		}
-	}
-
-	if (!ret)
-		ret = wsm_set_bssid_filtering(hw_priv, bssid_filtering,
-					priv->if_id);
-
-	if (!ret) {
-		ret = wsm_set_multicast_filter(hw_priv, &priv->multicast_filter,
-						priv->if_id);
-	}
-
 	if (ret)
-		wiphy_err(priv->hw->wiphy,
-				"%s: Update filtering failed: %d.\n",
-				__func__, ret);
-	return;
+		goto out;
+
+	/* === Beacon filter table === */
+	if (!ap_mode) {
+		if (priv->vif && (priv->vif->p2p || priv->vif->type != NL80211_IFTYPE_STATION))
+			ret = wsm_set_beacon_filter_table(hw_priv, &priv->bf_table, priv->if_id);
+		else
+			ret = wsm_set_beacon_filter_table(hw_priv, &bf_table_auto, priv->if_id);
+		if (ret)
+			goto out;
+	}
+
+	/* === Beacon filter control === */
+	if (!ap_mode) {
+		if (priv->disable_beacon_filter)
+			ret = wsm_beacon_filter_control(hw_priv, &bf_disabled, priv->if_id);
+		else if (priv->vif && (priv->vif->p2p || priv->vif->type != NL80211_IFTYPE_STATION))
+			ret = wsm_beacon_filter_control(hw_priv, &priv->bf_control, priv->if_id);
+		else
+			ret = wsm_beacon_filter_control(hw_priv, &bf_auto, priv->if_id);
+		if (ret)
+			goto out;
+	}
+
+	/* === BSSID filtering === */
+	ret = wsm_set_bssid_filtering(hw_priv, bssid_filtering, priv->if_id);
+	if (ret)
+		goto out;
+
+	/* === Multicast filtering === */
+	ret = wsm_set_multicast_filter(hw_priv, &priv->multicast_filter, priv->if_id);
+
+out:
+	if (ret)
+		wiphy_err(priv->hw->wiphy, "%s: Update filtering failed: %d.\n", __func__, ret);
+	else
+		bes_info("Filtering updated successfully for VIF %d\n", priv->if_id);
+
+	return ret;   /* 0 = success, negative = error */
 }
 
 void bes2600_update_filtering_work(struct work_struct *work)
@@ -1120,8 +1127,7 @@ void bes2600_wep_key_work(struct work_struct *work)
 	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_WEP_DEFAULT_KEY_ID,
 		&wep_default_key_id, sizeof(wep_default_key_id), priv->if_id));
 #ifdef CONFIG_BES2600_TESTMODE
-	bes2600_queue_requeue(hw_priv, queue,
-		hw_priv->pending_frame_id, true);
+	bes2600_queue_requeue(hw_priv, queue, hw_priv->pending_frame_id, true);
 #else
 	bes2600_queue_requeue(queue, hw_priv->pending_frame_id, true);
 #endif
@@ -2039,225 +2045,418 @@ void bes2600_offchannel_work(struct work_struct *work)
 	wsm_unlock_tx(hw_priv);
 }
 
+/* Forward declarations */
+static int bes2600_join_send_cmd(struct bes2600_vif *priv);
+static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
+				     struct cfg80211_bss *bss,
+				     const u8 *ssidie,
+				     const u8 *bssid,
+				     const struct ieee80211_tim_ie *tim,
+				     struct wsm_protected_mgmt_policy *mgmt_policy,
+				     struct ieee80211_conf *conf,
+				     struct wsm_template_frame *probe_tmp);
+
+static int bes2600_join_install_keys(struct bes2600_vif *priv);
+static int bes2600_join_update_psm(struct bes2600_vif *priv);
+
+/* ==================== Main dispatcher ==================== */
 void bes2600_join_work(struct work_struct *work)
 {
-	struct bes2600_vif *priv =
-		container_of(work, struct bes2600_vif, join_work);
+	struct bes2600_vif *priv = container_of(work, struct bes2600_vif, join_work);
+	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+	int ret;
+
+	if (!priv) {
+		bes_warn("%s: called with no active VIF\n", __func__);
+		return;
+	}
+
+	bes_info("=== bes2600_join_work STARTED for VIF %d (join_status=%d) ===\n",
+		 priv->if_id, priv->join_status);
+
+	/* Acquire the configuration lock */
+	if (down_interruptible(&hw_priv->conf_lock) != 0) {
+		bes_err("Failed to acquire conf_lock (interrupted)\n");
+		return;
+	}
+
+	/* Step 1: Try to join */
+	ret = bes2600_join_send_cmd(priv);
+	if (ret) {
+		bes_err("bes2600_join_send_cmd FAILED (ret=%d) - aborting join\n", ret);
+		goto out_unlock;
+	}
+	bes_info("bes2600_join_send_cmd successful.\n");
+
+	/* Step 2: Only continue if join succeeded */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+		bes_info("Join successful - proceeding with keys and PSM\n");
+		ret = bes2600_join_install_keys(priv);
+		if (ret) {
+			bes_err("bes2600_join_install_keys FAILED (ret=%d) - aborting join\n", ret);
+			goto out_unlock;
+		}
+		bes_info("bes2600_join_install_keys successful.\n");
+
+		ret = bes2600_join_update_psm(priv);
+		if (ret) {
+			bes_err("bes2600_join_update_psm FAILED (ret=%d) - aborting join\n", ret);
+			goto out_unlock;
+		}
+		bes_info("bes2600_join_update_psm successful.\n");
+	} else {
+		bes_info("Join did NOT succeed (join_status = %d) - skipping keys and PSM\n",
+			 priv->join_status);
+	}
+
+out_unlock:
+	up(&hw_priv->conf_lock);
+	bes_info("=== bes2600_join_work FINISHED for VIF %d ===\n", priv->if_id);
+}
+
+/* ==================== Helper 1: Queue + BSS lookup ==================== */
+static int bes2600_join_send_cmd(struct bes2600_vif *priv)
+{
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	u8 queueId = bes2600_queue_get_queue_id(hw_priv->pending_frame_id);
 	struct bes2600_queue *queue = &hw_priv->tx_queue[queueId];
 	const struct bes2600_txpriv *txpriv = NULL;
 	struct sk_buff *skb = NULL;
-	const struct wsm_tx *wsm;
+	const struct wsm_tx *wsm = NULL;
 	const struct ieee80211_hdr *frame;
 	const u8 *bssid;
-	struct cfg80211_bss *bss;
-	const u8 *ssidie;
-	const u8 *dtimie;
+	struct cfg80211_bss *bss = NULL;
+	const u8 *ssidie = NULL;
+	const u8 *dtimie = NULL;
 	const struct ieee80211_tim_ie *tim = NULL;
-	struct wsm_protected_mgmt_policy mgmt_policy;
+	struct wsm_protected_mgmt_policy mgmt_policy = {0};
 	struct ieee80211_conf *conf = &hw_priv->hw->conf;
 	struct wsm_template_frame probe_tmp = {
 		.frame_type = WSM_FRAME_TYPE_PROBE_REQUEST,
 	};
-	/*struct wsm_reset reset = {
-		.reset_statistics = true,
-	};*/
+	int ret;
 
+	bes_info("=== bes2600_join_send_cmd STARTED for VIF %d ===\n", priv->if_id);
 
-	BUG_ON(queueId >= 4);
-	if (bes2600_queue_get_skb(queue, hw_priv->pending_frame_id,
-			&skb, &txpriv)) {
-		wsm_unlock_tx(hw_priv);
-		return;
+	/* 1. Queue ID safety check (was BUG_ON) */
+	if (queueId >= 4) {
+		bes_err("Invalid queueId %u (must be < 4)\n", queueId);
+		return -EINVAL;
 	}
+
+	if (bes2600_queue_get_skb(queue, hw_priv->pending_frame_id, &skb, &txpriv)) {
+		bes_err("Failed to get skb from queue\n");
+		wsm_unlock_tx(hw_priv);
+		return -EINVAL;
+	}
+
 	wsm = (struct wsm_tx *)&skb->data[0];
 	frame = (struct ieee80211_hdr *)&skb->data[txpriv->offset];
 	bssid = &frame->addr1[0]; /* AP SSID in a 802.11 frame */
 
-	BUG_ON(!wsm);
-	BUG_ON(!hw_priv->channel);
+	/* 2. Safety checks (were BUG_ON) */
+	if (!wsm) {
+		bes_err("wsm pointer is NULL\n");
+		wsm_unlock_tx(hw_priv);
+		return -EINVAL;
+	}
 
+	if (!hw_priv->channel) {
+		bes_err("Current channel is not set\n");
+		wsm_unlock_tx(hw_priv);
+		return -EINVAL;
+	}
+
+	/* Handle case where we are already joining */
 	if (unlikely(priv->join_status)) {
 		atomic_set(&priv->connect_in_process, 0);
 		wsm_lock_tx(hw_priv);
 		bes2600_unjoin_work(&priv->unjoin_work);
+		bes_info("Previous join was in progress - performed unjoin\n");
 	}
 
-	cancel_delayed_work_sync(&priv->join_timeout);
+	if (!cancel_delayed_work_sync(&priv->join_timeout)) {
+    	bes_info("%s: No delayed work pending.\n", __func__);
+	}
+	bes_info("%s: Delayed work cancelled.\n", __func__);
 
+	/* Get BSS entry */
 	bss = cfg80211_get_bss(hw_priv->hw->wiphy, hw_priv->channel, bssid, NULL, 0,
-				   IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
-
+			       IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
 	if (!bss) {
+		bes_err("Could not find BSS for BSSID %pM\n", bssid);
 #ifdef CONFIG_BES2600_TESTMODE
 		bes2600_queue_remove(hw_priv, queue, hw_priv->pending_frame_id);
 #else
 		bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-#endif /*CONFIG_BES2600_TESTMODE*/
+#endif
 		wsm_unlock_tx(hw_priv);
-		return;
+		return -ENOENT;
 	}
+
 	ssidie = ieee80211_bss_get_ie(bss, WLAN_EID_SSID);
 	dtimie = ieee80211_bss_get_ie(bss, WLAN_EID_TIM);
 	if (dtimie)
 		tim = (struct ieee80211_tim_ie *)&dtimie[2];
 
-	down(&hw_priv->conf_lock);
-	{
-		struct wsm_switch_channel channel;
-		static int join_retries;
-		if (join_retries++ > 5) {
-			bes_err("Join failed after %d retries\n", join_retries);
-			bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-			wsm_unlock_tx(hw_priv);
-			return;
-		}
-		struct wsm_join join = {
-			.mode = (bss->capability & WLAN_CAPABILITY_IBSS) ?
-				WSM_JOIN_MODE_IBSS : WSM_JOIN_MODE_BSS,
-			.preambleType = WSM_JOIN_PREAMBLE_SHORT,
-			.probeForJoin = 1,
-			/* dtimPeriod will be updated after association */
-			.dtimPeriod = 1,
-			.beaconInterval = bss->beacon_interval,
-		};
+	/* Call the low-level join (now returns error code) */
+	ret = bes2600_join_do_wsm_join(priv, bss, ssidie, bssid, tim,
+				       &mgmt_policy, conf, &probe_tmp);
 
-		if (priv->if_id)
-			join.flags |= WSM_FLAG_MAC_INSTANCE_1;
-		else
-			join.flags &= ~WSM_FLAG_MAC_INSTANCE_1;
-
-		/* BT Coex related changes */
-		if (hw_priv->is_BT_Present) {
-			if (((hw_priv->conf_listen_interval * 100) %
-					bss->beacon_interval) == 0)
-				priv->listen_interval =
-					((hw_priv->conf_listen_interval * 100) /
-					bss->beacon_interval);
-			else
-				priv->listen_interval =
-					((hw_priv->conf_listen_interval * 100) /
-					bss->beacon_interval + 1);
-		}
-
-		if (tim && tim->dtim_period > 1) {
-			join.dtimPeriod = tim->dtim_period;
-			priv->join_dtim_period = tim->dtim_period;
-		}
-		priv->beacon_int = bss->beacon_interval;
-		bes_devel("[STA] Join DTIM: %d, interval: %d\n",
-				join.dtimPeriod, priv->beacon_int);
-
-		hw_priv->is_go_thru_go_neg = false;
-		join.channelNumber = hw_priv->channel->hw_value;
-
-		/* basicRateSet will be updated after association.
-		Currently these values are hardcoded */
-		if (hw_priv->channel->band == NL80211_BAND_5GHZ) {
-			join.band = WSM_PHY_BAND_5G;
-			join.basicRateSet = 64; /*6 mbps*/
-		}else{
-			join.band = WSM_PHY_BAND_2_4G;
-			join.basicRateSet = 7; /*1, 2, 5.5 mbps*/
-		}
-		memcpy(&join.bssid[0], bssid, sizeof(join.bssid));
-		memcpy(&priv->join_bssid[0], bssid, sizeof(priv->join_bssid));
-
-		if (ssidie) {
-			join.ssidLength = ssidie[1];
-			if (WARN_ON(join.ssidLength > sizeof(join.ssid)))
-				join.ssidLength = sizeof(join.ssid);
-			memcpy(&join.ssid[0], &ssidie[2], join.ssidLength);
-			if(strstr(&join.ssid[0],"5.1.4")) {
-    			bes_info("Sleeping in: %s\n", __func__);
-				msleep(200);
-			}
-		}
-
-		if (priv->vif->p2p) {
-			join.flags |= WSM_JOIN_FLAGS_P2P_GO;
-			join.flags |= (1 << 6);
-			join.basicRateSet =
-				bes2600_rate_mask_to_wsm(hw_priv, 0xFF0);
-		}
-
-		bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_JOIN);
-		wsm_flush_tx(hw_priv);
-
-		/* Queue unjoin if not associated in 3 sec. */
-		queue_delayed_work(hw_priv->workqueue,
-			&priv->join_timeout, 3 * HZ);
-
-		bes2600_disable_listening(priv);
-
-		//WARN_ON(wsm_reset(hw_priv, &reset, priv->if_id));
-		WARN_ON(wsm_set_block_ack_policy(hw_priv,
-			0, hw_priv->ba_tid_mask, priv->if_id));
-		spin_lock_bh(&hw_priv->ba_lock);
-		hw_priv->ba_ena = false;
-		hw_priv->ba_cnt = 0;
-		hw_priv->ba_acc = 0;
-		hw_priv->ba_hist = 0;
-		hw_priv->ba_cnt_rx = 0;
-		hw_priv->ba_acc_rx = 0;
-		spin_unlock_bh(&hw_priv->ba_lock);
-
-		mgmt_policy.protectedMgmtEnable = 0;
-		mgmt_policy.unprotectedMgmtFramesAllowed = 1;
-		mgmt_policy.encryptionForAuthFrame = 1;
-		wsm_set_protected_mgmt_policy(hw_priv, &mgmt_policy,
-						  priv->if_id);
-
-		/* need to switch channel before join */
-		channel.channelMode = NL80211_CHAN_NO_HT << 4;
-		channel.channelSwitchCount = 0;
-		channel.newChannelNumber = conf->chandef.chan->hw_value;
-		wsm_switch_channel(hw_priv, &channel,  priv->if_id);
-
-		/* avoid lmac assert when wpa_supplicant connect to ap without scan */
-		probe_tmp.skb = ieee80211_probereq_get(hw_priv->hw, priv->vif->addr, NULL, 0, 0);
-		if (probe_tmp.skb) {
-			wsm_set_template_frame(hw_priv, &probe_tmp, 0);
-			dev_kfree_skb(probe_tmp.skb);
-		}
-
-		if (wsm_join(hw_priv, &join, priv->if_id)) {
-			memset(&priv->join_bssid[0],
-				0, sizeof(priv->join_bssid));
-#ifdef CONFIG_BES2600_TESTMODE
-			bes2600_queue_remove(hw_priv, queue,
-						hw_priv->pending_frame_id);
-#else
-			bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-#endif /*CONFIG_BES2600_TESTMODE*/
-			cancel_delayed_work_sync(&priv->join_timeout);
-			bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
-		} else {
-			/* Upload keys */
-#ifdef CONFIG_BES2600_TESTMODE
-			bes2600_queue_requeue(hw_priv, queue,
-				hw_priv->pending_frame_id, true);
-#else
-			bes2600_queue_requeue(queue, hw_priv->pending_frame_id,
-						true);
-#endif
-			priv->join_status = BES2600_JOIN_STATUS_STA;
-			atomic_set(&priv->connect_in_process, 1);
-
-			/* Due to beacon filtering it is possible that the
-			 * AP's beacon is not known for the mac80211 stack.
-			 * Disable filtering temporary to make sure the stack
-			 * receives at least one */
-			priv->disable_beacon_filter = true;
-
-		}
-		bes2600_update_filtering(priv);
-	}
-	up(&hw_priv->conf_lock);
+	/* Always clean up */
 	if (bss)
 		cfg80211_put_bss(hw_priv->hw->wiphy, bss);
+
 	wsm_unlock_tx(hw_priv);
+
+	if (ret) {
+		bes_err("%s: bes2600_join_do_wsm_join FAILED with ret=%d\n", __func__, ret);
+		return ret;
+	}
+
+	bes_info("bes2600_join_send_cmd SUCCEEDED for VIF %d\n", priv->if_id);
+	return 0;
+}
+
+/* ==================== Helper 2: Core WSM join logic ==================== */
+static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
+				    struct cfg80211_bss *bss,
+				    const u8 *ssidie,
+				    const u8 *bssid,
+				    const struct ieee80211_tim_ie *tim,
+				    struct wsm_protected_mgmt_policy *mgmt_policy,
+				    struct ieee80211_conf *conf,
+				    struct wsm_template_frame *probe_tmp)
+{
+	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+	struct wsm_join join = {0};
+	struct wsm_switch_channel channel = {0};
+	int ret;
+
+	bes_info("bes2600_join_do_wsm_join ENTERED for VIF %d\n", priv->if_id);
+
+	/* === Build join parameters === */
+	join.mode = (bss->capability & WLAN_CAPABILITY_IBSS) ?
+			WSM_JOIN_MODE_IBSS : WSM_JOIN_MODE_BSS;
+	join.preambleType     = WSM_JOIN_PREAMBLE_SHORT;
+	join.probeForJoin     = 1;
+	join.dtimPeriod       = 1;
+	join.beaconInterval   = bss->beacon_interval;
+	join.channelNumber    = hw_priv->channel->hw_value;
+
+	if (priv->if_id)
+		join.flags |= WSM_FLAG_MAC_INSTANCE_1;
+
+	/* BT Coexistence */
+	if (hw_priv->is_BT_Present) {
+		if (((hw_priv->conf_listen_interval * 100) % bss->beacon_interval) == 0)
+			priv->listen_interval = (hw_priv->conf_listen_interval * 100) / bss->beacon_interval;
+		else
+			priv->listen_interval = (hw_priv->conf_listen_interval * 100) / bss->beacon_interval + 1;
+	}
+
+	if (tim && tim->dtim_period > 1) {
+		join.dtimPeriod = tim->dtim_period;
+		priv->join_dtim_period = tim->dtim_period;
+	}
+
+	priv->beacon_int = bss->beacon_interval;
+
+	/* 5 GHz or 2.4 GHz */
+	if (hw_priv->channel->band == NL80211_BAND_5GHZ) {
+		join.band = WSM_PHY_BAND_5G;
+		join.basicRateSet = 64;
+	} else {
+		join.band = WSM_PHY_BAND_2_4G;
+		join.basicRateSet = 7;
+	}
+
+	memcpy(join.bssid, bssid, sizeof(join.bssid));
+	memcpy(priv->join_bssid, bssid, sizeof(priv->join_bssid));
+
+	if (ssidie) {
+		join.ssidLength = ssidie[1];
+		if (join.ssidLength > sizeof(join.ssid))
+			join.ssidLength = sizeof(join.ssid);
+		memcpy(join.ssid, &ssidie[2], join.ssidLength);
+	}
+
+	if (priv->vif->p2p) {
+		join.flags |= WSM_JOIN_FLAGS_P2P_GO;
+		join.flags |= (1 << 6);
+		join.basicRateSet = bes2600_rate_mask_to_wsm(hw_priv, 0xFF0);
+	}
+
+	bes_info("%s: Past all the paliminary stuff.\n", __func__);
+
+	/* === Power / TX flush === */
+	/* === Tell power management the chip must stay awake === */
+	ret = bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_JOIN);
+	if (ret) {
+		bes_err("%s: bes2600_pwr_set_busy_event FAILED (ret=%d)\n", __func__, ret);
+		goto fail;
+	}
+	bes_info("%s: Power busy event set successfully\n", __func__);
+
+	if (!wsm_flush_tx(hw_priv)) {
+		bes_err("wsm_flush_tx FAILED - frames appear to be stuck in firmware\n");
+		goto fail;
+	}
+	bes_info("TX queue flushed successfully\n");
+
+	/* Schedule the join timeout watchdog */
+	if (!queue_delayed_work(hw_priv->workqueue, &priv->join_timeout, 3 * HZ)) {
+    	bes_err("Failed to queue join_timeout work\n");
+		ret=-1;
+    	goto fail;
+	}
+	bes_info("Join timeout watchdog queued successfully\n");
+
+	ret = bes2600_disable_listening(priv);
+	if (ret) {
+    	bes_err("bes2600_disable_listening FAILED (ret=%d)\n", ret);
+    	goto fail;
+	}
+	bes_info("Listening disabled successfully\n");
+
+	/* Skipped: block ack policy (known to cause long stalls) */
+	spin_lock_bh(&hw_priv->ba_lock);
+	hw_priv->ba_ena = false;
+	hw_priv->ba_cnt = hw_priv->ba_acc = hw_priv->ba_hist = 0;
+	hw_priv->ba_cnt_rx = hw_priv->ba_acc_rx = 0;
+	spin_unlock_bh(&hw_priv->ba_lock);
+
+// FIXME Revisit block acknowledge after driver is solid. Removed for now.
+
+	/* Protected management policy */
+	memset(mgmt_policy, 0, sizeof(*mgmt_policy));
+	mgmt_policy->protectedMgmtEnable = 0;
+	mgmt_policy->unprotectedMgmtFramesAllowed = 1;
+	mgmt_policy->encryptionForAuthFrame = 1;
+	ret = wsm_set_protected_mgmt_policy(hw_priv, mgmt_policy, priv->if_id);
+	if (ret) {
+		bes_err("wsm_set_protected_mgmt_policy FAILED (ret=%d)\n", ret);
+		goto fail;
+	}
+	bes_info("Protected management policy set successfully\n");
+
+	/* === Channel switch (known slow point) === */
+	channel.channelMode = NL80211_CHAN_NO_HT << 4;
+	channel.channelSwitchCount = 0;
+	channel.newChannelNumber = conf->chandef.chan->hw_value;
+	ret = wsm_switch_channel(hw_priv, &channel, priv->if_id);
+	if (ret) {
+		bes_err("wsm_switch_channel FAILED (ret=%d)\n", ret);
+		goto fail;
+	}
+	bes_info("Switched channel successfully\n");
+
+	/* === Probe request template (known slow point) === */
+	probe_tmp->skb = ieee80211_probereq_get(hw_priv->hw, priv->vif->addr, NULL, 0, 0);
+	bes_info("After ieee80211_probereq_get().\n"); // So I can see time stamp in log.
+	if (probe_tmp->skb) {
+		ret = wsm_set_template_frame(hw_priv, probe_tmp, 0);
+		if (ret) {
+			bes_err("wsm_set_template_frame FAILED (ret=%d)\n", ret);
+			dev_kfree_skb(probe_tmp->skb);
+			probe_tmp->skb = NULL;
+			goto fail;
+		}
+		bes_info("wsm_set_template_frame() successful.\n");
+		dev_kfree_skb(probe_tmp->skb);
+		probe_tmp->skb = NULL;
+	}
+	bes_info("Passed skb stuff successfully\n");
+
+	/* === Strong yield before the final critical command === */
+	bes_info("Final safety yield before wsm_join...\n");
+	msleep(30);
+	schedule();
+
+	bes_info("Calling wsm_join() now...\n");
+	ret = wsm_join(hw_priv, &join, priv->if_id);
+	if (ret) {
+		bes_err("wsm_join() FAILED (ret=%d)\n", ret);
+		goto fail;
+	}
+	bes_info("wsm_join() SUCCEEDED\n");
+
+	/* Success path */
+#ifdef CONFIG_BES2600_TESTMODE
+	ret = bes2600_queue_requeue(hw_priv, &hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
+			      hw_priv->pending_frame_id, true);
+#else
+	ret = bes2600_queue_requeue(&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
+			      hw_priv->pending_frame_id, true);
+#endif
+	if (ret) {
+		bes_err("bes2600_queue_requeue() FAILED (ret=%d)\n", ret);
+		goto fail;
+	}
+	bes_info("bes2600_queue_requeue() SUCCEEDED\n");
+
+	priv->join_status = BES2600_JOIN_STATUS_STA;
+	atomic_set(&priv->connect_in_process, 1);
+	priv->disable_beacon_filter = true;
+
+	ret = bes2600_update_filtering(priv);
+	if (ret) {
+		bes_err("bes2600_update_filtering() FAILED (ret=%d)\n", ret);
+		goto fail;
+	}
+
+	return 0;
+
+fail:
+	int fret=0; // Net to leave ret intact for return to caller.
+	/* Clean failure path */
+	bes_info("Join failed - performing cleanup\n");
+	memset(priv->join_bssid, 0, sizeof(priv->join_bssid));
+
+	u8 queueId = bes2600_queue_get_queue_id(hw_priv->pending_frame_id);
+	if (queueId < 4) {
+#ifdef CONFIG_BES2600_TESTMODE
+		fret = bes2600_queue_remove(hw_priv, &hw_priv->tx_queue[queueId], hw_priv->pending_frame_id);
+#else
+		fret = bes2600_queue_remove(&hw_priv->tx_queue[queueId], hw_priv->pending_frame_id);
+#endif
+	}
+	else fret=-1;
+	if (fret) {
+		bes_err("bes2600_queue_remove() FAILED (fret=%d) in fail path.\n", ret);
+	}
+	bes_info("bes2600_queue_remove() SUCCEEDED in fail path.\n");
+
+	if (!cancel_delayed_work_sync(&priv->join_timeout)) {
+    	bes_err("No delayed work pending in the fail path.\n");
+	}
+	bes_info("Delayed work cancelled in the fail path.\n");
+
+	fret = bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_JOIN);
+	if (fret) {
+		bes_err("%s: bes2600_pwr_clear_busy_event() FAILED (fret=%d) in fail path.\n", __func__, ret);
+	}
+	bes_info("bes2600_queue_remove() SUCCEEDED in fail path.\n");
+
+	bes_info("Join failure cleanup completed\n");
+	return ret;   /* propagate the error */
+}
+
+/* Step 3 & 4: Placeholders (original code had almost nothing here) */
+static int bes2600_join_install_keys(struct bes2600_vif *priv)
+{
+	int ret=0;
+	bes_info("Installing keys after association (VIF %d)\n", priv->if_id);
+	/* FIXME Add real key logic here later */
+	return ret;
+}
+
+static int bes2600_join_update_psm(struct bes2600_vif *priv)
+{
+	int ret=0;
+	bes_devel("Updating power save mode after join (VIF %d)\n", priv->if_id);
+	/* FIXME Add PSM logic here later */
+	return ret;
 }
 
 void bes2600_join_timeout(struct work_struct *work)

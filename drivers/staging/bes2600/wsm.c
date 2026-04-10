@@ -468,6 +468,7 @@ int wsm_write_mib(struct bes2600_common *hw_priv, u16 mibId, void *_buf,
 	return ret;
 
 nomem:
+	bes_err("wsm_write_mib: nomem error for mibId=0x%04x\n", mibId);
 	wsm_cmd_unlock(hw_priv);
 	return -ENOMEM;
 }
@@ -1904,8 +1905,9 @@ void wsm_lock_tx(struct bes2600_common *hw_priv)
 	wsm_cmd_lock(hw_priv);
 	if (atomic_add_return(1, &hw_priv->tx_lock) == 1) {
 		if (wsm_flush_tx(hw_priv))
-			bes_devel("[WSM] TX is locked.\n");
+			bes_devel("%s: [WSM] TX is locked.\n", __func__);
 	}
+
 	wsm_cmd_unlock(hw_priv);
 }
 
@@ -2029,21 +2031,44 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 	}
 }
 
-
-void wsm_unlock_tx(struct bes2600_common *hw_priv)
+/* Unlock the TX path and wake the BH thread if needed */
+int wsm_unlock_tx(struct bes2600_common *hw_priv)
 {
 	int tx_lock;
-	if (atomic_read(&hw_priv->bh_error))
-		bes_err("fatal error occured, unlock is unsafe\n");
-	else {
-		tx_lock = atomic_sub_return(1, &hw_priv->tx_lock);
-		if (tx_lock < 0) {
-			BUG_ON(1);
-		} else if (tx_lock == 0) {
-			bes2600_bh_wakeup(hw_priv);
-			bes_devel("[WSM] TX is unlocked.\n");
-		}
+
+	if (!hw_priv) {
+		bes_err("%s: hw_priv is NULL\n", __func__);
+		return -EINVAL;
 	}
+
+	/* If the BH thread is already in a fatal error state, unlocking is unsafe */
+	if (atomic_read(&hw_priv->bh_error) != 0) {
+		bes_err("%s: fatal error occurred in BH thread, unlock is unsafe\n", __func__);
+		return -EIO;
+	}
+
+	tx_lock = atomic_sub_return(1, &hw_priv->tx_lock);
+
+	if (tx_lock < 0) {
+		bes_err("%s: TX lock count underflow (%d) — resetting to 0\n",
+			__func__, tx_lock);
+		atomic_set(&hw_priv->tx_lock, 0);
+		return -EINVAL;
+	}
+
+	if (tx_lock == 0) {
+		int ret = bes2600_bh_wakeup(hw_priv);
+		if (ret) {
+			bes_err("%s: bes2600_bh_wakeup failed (ret=%d) — TX unlock incomplete\n",
+				__func__, ret);
+			return ret;
+		}
+
+		bes_devel("[WSM] TX is unlocked.\n");
+		return 0;
+	}
+
+	return 0;
 }
 
 /* ******************************************************************** */

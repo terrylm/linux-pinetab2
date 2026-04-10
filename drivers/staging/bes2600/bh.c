@@ -124,14 +124,27 @@ void bes2600_irq_handler(struct bes2600_common *hw_priv)
 }
 EXPORT_SYMBOL(bes2600_irq_handler);
 
-void bes2600_bh_wakeup(struct bes2600_common *hw_priv)
+/* Wake up the Bottom Half thread when there is work to do */
+int bes2600_bh_wakeup(struct bes2600_common *hw_priv)
 {
-	bes_devel("[BH] wakeup.\n");
-	if (WARN_ON(atomic_read(&hw_priv->bh_error)))
-		return;
+	if (!hw_priv) {
+		bes_err("%s: hw_priv is NULL\n", __func__);
+		return -EINVAL;
+	}
 
+	bes_devel("[BH] wakeup.\n");
+
+	/* If the BH thread has already hit a fatal error, we cannot wake it */
+	if (atomic_read(&hw_priv->bh_error) != 0) {
+		bes_err("%s: BH thread is in error state - cannot wake\n", __func__);
+		return -EIO;
+	}
+
+	/* Increment the TX counter. If it goes from 0 to 1, wake the BH thread */
 	if (atomic_add_return(1, &hw_priv->bh_tx) == 1)
 		wake_up(&hw_priv->bh_wq);
+
+	return 0;
 }
 EXPORT_SYMBOL(bes2600_bh_wakeup);
 

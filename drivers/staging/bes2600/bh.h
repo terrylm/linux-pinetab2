@@ -27,7 +27,7 @@
 int bes2600_register_bh(struct bes2600_common *hw_priv);
 void bes2600_unregister_bh(struct bes2600_common *hw_priv);
 void bes2600_irq_handler(struct bes2600_common *hw_priv);
-void bes2600_bh_wakeup(struct bes2600_common *hw_priv);
+int bes2600_bh_wakeup(struct bes2600_common *hw_priv);
 int bes2600_bh_suspend(struct bes2600_common *hw_priv);
 int bes2600_bh_resume(struct bes2600_common *hw_priv);
 /* Must be called from BH thread. */

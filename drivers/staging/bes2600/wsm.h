@@ -1675,8 +1675,19 @@ static inline int wsm_set_block_ack_policy(struct bes2600_common *hw_priv,
 		.blockAckTxTidPolicy = blockAckTxTidPolicy,
 		.blockAckRxTidPolicy = blockAckRxTidPolicy,
 	};
-	return wsm_write_mib(hw_priv, WSM_MIB_ID_BLOCK_ACK_POLICY, &val,
-			     sizeof(val), if_id);
+
+	printk(KERN_INFO "Calling wsm_write_mib for BLOCK_ACK_POLICY (tx=%d, rx=%d, if_id=%d)\n",
+		blockAckTxTidPolicy, blockAckRxTidPolicy, if_id);
+
+	int ret = wsm_write_mib(hw_priv, WSM_MIB_ID_BLOCK_ACK_POLICY, &val,
+	     sizeof(val), if_id);
+
+	if (ret)
+		printk(KERN_ERR "wsm_write_mib BLOCK_ACK_POLICY FAILED with %d\n", ret);
+//	else
+//		printk(KERN_INFO "wsm_write_mib BLOCK_ACK_POLICY succeeded\n");
+
+	return ret;
 }
 
 struct wsm_association_mode {
@@ -2075,7 +2086,7 @@ void wsm_vif_lock_tx(struct bes2600_vif *priv);
 void wsm_lock_tx_async(struct bes2600_common *hw_priv);
 bool wsm_flush_tx(struct bes2600_common *hw_priv);
 bool wsm_vif_flush_tx(struct bes2600_vif *priv);
-void wsm_unlock_tx(struct bes2600_common *hw_priv);
+int wsm_unlock_tx(struct bes2600_common *hw_priv);
 
 /* ******************************************************************** */
 /* WSM / BH API								*/

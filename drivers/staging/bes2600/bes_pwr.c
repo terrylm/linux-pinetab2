@@ -17,7 +17,7 @@
 #include "bes_chardev.h"
 #include "bes_log.h"
 
-static void bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 event, u32 timeout);
+static int bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 event, u32 timeout);
 
 static void bes2600_dump_power_busy_event(struct bes2600_pwr_t *bes_pwr, char* location)
 {
@@ -279,13 +279,17 @@ static void bes2600_add_async_timeout_power_delay_event(struct bes2600_pwr_t *be
 	}
 }
 
-static void bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 event, u32 timeout)
+/* Add (or update) a power delay event. Returns 0 on success, negative on failure. */
+static int bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 event, u32 timeout)
 {
 	struct bes2600_pwr_event_t *item = NULL;
 	unsigned long max_timeout = 0;
 	bool match = false;
 
-	/* check if the event is already in pending list */
+	if(!bes_pwr)
+		return -EINVAL;
+
+	/* Check if the event is already in the pending list */
 	if(!list_empty(&bes_pwr->pending_event_list)) {
 		list_for_each_entry(item, &bes_pwr->pending_event_list, link) {
 			if(item->event == event) {
@@ -295,32 +299,39 @@ static void bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 eve
 		}
 	}
 
-	/* update event or add a new event */
-	if(match && (item != NULL)) {
-		/* duplicate event */
+	/* Update existing event or add a new one */
+	if(match && item != NULL) {
+		/* Duplicate event - just refresh timeout */
 		item->timeout = jiffies + (timeout * HZ + HZ * BES2600_POWER_DOWN_DELAY) / 1000;
-		bes_devel("%s, update event:%d(%d) timeout:%d\n",
-			__func__, BES_PWR_EVENT_NUMBER(event),  event >> 31, timeout);
-	} else {
-		/* delete expired event if free_event_list is empty */
-		if(list_empty(&bes_pwr->free_event_list)) {
-			bes_devel("%s, update delay event\n", __func__);
-			bes2600_update_power_delay_events(bes_pwr, &max_timeout);
-		}
-
-		/* throw out exception if free_event_list is empty */
-		BUG_ON(list_empty(&bes_pwr->free_event_list));
-
-		/* add event instance to pending list */
-		bes_devel("%s, add event:%d(%d) timeout:%d\n",
-			__func__, BES_PWR_EVENT_NUMBER(event),  event >> 31, timeout);
-		item = list_first_entry(&bes_pwr->free_event_list,
-			struct bes2600_pwr_event_t, link);
-		list_move_tail(&item->link, &bes_pwr->pending_event_list);
-		item->event = event;
-		item->timeout = jiffies + (timeout * HZ + HZ * BES2600_POWER_DOWN_DELAY) / 1000;
-		bes2600_dump_power_busy_event(bes_pwr, "add new event");
+		bes_devel("%s: updated event:%d(%d) timeout:%d\n",
+			  __func__, BES_PWR_EVENT_NUMBER(event), event >> 31, timeout);
+		return 0;
 	}
+
+	/* No match - need a new slot */
+	if (list_empty(&bes_pwr->free_event_list)) {
+		bes_devel("%s: free list empty, cleaning expired events\n", __func__);
+		bes2600_update_power_delay_events(bes_pwr, &max_timeout);
+	}
+
+	/* Still no free slot? This is a real error now */
+	if (list_empty(&bes_pwr->free_event_list)) {
+		bes_err("%s: no free power event slots (list empty after cleanup)\n", __func__);
+		return -EBUSY;          /* or -ENOMEM, whichever fits your convention */
+	}
+
+	/* Take a free item and move it to pending */
+	item = list_first_entry(&bes_pwr->free_event_list, struct bes2600_pwr_event_t, link);
+	list_move_tail(&item->link, &bes_pwr->pending_event_list);
+
+	item->event = event;
+	item->timeout = jiffies + (timeout * HZ + HZ * BES2600_POWER_DOWN_DELAY) / 1000;
+
+	bes_devel("%s: added event:%d(%d) timeout:%d\n",
+		  __func__, BES_PWR_EVENT_NUMBER(event), event >> 31, timeout);
+	bes2600_dump_power_busy_event(bes_pwr, "add new event");
+
+	return 0;
 }
 
 static bool bes2600_del_pending_event(struct bes2600_pwr_t *bes_pwr, u32 event)
@@ -378,17 +389,33 @@ static void bes2600_pwr_lock_tx(struct bes2600_common *hw_priv)
 	spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
 }
 
-static void bes2600_pwr_unlock_tx(struct bes2600_common *hw_priv)
+/* Unlock TX path from power management context */
+static int bes2600_pwr_unlock_tx(struct bes2600_common *hw_priv)
 {
 	unsigned long flags;
+	int ret = 0;
+
+	if (!hw_priv) {
+		bes_err("%s: hw_priv is NULL\n", __func__);
+		return -EINVAL;
+	}
 
 	spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
+
 	if(hw_priv->bes_power.pending_lock) {
 		hw_priv->bes_power.pending_lock = false;
 		bes_devel("bes pwr unlock tx\n");
-		wsm_unlock_tx(hw_priv);
+
+		/* Now that wsm_unlock_tx returns an error code, we check it */
+		ret = wsm_unlock_tx(hw_priv);
+		if (ret) {
+			bes_err("%s: wsm_unlock_tx failed (ret=%d)\n", __func__, ret);
+		}
 	}
+
 	spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+
+	return ret;   /* 0 = success, negative = error */
 }
 
 static void bes2600_pwr_call_enter_lp_cb(struct bes2600_common *hw_priv)
@@ -679,34 +706,58 @@ static void bes2600_pwr_unlock_device(struct bes2600_common *hw_priv)
         // pm_relax(hw_priv->pdev);
 }
 
-static void bes2600_pwr_lock_device(struct bes2600_common *hw_priv)
+/* Lock the device out of low-power mode */
+static int bes2600_pwr_lock_device(struct bes2600_common *hw_priv)
 {
-        unsigned long flags;
+	unsigned long flags;
+	int ret;
 
-        /* prevent system from entering suspend mode */
-        // pm_stay_awake(hw_priv->pdev);
+	if (!hw_priv) {
+		bes_err("%s: hw_priv is NULL\n", __func__);
+		return -EINVAL;
+	}
 
-        /* wakeup device from low power mode */
-        mutex_lock(&hw_priv->bes_power.pwr_mutex);
-        spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
-        if(hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED) {
-                hw_priv->bes_power.power_state = POWER_DOWN_STATE_LOCKING;
-                hw_priv->bes_power.power_up_task = current;
-                spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+	/* prevent system from entering suspend mode */
+	// pm_stay_awake(hw_priv->pdev);
 
-                bes2600_pwr_exit_lp_mode(hw_priv);
+	/* wakeup device from low power mode */
+	mutex_lock(&hw_priv->bes_power.pwr_mutex);
+	spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
 
-                spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
-                hw_priv->bes_power.power_up_task = NULL;
-                hw_priv->bes_power.power_state = POWER_DOWN_STATE_LOCKED;
-                spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
-        } else {
-                spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
-        }
+	if (hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED) {
+		hw_priv->bes_power.power_state = POWER_DOWN_STATE_LOCKING;
+		hw_priv->bes_power.power_up_task = current;
+		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
 
-	bes2600_pwr_unlock_tx(hw_priv);
+		/* This is the only call that can actually fail */
+		ret = bes2600_pwr_exit_lp_mode(hw_priv);
+		if (ret) {
+			bes_err("%s: bes2600_pwr_exit_lp_mode FAILED (ret=%d)\n",
+				__func__, ret);
+			spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
+			hw_priv->bes_power.power_up_task = NULL;
+			hw_priv->bes_power.power_state = POWER_DOWN_STATE_UNLOCKED;
+			spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+			mutex_unlock(&hw_priv->bes_power.pwr_mutex);
+			return ret;
+		}
+
+		spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
+		hw_priv->bes_power.power_up_task = NULL;
+		hw_priv->bes_power.power_state = POWER_DOWN_STATE_LOCKED;
+		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+	} else {
+		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+	}
+
+	/* unlock TX path */
+	ret = bes2600_pwr_unlock_tx(hw_priv);
+	if (ret)
+		bes_err("%s: bes2600_pwr_unlock_tx FAILED (ret=%d)\n", __func__, ret);
 
 	mutex_unlock(&hw_priv->bes_power.pwr_mutex);
+
+	return ret;   /* 0 = success, negative = error */
 }
 
 static void bes2600_pwr_trigger_delayed_work(struct bes2600_common *hw_priv)
@@ -960,60 +1011,63 @@ bool bes2600_pwr_constant_event_is_pending(struct bes2600_common *hw_priv, u32 e
 int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event)
 {
 	int ret = 0;
+	int dev_state;
 	bool need_lock = false;
 	bool need_wait = false;
 	unsigned long flags;
 
-	if (!hw_priv || !&hw_priv->bes_power)
+	if(!hw_priv || !&hw_priv->bes_power)
 		return -EINVAL;
 
-	if(atomic_read(&hw_priv->bes_power.dev_state) == 0) {
-	       return -1;
+	dev_state = atomic_read(&hw_priv->bes_power.dev_state);
+
+	/* Minimal logging — only when state is bad or on real events */
+	if(dev_state == 0 || event != 0) {
+		bes_devel("%s: dev_state=%d, power_state=%d, event=0x%x\n",
+		          __func__, dev_state, hw_priv->bes_power.power_state, event);
+	}
+
+	if(dev_state == 0) {
+		/* Early boot / not ready yet — just allow it, don't fail */
+		// Used to be -1
+		return 0;
 	}
 
 	spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
 
-	/* don't set busy event if the command is for unlocking device */
-	if((event == BES_PWR_LOCK_ON_WSM_TX)
-	   && (hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKING)) {
-		if(hw_priv->bes_power.power_down_task == current) {
-			/* BES_PWR_LOCK_ON_WSM_TX is from power down work */
-			spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
-			return 0;
+
+	/* Special cases - skip busy event to prevent GPIO spam during transitions */
+	if (event == BES_PWR_LOCK_ON_WSM_TX) {
+		if (hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKING ||
+		    hw_priv->bes_power.power_state == POWER_DOWN_STATE_LOCKING ||
+		    hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED) {
+
+			/* Extra safety: if this is the thread doing the power transition, definitely skip */
+			if (hw_priv->bes_power.power_up_task == current ||
+			    hw_priv->bes_power.power_down_task == current ||
+			    hw_priv->bes_power.sys_suspend_task == current ||
+			    hw_priv->bes_power.sys_resume_task == current) {
+				spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+				return 0;
+			}
 		}
 	}
 
-	/* don't set busy event also if the command is for locking device */
-	if((event == BES_PWR_LOCK_ON_WSM_TX)
-	   && (hw_priv->bes_power.power_state == POWER_DOWN_STATE_LOCKING)) {
-		if(hw_priv->bes_power.power_up_task == current) {
-			/* BES_PWR_LOCK_ON_WSM_TX is from power down work */
-			spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
-			return 0;
-		}
-	}
 
-	/* don't set busy event if the command is for suspend/resume */
-	if((event == BES_PWR_LOCK_ON_WSM_TX)
-	   && (hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED)) {
-		if(hw_priv->bes_power.sys_suspend_task == current ||
-		   hw_priv->bes_power.sys_resume_task == current) {
-			/* BES_PWR_LOCK_ON_WSM_TX is from suspend/resume work */
-			spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
-			return 0;
-		}
-	}
-
-	/* set busy event to pending_event_list */
 	BES_PWR_EVENT_SET_CONSTANT(event);
-	bes2600_add_power_delay_event(&hw_priv->bes_power, event, 0);
+	ret = bes2600_add_power_delay_event(&hw_priv->bes_power, event, 0);
+	if(ret) {
+		bes_err("%s: add_power_delay_event failed %d\n", __func__, ret);
+		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
+		return ret;
+	}
 
 	/* execute lock device operation or wait lock operation finish */
-	if((hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED)
-	   || (hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKING)) {
+	if(hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKED ||
+	    hw_priv->bes_power.power_state == POWER_DOWN_STATE_UNLOCKING) {
 		need_lock = true;
-	} else if(hw_priv->bes_power.power_state == POWER_DOWN_STATE_LOCKING
-	   && (hw_priv->bes_power.power_up_task != current)) {
+	} else if(hw_priv->bes_power.power_state == POWER_DOWN_STATE_LOCKING &&
+		   hw_priv->bes_power.power_up_task != current) {
 		need_wait = true;
 	}
 
@@ -1027,15 +1081,15 @@ int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event)
 	}
 
 	if(need_lock) {
-		/* cancel delayed work */
 		cancel_delayed_work_sync(&hw_priv->bes_power.power_down_work);
 		flush_delayed_work(&hw_priv->bes_power.power_down_work);
 
-		bes_devel("%s lock device by event:%d\n", __func__, BES_PWR_EVENT_NUMBER(event));
-		bes2600_pwr_lock_device(hw_priv);
+		ret = bes2600_pwr_lock_device(hw_priv);
+		if(ret)
+			bes_err("%s: pwr_lock_device failed %d\n", __func__, ret);
 	}
 
-       return ret;
+	return ret;
 }
 
 int bes2600_pwr_set_busy_event_async(struct bes2600_common *hw_priv, u32 event)

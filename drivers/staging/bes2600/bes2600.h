@@ -358,8 +358,11 @@ struct bes2600_common {
 	struct notifier_block		pm_notify;
 #endif
 
+	/* Permanent bottom-half loop (kthread; not a one-shot work item) */
+	struct task_struct			*bh_thread;
+	/* Legacy fields kept only if something still references the old WQ path */
 	struct workqueue_struct			*bh_workqueue;
-	struct work_struct				bh_work;
+	struct work_struct			bh_work;
 
 	atomic_t			bh_error;
 	wait_queue_head_t		bh_wq;
@@ -389,6 +392,7 @@ struct bes2600_common {
 	struct wsm_cbc			wsm_cbc;
 	atomic_t			tx_lock;
 	u32				pending_frame_id;
+	int				join_pending_if_id;
 #ifdef CONFIG_BES2600_TESTMODE
 	/* Device Power Range */
 	struct wsm_tx_power_range		txPowerRange[2];
@@ -407,6 +411,13 @@ struct bes2600_common {
 
 	/* TX/RX */
 	unsigned long		rx_timestamp;
+	/*
+	 * Set after join/WSM timeout with a silent bus.  Blocks further WSM
+	 * sleep and mon→BH SDIO thrash until a real RX clears it.
+	 */
+	bool			bus_stale;
+	/* Flush TX queues + report TX status outside softirq */
+	struct work_struct	tx_fail_work;
 
 	/* Scan Timestamp */
 	unsigned long		scan_timestamp;
@@ -529,6 +540,7 @@ struct bes2600_vif {
 #endif
 	bool				listening;
 	struct wsm_rx_filter		rx_filter;
+	bool				filter_cfg_valid;
 	struct wsm_beacon_filter_table	bf_table;
 	struct wsm_beacon_filter_control bf_control;
 	struct wsm_multicast_filter	multicast_filter;
@@ -553,7 +565,9 @@ struct bes2600_vif {
 	u8			join_bssid[ETH_ALEN];
 	struct work_struct	join_work;
 	struct delayed_work	join_timeout;
+	struct work_struct	join_complete_work;
 	struct work_struct	unjoin_work;
+	int			join_complete_status;
 	struct work_struct	offchannel_work;
 	int			join_dtim_period;
 	bool			delayed_unjoin;

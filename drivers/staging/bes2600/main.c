@@ -199,6 +199,8 @@ static const struct ieee80211_iface_limit bes2600_if_limits[] = {
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_AP) |
 				 BIT(NL80211_IFTYPE_P2P_CLIENT) |
 				 BIT(NL80211_IFTYPE_P2P_GO) },
+	/* FIXME: P2P_DEVICE advertised but bes2600_add_interface() cannot host it
+	 * alongside STA on if_id=0 — see sta.c. */
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_P2P_DEVICE) },
 };
 
@@ -434,6 +436,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->if_id_slot = 0;
 	hw_priv->roc_if_id = -1;
 	hw_priv->scan_switch_if_id = -1;
+	hw_priv->join_pending_if_id = -1;
 	atomic_set(&hw_priv->num_vifs, 0);
 	atomic_set(&hw_priv->netdevice_start, 0);
 
@@ -454,7 +457,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	//hw_priv->ba_tid_mask = 0xFF;//0x3F;
 
 	/* Init tx retry limit */
-#ifdef BES2600_TX_RX_OPT
+#if BES2600_TX_RX_OPT
 	hw_priv->long_frame_max_tx_count = 31;
 	hw_priv->short_frame_max_tx_count = 31;
 #else
@@ -464,10 +467,26 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->hw->max_rate_tries = hw_priv->short_frame_max_tx_count;
 
 	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, SUPPORTS_PS);
-	ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
+	/*
+	 * Do not advertise SUPPORTS_PS / SUPPORTS_DYNAMIC_PS yet.
+	 * After associate mac80211 immediately set ps=1 (see logs); with an
+	 * incomplete set_pm path that buffers/stalls EAPOL so set_key never
+	 * runs, then hard-locks a CPU (ifconfig/NetworkManager hang waiting
+	 * on IPIs).  Keep the radio fully awake until 4-way is proven.
+	 */
+	/* ieee80211_hw_set(hw, SUPPORTS_PS); */
+	/* ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS); */
 	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
-	ieee80211_hw_set(hw, NEED_DTIM_BEFORE_ASSOC);
+	/*
+	 * Do not set NEED_DTIM_BEFORE_ASSOC.  That flag stalls mac80211 on
+	 * "waiting for beacon" after authenticate until a beacon is RX'd.
+	 * With FW beacon filtering on (or RX quiet), we never leave that
+	 * state and later hard-lock.  Join already programs DTIM from scan
+	 * BSS TIM; PS is not advertised yet, so host DTIM-before-assoc is
+	 * not required.  We still disable the FW beacon filter post-join
+	 * so beacons reach the stack when available.
+	 */
+	/* ieee80211_hw_set(hw, NEED_DTIM_BEFORE_ASSOC); */
 	ieee80211_hw_set(hw, TX_AMPDU_SETUP_IN_HW);
 	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
 	ieee80211_hw_set(hw, CONNECTION_MONITOR);
@@ -479,6 +498,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 					  BIT(NL80211_IFTYPE_MESH_POINT) |
 					  BIT(NL80211_IFTYPE_P2P_CLIENT) |
 					  BIT(NL80211_IFTYPE_P2P_GO);
+	/* FIXME: advertising P2P_DEVICE invites NM to create type-10 VIFs we mishandle */
 	hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_P2P_DEVICE);
 
 	/* Support only for limited wowlan functionalities */
@@ -560,6 +580,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	spin_lock_init(&hw_priv->rtsvalue_lock);
 	INIT_WORK(&hw_priv->dynamic_opt_txrx_work, bes2600_dynamic_opt_txrx_work);
 	INIT_WORK(&hw_priv->tx_policy_upload_work, tx_policy_upload_work);
+	INIT_WORK(&hw_priv->tx_fail_work, bes2600_bh_tx_fail_work);
 	spin_lock_init(&hw_priv->event_queue_lock);
 	INIT_LIST_HEAD(&hw_priv->event_queue);
 	INIT_WORK(&hw_priv->event_handler, bes2600_event_handler);
@@ -783,9 +804,9 @@ static void bes2600_reset_handler(struct work_struct *work)
 
 	// Cancel any queued scan work to prevent it from starting/running concurrently
 	cancel_work(&hw_priv->scan.work);
-	cancel_work(&hw_priv->bh_work);
 	cancel_work(&hw_priv->power_down_work);  // Stop power down to avoid lockup
 
+	/* Stops the BH kthread (replaces cancel_work on former bh_work) */
 	bes2600_unregister_bh(hw_priv);
 
 	// If a scan is in progress, stop it and abort
@@ -850,6 +871,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 
 	/* WSM callbacks. */
 	hw_priv->wsm_cbc.scan_complete = bes2600_scan_complete_cb;
+	hw_priv->wsm_cbc.join_complete = bes2600_join_complete_cb;
 	hw_priv->wsm_cbc.tx_confirm = bes2600_tx_confirm_cb;
 	hw_priv->wsm_cbc.rx = bes2600_rx_cb;
 	hw_priv->wsm_cbc.suspend_resume = bes2600_suspend_resume;
@@ -959,39 +981,49 @@ int access_file(char *path, char *buffer, int size, int isRead)
 int bes2600_wifi_start(struct bes2600_common *hw_priv)
 {
 	int ret = 0, if_id;
+	bool pwr_started = false;
 
-	if (hw_priv->sbus_ops->gpio_wake) {
+	if (hw_priv->sbus_ops->gpio_wake)
 		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
-	}
 
 	if (hw_priv->sbus_ops->sbus_active &&
-		WARN_ON((ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv, SUBSYSTEM_WIFI))))
-		goto err;
+	    WARN_ON((ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv,
+							  SUBSYSTEM_WIFI))))
+		goto out;
 
 	if (wait_event_interruptible_timeout(hw_priv->wsm_startup_done,
-			hw_priv->wsm_caps.firmwareReady, 10 * HZ) <= 0) {
-
-		/* TODO: Needs to find how to reset device */
-		/*		 in QUEUE mode properly.		   */
+					     hw_priv->wsm_caps.firmwareReady,
+					     10 * HZ) <= 0) {
 		bes_info("startup timeout!!!\n");
 		ret = -ENODEV;
-		goto err;
+		goto out;
 	}
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		for (if_id = 0; if_id < 2; if_id++) {
-			/* Enable multi-TX confirmation */
-			if (WARN_ON((ret = wsm_use_multi_tx_conf(hw_priv, true, if_id)))) {
-				goto err;
-			}
+			if (WARN_ON((ret = wsm_use_multi_tx_conf(hw_priv, true,
+								 if_id))))
+				goto out;
 		}
-	}
-	//bes2600_pwr_start(hw_priv);
 
-err:
-	if (hw_priv->sbus_ops->gpio_sleep) {
+		/* Drop the transient startup wake; PM owns the GPIO ref */
+		if (hw_priv->sbus_ops->gpio_sleep)
+			hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
+
+		bes2600_pwr_start(hw_priv);
+		pwr_started = true;
+	} else if (hw_priv->sbus_ops->gpio_sleep) {
 		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 	}
+
+	return 0;
+
+out:
+	if (pwr_started)
+		bes2600_pwr_stop(hw_priv);
+
+	if (hw_priv->sbus_ops->gpio_sleep)
+		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
 
 	return ret;
 }
@@ -1005,11 +1037,10 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 	if (!status)
 		bes_err("communication exception!\n");
 
-	if(hw_priv->sbus_ops->gpio_wake) {
+	if (hw_priv->sbus_ops->gpio_wake)
 		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
-	}
 
-	//bes2600_pwr_stop(hw_priv);
+	bes2600_pwr_stop(hw_priv);
 
 	if (hw_priv->sbus_ops->sbus_deactive &&
 		WARN_ON(ret = hw_priv->sbus_ops->sbus_deactive(hw_priv->sbus_priv, SUBSYSTEM_WIFI))) {

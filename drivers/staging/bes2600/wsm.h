@@ -326,6 +326,8 @@ struct bes2600_vif;
  * SSID specified without waiting for beacons. The
  * ProbeForJoin parameter is ignored. */
 #define WSM_JOIN_FLAGS_FORCE		BIT(2)
+/* Issue immediate join confirmation; completion via 0x080F indication */
+#define WSM_JOIN_FLAGS_FORCE_WITH_COMPLETE_IND BIT(5)
 /* Give probe request/response higher
  * priority over the BT traffic */
 #define WSM_JOIN_FLAGS_PRIO		BIT(3)
@@ -1048,6 +1050,13 @@ struct wsm_join {
 
 int wsm_join(struct bes2600_common *hw_priv, struct wsm_join *arg, int if_id);
 
+struct wsm_join_complete {
+	u32 status;
+};
+
+typedef void (*wsm_join_complete_cb)(struct bes2600_common *hw_priv,
+				     struct wsm_join_complete *arg);
+
 /* 3.25 */
 struct wsm_set_pm {
 	/* WSM_PSM_... */
@@ -1372,6 +1381,7 @@ int wsm_map_link(struct bes2600_common *hw_priv, const struct wsm_map_link *arg,
 
 struct wsm_cbc {
 	wsm_scan_complete_cb scan_complete;
+	wsm_join_complete_cb join_complete;
 	wsm_tx_confirm_cb tx_confirm;
 	wsm_rx_cb rx;
 	wsm_event_cb event;

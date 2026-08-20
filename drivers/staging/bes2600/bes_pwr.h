@@ -104,6 +104,9 @@ struct bes2600_pwr_t
         struct list_head exit_cb_list;
         wait_queue_head_t dev_lp_wq;
         bool ap_lp_bad;
+        bool hw_awake;
+        /* MCU went through sdio deactive; do not skip WSM wake on hw_awake */
+        bool mcu_slept;
         struct bes2600_pwr_event_t pwr_events[BES2600_DELAY_EVENT_NUM];
         atomic_t pm_set_in_process;
 };
@@ -115,6 +118,13 @@ void bes2600_pwr_prepare(struct bes2600_common *hw_priv);
 void bes2600_pwr_complete(struct bes2600_common *hw_priv);
 void bes2600_pwr_start(struct bes2600_common *hw_priv);
 void bes2600_pwr_stop(struct bes2600_common *hw_priv);
+void bes2600_pwr_ensure_bus_awake(struct bes2600_common *hw_priv);
+int bes2600_pwr_wake_mcu_for_join(struct bes2600_common *hw_priv);
+int bes2600_pwr_request_awake(struct bes2600_common *hw_priv, u32 event);
+int bes2600_pwr_request_awake_async(struct bes2600_common *hw_priv, u32 event);
+int bes2600_pwr_release_awake(struct bes2600_common *hw_priv, u32 event);
+void bes2600_pwr_refresh_hw_for_join(struct bes2600_common *hw_priv);
+bool bes2600_pwr_hw_is_awake(struct bes2600_common *hw_priv);
 bool bes2600_pwr_constant_event_is_pending(struct bes2600_common *hw_priv, u32 event);
 int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event);
 int bes2600_pwr_set_busy_event_async(struct bes2600_common *hw_priv, u32 event);
@@ -143,6 +153,13 @@ static inline void bes2600_pwr_prepare(struct bes2600_common *hw_priv) { }
 static inline void bes2600_pwr_complete(struct bes2600_common *hw_priv) { }
 static inline void bes2600_pwr_start(struct bes2600_common *hw_priv) { }
 static inline void bes2600_pwr_stop(struct bes2600_common *hw_priv) { }
+static inline void bes2600_pwr_ensure_bus_awake(struct bes2600_common *hw_priv) { }
+static inline int bes2600_pwr_wake_mcu_for_join(struct bes2600_common *hw_priv) { return 0; }
+static inline int bes2600_pwr_request_awake(struct bes2600_common *hw_priv, u32 event) { return 0; }
+static inline int bes2600_pwr_request_awake_async(struct bes2600_common *hw_priv, u32 event) { return 0; }
+static inline int bes2600_pwr_release_awake(struct bes2600_common *hw_priv, u32 event) { return 0; }
+static inline void bes2600_pwr_refresh_hw_for_join(struct bes2600_common *hw_priv) { }
+static inline bool bes2600_pwr_hw_is_awake(struct bes2600_common *hw_priv) { return true; }
 static inline bool bes2600_pwr_constant_event_is_pending(struct bes2600_common *hw_priv, u32 event) { return false; }
 static inline int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event) { return 0; }
 static inline int bes2600_pwr_set_busy_event_async(struct bes2600_common *hw_priv, u32 event) {return 0; }

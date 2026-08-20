@@ -26,7 +26,7 @@
 #include "sta.h"
 #include "bes_log.h"
 
-static int bes2600_bh(void *arg);
+static int bes2600_bh(struct bes2600_common *hw_priv);
 
 extern void sdio_work_debug(struct sbus_priv *self);
 
@@ -53,26 +53,22 @@ typedef int (*bes2600_wsm_handler)(struct bes2600_common *hw_priv,
 int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count);
 #endif
 
-static void bes2600_bh_work(struct work_struct *work)
+/*
+ * BH used to run as a work_struct that never returned.  That is fragile:
+ * if the work ever exits, nothing restarts it, and wake_up on bh_wq is a
+ * no-op while bh_tx climbs forever (exactly the join failure mode).
+ * A dedicated kthread is the correct model for a permanent wait loop.
+ */
+static int bes2600_bh_thread(void *arg)
 {
-	struct bes2600_common *priv =
-		container_of(work, struct bes2600_common, bh_work);
+	struct bes2600_common *hw_priv = arg;
 
-	bes2600_bh(priv);
+	bes2600_bh(hw_priv);
+	return 0;
 }
 
 int bes2600_register_bh(struct bes2600_common *hw_priv)
 {
-	int err = 0;
-	/* Realtime workqueue */
-	hw_priv->bh_workqueue = alloc_workqueue("bes2600_bh",
-		WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_CPU_INTENSIVE, 1);
-
-	if (!hw_priv->bh_workqueue)
-		return -ENOMEM;
-
-	INIT_WORK(&hw_priv->bh_work, bes2600_bh_work);
-
 	bes_devel("[BH] register.\n");
 
 #ifdef CONFIG_WIFI_BT_COEXIST_EPTA_FDD
@@ -87,12 +83,21 @@ int bes2600_register_bh(struct bes2600_common *hw_priv)
 	atomic_set(&hw_priv->bh_error, 0);
 	hw_priv->buf_id_tx = 0;
 	hw_priv->buf_id_rx = 0;
+	hw_priv->bh_workqueue = NULL;
 	init_waitqueue_head(&hw_priv->bh_wq);
 	init_waitqueue_head(&hw_priv->bh_evt_wq);
 
-	err = !queue_work(hw_priv->bh_workqueue, &hw_priv->bh_work);
-	WARN_ON(err);
-	return err;
+	hw_priv->bh_thread = kthread_run(bes2600_bh_thread, hw_priv, "bes2600_bh");
+	if (IS_ERR(hw_priv->bh_thread)) {
+		int err = PTR_ERR(hw_priv->bh_thread);
+
+		hw_priv->bh_thread = NULL;
+		bes_err("[BH] kthread_run failed: %d\n", err);
+		return err;
+	}
+
+	bes_devel("[BH] kthread started\n");
+	return 0;
 }
 
 void bes2600_unregister_bh(struct bes2600_common *hw_priv)
@@ -100,9 +105,10 @@ void bes2600_unregister_bh(struct bes2600_common *hw_priv)
 	coex_deinit_mode(hw_priv);
 	atomic_add(1, &hw_priv->bh_term);
 	wake_up(&hw_priv->bh_wq);
-	flush_workqueue(hw_priv->bh_workqueue);
-	destroy_workqueue(hw_priv->bh_workqueue);
-	hw_priv->bh_workqueue = NULL;
+	if (hw_priv->bh_thread) {
+		kthread_stop(hw_priv->bh_thread);
+		hw_priv->bh_thread = NULL;
+	}
 	bes_devel("[BH] unregistered.\n");
 }
 
@@ -140,13 +146,199 @@ int bes2600_bh_wakeup(struct bes2600_common *hw_priv)
 		return -EIO;
 	}
 
-	/* Increment the TX counter. If it goes from 0 to 1, wake the BH thread */
-	if (atomic_add_return(1, &hw_priv->bh_tx) == 1)
-		wake_up(&hw_priv->bh_wq);
+	/*
+	 * Always wake_up.  Only waking on 0→1 misses the case where BH is
+	 * mid-loop with a stale bh_tx count and a pending wsm_cmd (join
+	 * then sits until full WSM_CMD_JOIN_TIMEOUT with no "BH handing").
+	 */
+	atomic_inc(&hw_priv->bh_tx);
+	wake_up(&hw_priv->bh_wq);
 
 	return 0;
 }
 EXPORT_SYMBOL(bes2600_bh_wakeup);
+
+static inline void wsm_alloc_tx_buffer(struct bes2600_common *hw_priv)
+{
+	++hw_priv->hw_bufs_used; /* Protected by tx_lock in bes2600_tx */
+}
+
+static bool bes2600_bh_wsm_cmd_in_flight(struct bes2600_common *hw_priv);
+
+void bes2600_bh_prepare_for_join(struct bes2600_common *hw_priv)
+{
+	int susp;
+	int used;
+
+	if (!hw_priv)
+		return;
+
+	/*
+	 * If BH is parked in suspend wait, request RESUME and wait for it to
+	 * ack.  Do not force RESUMED ourselves — that races and can leave BH
+	 * waiting for RESUME forever while state already reads RESUMED.
+	 */
+	susp = atomic_read(&hw_priv->bh_suspend);
+	if (susp == BES2600_BH_SUSPEND || susp == BES2600_BH_SUSPENDED) {
+		bes_devel("%s: BH suspend state=%d — requesting RESUME\n",
+			 __func__, susp);
+		atomic_set(&hw_priv->bh_suspend, BES2600_BH_RESUME);
+		wake_up(&hw_priv->bh_wq);
+		wait_event_timeout(hw_priv->bh_evt_wq,
+				   atomic_read(&hw_priv->bh_suspend) ==
+					BES2600_BH_RESUMED ||
+				   atomic_read(&hw_priv->bh_error),
+				   HZ);
+	}
+
+	/*
+	 * Stale host TX slots after scan leave join with no free FW input
+	 * buffer (or a desynced count).  Wait briefly for a natural confirm,
+	 * then drop host-side accounting so join can be sent and confirmed.
+	 */
+	used = hw_priv->hw_bufs_used;
+	if (used > 0) {
+		bes_warn("%s: hw_bufs_used=%d before join — waiting for drain\n",
+			 __func__, used);
+		atomic_inc(&hw_priv->bh_rx);
+		bes2600_bh_wakeup(hw_priv);
+		wait_event_timeout(hw_priv->bh_evt_wq,
+				   !hw_priv->hw_bufs_used, HZ / 4);
+		if (hw_priv->hw_bufs_used > 0) {
+			bes_warn("%s: still bufs=%d — soft-clear host count\n",
+				 __func__, hw_priv->hw_bufs_used);
+			timer_delete(&hw_priv->lmac_mon_timer);
+			timer_delete(&hw_priv->mcu_mon_timer);
+			hw_priv->wsm_tx_pending[0] = 0;
+			hw_priv->wsm_tx_pending[1] = 0;
+			wsm_release_tx_buffer(hw_priv, hw_priv->hw_bufs_used);
+			if (hw_priv->hw_bufs_used < 0)
+				hw_priv->hw_bufs_used = 0;
+		}
+	}
+
+	bes2600_bh_wakeup(hw_priv);
+
+	bes_devel("%s: bh_thread=%s susp=%d bufs=%d bh_tx=%d\n",
+		 __func__,
+		 hw_priv->bh_thread ? "yes" : "NO",
+		 atomic_read(&hw_priv->bh_suspend),
+		 hw_priv->hw_bufs_used,
+		 atomic_read(&hw_priv->bh_tx));
+}
+EXPORT_SYMBOL(bes2600_bh_prepare_for_join);
+
+void bes2600_bh_tx_fail_work(struct work_struct *work)
+{
+	struct bes2600_common *hw_priv =
+		container_of(work, struct bes2600_common, tx_fail_work);
+	int i;
+
+	/*
+	 * Process context: safe to complete skbs to mac80211.  Clears the
+	 * REPORTS_TX_ACK_STATUS hang after mon/BH soft-clear of buf counts.
+	 */
+	bes_warn("%s: completing stuck TX frames to mac80211\n", __func__);
+	for (i = 0; i < 4; i++)
+		bes2600_queue_clear(&hw_priv->tx_queue[i], CW12XX_ALL_IFS);
+}
+
+void bes2600_bh_mark_bus_stale(struct bes2600_common *hw_priv)
+{
+	if (!hw_priv)
+		return;
+	if (!hw_priv->bus_stale)
+		bes_warn("%s: bus marked stale (no WSM sleep / mon thrash)\n",
+			 __func__);
+	hw_priv->bus_stale = true;
+	/*
+	 * Wake join/WSM waiters immediately.  Do not complete wsm_cmd
+	 * under this lock from a timer (deadlock vs BH confirm).
+	 * wsm_cmd_send treats bus_stale && !done as a timeout.
+	 */
+	wake_up(&hw_priv->wsm_cmd_wq);
+	bes2600_bh_abort_pending_tx(hw_priv);
+}
+EXPORT_SYMBOL(bes2600_bh_mark_bus_stale);
+
+void bes2600_bh_clear_bus_stale(struct bes2600_common *hw_priv)
+{
+	if (!hw_priv || !hw_priv->bus_stale)
+		return;
+	hw_priv->bus_stale = false;
+	bes_info("%s: bus recovered\n", __func__);
+}
+EXPORT_SYMBOL(bes2600_bh_clear_bus_stale);
+
+bool bes2600_bh_bus_quiet(struct bes2600_common *hw_priv)
+{
+	if (!hw_priv)
+		return true;
+	if (hw_priv->bus_stale)
+		return true;
+	return time_is_before_jiffies(hw_priv->rx_timestamp + 2 * HZ);
+}
+EXPORT_SYMBOL(bes2600_bh_bus_quiet);
+
+void bes2600_bh_abort_pending_tx(struct bes2600_common *hw_priv)
+{
+	int used;
+
+	if (!hw_priv)
+		return;
+
+	timer_delete(&hw_priv->lmac_mon_timer);
+	timer_delete(&hw_priv->mcu_mon_timer);
+	hw_priv->wsm_tx_pending[0] = 0;
+	hw_priv->wsm_tx_pending[1] = 0;
+
+	used = hw_priv->hw_bufs_used;
+	if (used > 0) {
+		bes_warn("%s: drop host hw_bufs_used=%d after cmd timeout\n",
+			 __func__, used);
+		wsm_release_tx_buffer(hw_priv, used);
+		if (hw_priv->hw_bufs_used < 0)
+			hw_priv->hw_bufs_used = 0;
+	}
+
+	/*
+	 * Never queue_clear/tx_status from softirq (mon timer) — that has
+	 * hard-locked after usedbuf.  Always hand skb completion to WQ.
+	 *
+	 * Skip only while join (0x000B) still owns the auth skb.  A
+	 * post-join MIB in flight must not block completing data/auth.
+	 */
+	if (bes2600_bh_wsm_cmd_in_flight(hw_priv)) {
+		u16 cmd;
+
+		spin_lock(&hw_priv->wsm_cmd.lock);
+		cmd = hw_priv->wsm_cmd.cmd;
+		spin_unlock(&hw_priv->wsm_cmd.lock);
+		if ((cmd & 0x0fff) == 0x000B) {
+			bes_info("%s: skip queue_clear — join in flight\n",
+				 __func__);
+			return;
+		}
+	}
+	if (hw_priv->workqueue)
+		queue_work(hw_priv->workqueue, &hw_priv->tx_fail_work);
+}
+EXPORT_SYMBOL(bes2600_bh_abort_pending_tx);
+
+/*
+ * Direct SDIO join TX was a diagnostic workaround.  It left pending host
+ * buffers and never fixed the real issue (BH not running).  Kept as a
+ * no-op so call sites can be removed cleanly.
+ */
+int bes2600_bh_flush_wsm_cmd(struct bes2600_common *hw_priv)
+{
+	if (!hw_priv)
+		return -EINVAL;
+	/* Prefer waking BH over racing it on the bus */
+	bes2600_bh_wakeup(hw_priv);
+	return 0;
+}
+EXPORT_SYMBOL(bes2600_bh_flush_wsm_cmd);
 
 int bes2600_bh_suspend(struct bes2600_common *hw_priv)
 {
@@ -220,11 +412,6 @@ int bes2600_bh_resume(struct bes2600_common *hw_priv)
 }
 EXPORT_SYMBOL(bes2600_bh_resume);
 
-static inline void wsm_alloc_tx_buffer(struct bes2600_common *hw_priv)
-{
-	++hw_priv->hw_bufs_used; /* Protected by tx_lock in bes2600_tx */
-}
-
 int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count)
 {
 	int ret = 0;
@@ -232,8 +419,10 @@ int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count)
 
 	hw_priv->hw_bufs_used -= count;
 
-	if (WARN_ON(hw_priv->hw_bufs_used < 0))
+	if (WARN_ON(hw_priv->hw_bufs_used < 0)) {
+		hw_priv->hw_bufs_used = 0;
 		ret = -1;
+	}
 	/* Tx data patch stops when all but one hw buffers are used.
 	   So, re-start tx path in case we find hw_bufs_used equals
 	   numInputChBufs - 1.
@@ -522,6 +711,10 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 
 	priv->wsm_rx_seq[WSM_TXRX_SEQ_IDX(wsm_id)] = (wsm_seq + 1) & 7;
 
+	/* Any good SDIO RX means the pipe is alive again */
+	priv->rx_timestamp = jiffies;
+	bes2600_bh_clear_bus_stale(priv);
+
 	if (IS_DRIVER_TO_MCU_CMD(wsm_id))
 		confirm_label = __le32_to_cpu(((struct wsm_mcu_hdr *)wsm)->handle_label);
 
@@ -621,6 +814,13 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)] =
 		(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)] + 1) & WSM_TX_SEQ_MAX;
 	bes2600_bh_inc_pending_count(hw_priv, WSM_TXRX_SEQ_IDX(wsm->id));
+
+	/* Prove join actually left the host over SDIO */
+	if ((__le16_to_cpu(wsm->id) & 0x0fff) == 0x000B)
+		bes_pin("join 0x000B TX'd bufs=%d\n", hw_priv->hw_bufs_used);
+	else if ((__le16_to_cpu(wsm->id) & 0x0fff) == 0x0004)
+		bes_info("%s: data/mgmt 0x0004 TX'd len=%zu bufs=%d\n",
+			 __func__, tx_len, hw_priv->hw_bufs_used);
 
 	if (*tx_burst > 1) {
 		bes2600_debug_tx_burst(hw_priv);
@@ -759,34 +959,68 @@ void bes2600_bh_dec_pending_count(struct bes2600_common *hw_priv, int idx)
 	}
 
 	if (--hw_priv->wsm_tx_pending[idx] == 0)
-		timer_delete_sync(timer);
+		/* Non-sync: timer handler must not deadlock on this path */
+		timer_delete(timer);
 	else
 		mod_timer(timer, jiffies + 3 * HZ);
+}
+
+static bool bes2600_bh_wsm_cmd_in_flight(struct bes2600_common *hw_priv)
+{
+	u16 cmd;
+
+	spin_lock(&hw_priv->wsm_cmd.lock);
+	cmd = hw_priv->wsm_cmd.cmd;
+	spin_unlock(&hw_priv->wsm_cmd.lock);
+	/* 0xFFFF means idle after confirm path; 0 means never used */
+	return cmd != 0 && cmd != 0xFFFF && !hw_priv->wsm_cmd.done;
 }
 
 void bes2600_bh_mcu_active_monitor(struct timer_list* t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, mcu_mon_timer);
 
-	bes_err("link break between mcu and host, hw_buf_used:%d pending:%d\n", 
-				hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[1]);
-	bes2600_chrdev_wifi_force_close(hw_priv, true);
+	/*
+	 * Soft only from timer: never force_close.  While a WSM command is
+	 * waiting for confirm (esp. join), do not kick BH into SDIO — that
+	 * has hard-locked the tablet when the FW is silent.
+	 */
+	bes_err("link break between mcu and host, hw_buf_used:%d pending:%d (soft)\n",
+		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[1]);
+	hw_priv->wsm_tx_pending[1] = 0;
+	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv))
+		return;
+	atomic_inc(&hw_priv->bh_rx);
+	wake_up(&hw_priv->bh_wq);
 }
 
 void bes2600_bh_lmac_active_monitor(struct timer_list* t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, lmac_mon_timer);
 
-	bes_err("link break between lmac and host, hw_buf_used:%d pending:%d\n", 
-				hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[0]);
-	bes2600_chrdev_wifi_force_close(hw_priv, true);
+	bes_err("link break between lmac and host, hw_buf_used:%d pending:%d (soft)\n",
+		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[0]);
+	hw_priv->wsm_tx_pending[0] = 0;
+	/*
+	 * Join occupies hw_bufs_used=1 until 0x040B.  The old test marked
+	 * stale whenever bufs>0, which killed join at 3s (LMAC timer) —
+	 * log: 0x000B TX'd @71.281, link-break stale @74.343, -110.
+	 * Leave in-flight WSM to wsm_cmd_send's own timeout.
+	 */
+	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv))
+		return;
+	if (hw_priv->hw_bufs_used > 0) {
+		bes2600_bh_mark_bus_stale(hw_priv);
+		return;
+	}
+	atomic_inc(&hw_priv->bh_rx);
+	wake_up(&hw_priv->bh_wq);
 }
 
 #define BH_RX_CONT_LIMIT	3
 #define BH_TX_CONT_LIMIT	20
-static int bes2600_bh(void *arg)
+static int bes2600_bh(struct bes2600_common *hw_priv)
 {
-	struct bes2600_common *hw_priv = arg;
 	int rx, tx, term, suspend;
 	int tx_allowed;
 	int pending_tx = 0;
@@ -797,7 +1031,7 @@ static int bes2600_bh(void *arg)
 	int tx_cont = 0;
 	int rx_cont = 0;
 
-	bes_info("BH: Starting RX processing\n");
+	bes_devel("BH: Starting RX processing\n");
 
 	for (;;) {
 		rx_cont = 0;
@@ -808,7 +1042,7 @@ static int bes2600_bh(void *arg)
 			!atomic_read(&hw_priv->recent_scan) &&
 			bes2600_chrdev_is_signal_mode()) {
 			status = 5 * HZ;
-		} else if (hw_priv->hw_bufs_used) {
+		} else if (hw_priv->hw_bufs_used > 0) {
 			/* Interrupt loss detection */
 			status = 5 * HZ;
 		} else {
@@ -819,67 +1053,62 @@ static int bes2600_bh(void *arg)
 				rx = atomic_xchg(&hw_priv->bh_rx, 0);
 				tx = atomic_xchg(&hw_priv->bh_tx, 0);
 				term = atomic_xchg(&hw_priv->bh_term, 0);
-				suspend = pending_tx ?
-					0 : atomic_read(&hw_priv->bh_suspend);
-				(rx || tx || term || suspend || atomic_read(&hw_priv->bh_error));
+				/*
+				 * Only SUSPEND (not RESUME/RESUMED) enters the
+				 * suspend path.  Any non-zero used to wake and
+				 * incorrectly park BH in suspend wait.
+				 */
+				suspend = (!pending_tx &&
+					   atomic_read(&hw_priv->bh_suspend) ==
+						BES2600_BH_SUSPEND) ? 1 : 0;
+				(rx || tx || term || suspend ||
+				 atomic_read(&hw_priv->bh_error) ||
+				 kthread_should_stop());
 			}), status);
 
 		/* Did an error occur? */
 		if ((status < 0 && status != -ERESTARTSYS) ||
-			term || atomic_read(&hw_priv->bh_error)) {
+			term || atomic_read(&hw_priv->bh_error) ||
+			kthread_should_stop()) {
 			break;
 		}
 		if (!status) {	/* wait_event timed out */
-			#ifdef CONFIG_BES2600_WLAN_BES
-			unsigned long timestamp = jiffies;
-			long timeout;
-			int pending = 0;
-			int i;
-			#endif
-			/* Check to see if we have any outstanding frames */
-			if (hw_priv->hw_bufs_used && (!rx || !tx)) {
-				bes_err("usedbuf:%u. rx:%u. tx:%u.\n", hw_priv->hw_bufs_used, rx, tx);
+			/*
+			 * Outstanding host TX with no BH wake: do NOT poke SDIO
+			 * RX (dwmmc hard LOCKUP).  Always soft-clear and idle.
+			 * Log proved: usedbuf after join → thrash → freeze.
+			 */
+			if (hw_priv->hw_bufs_used > 0) {
+				unsigned long since_rx =
+					jiffies - hw_priv->rx_timestamp;
+
+				bes_err("usedbuf:%u. rx:%u. tx:%u. since_rx=%u ms — soft clear, no RX poke\n",
+					hw_priv->hw_bufs_used, rx, tx,
+					jiffies_to_msecs(since_rx));
 				sdio_work_debug(hw_priv->sbus_priv);
-				#ifdef CONFIG_BES2600_WLAN_BES
-				bes_err("Missed interrupt? (%d frames outstanding)\n", hw_priv->hw_bufs_used);
-				rx = 1;
-
-				/* Get a timestamp of "oldest" frame */
-				for (i = 0; i < 4; ++i)
-					pending += bes2600_queue_get_xmit_timestamp(
-						&hw_priv->tx_queue[i],
-						&timestamp, i,
-						hw_priv->pending_frame_id);
-
-				/* Check if frame transmission is timed out.
-				 * Add an extra second with respect to possible
-				 * interrupt loss.
-				 */
-				timeout = timestamp +
-					WSM_CMD_LAST_CHANCE_TIMEOUT +
-					1 * HZ	-
-					jiffies;
-
-				/* And terminate BH thread if the frame is "stuck" */
-				if (pending && timeout < 0) {
-					wiphy_warn(hw_priv->hw->wiphy,
-						   "Timeout waiting for TX confirm (%d/%d pending, %ld vs %lu).\n",
-						   hw_priv->hw_bufs_used, pending,
-						   timestamp, jiffies);
-				}
-				#endif
-
-				bes2600_chrdev_wifi_force_close(hw_priv, false);
+				bes2600_bh_mark_bus_stale(hw_priv);
+				continue;
 			}
-			goto rx;
+			continue;
 		} else if (suspend) {
 			bes_devel("[BH] Device suspend.\n");
 
 			atomic_set(&hw_priv->bh_suspend, BES2600_BH_SUSPENDED);
 			wake_up(&hw_priv->bh_evt_wq);
-			status = wait_event_interruptible(hw_priv->bh_wq,
-							  BES2600_BH_RESUME == atomic_read(&hw_priv->bh_suspend));
-			if (status < 0) {
+			/*
+			 * Exit on RESUME *or* RESUMED.  If a caller races and
+			 * sets RESUMED without RESUME, waiting only for RESUME
+			 * parks BH forever while bh_tx climbs (join hangs).
+			 */
+			status = wait_event_interruptible(hw_priv->bh_wq, ({
+					int s = atomic_read(&hw_priv->bh_suspend);
+					(s == BES2600_BH_RESUME ||
+					 s == BES2600_BH_RESUMED ||
+					 atomic_read(&hw_priv->bh_error) ||
+					 kthread_should_stop());
+				}));
+			if (status < 0 || kthread_should_stop() ||
+			    atomic_read(&hw_priv->bh_error)) {
 				wiphy_err(hw_priv->hw->wiphy,
 					  "Failed to wait for resume: %ld.\n",
 					  status);
@@ -900,12 +1129,10 @@ static int bes2600_bh(void *arg)
 #endif
 		ret = bes2600_bh_rx_helper(hw_priv, &tx);
 		if (ret < 0) {
-			bes_err("bes2600_bh_rx_helper fail\n");
+			bes_err("bes2600_bh_rx_helper fail (no force_close)\n");
 			sdio_work_debug(hw_priv->sbus_priv);
-			// break; // rx error
-			bes2600_chrdev_wifi_force_close(hw_priv, false);
-		}
-		else if (ret == 1) {
+			/* Keep BH alive; force_close has hard-locked the tablet */
+		} else if (ret == 1) {
 			rx = 1; // continue rx
 			rx_cont++;
 		}
@@ -919,21 +1146,29 @@ static int bes2600_bh(void *arg)
 #endif
 	tx:
 		if (1) {
-
-			tx = 0;
-
-			BUG_ON(hw_priv->hw_bufs_used > hw_priv->wsm_caps.numInpChBufs);
+			if (WARN_ON(hw_priv->hw_bufs_used >
+				    hw_priv->wsm_caps.numInpChBufs)) {
+				/* Stale accounting must not BUG the tablet */
+				hw_priv->hw_bufs_used =
+					hw_priv->wsm_caps.numInpChBufs;
+			}
 			tx_burst = hw_priv->wsm_caps.numInpChBufs - hw_priv->hw_bufs_used;
 			tx_allowed = tx_burst > 0;
 
 			if (!tx_allowed) {
-				/* Buffers full.  Ensure we process tx
-				 * after we handle rx..
+				/*
+				 * Buffers full: must not drop the wakeup (old
+				 * code set pending_tx=0 after zeroing tx).
+				 * Retry TX after next RX frees a slot.
 				 */
-				bes_devel("bh tx not allowed.\n");
-				pending_tx = tx;
+				bes_devel("bh tx not allowed (used=%d num=%u).\n",
+					  hw_priv->hw_bufs_used,
+					  hw_priv->wsm_caps.numInpChBufs);
+				pending_tx = 1;
+				tx = 0;
 				goto done_rx;
 			}
+			tx = 0;
 			ret = bes2600_bh_tx_helper(hw_priv, &pending_tx, &tx_burst);
 			if (ret < 0) {
 				bes_err("bes2600_bh_tx_helper fail\n");

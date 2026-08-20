@@ -1103,11 +1103,14 @@ bool bes2600_chrdev_is_signal_mode(void)
 
 bool bes2600_chrdev_is_bus_error(void)
 {
-	bool error = false;
+	bool error;
+	unsigned long flags;
 
-	spin_lock(&bes2600_cdev.status_lock);
-	error = (bes2600_cdev.bus_error || bes2600_cdev.bus_probe != BES2600_BUS_PROBE_OK);
-	spin_unlock(&bes2600_cdev.status_lock);
+	/* irqsave: called from BH/timer/SDIO paths that can nest with softirq */
+	spin_lock_irqsave(&bes2600_cdev.status_lock, flags);
+	error = (bes2600_cdev.bus_error ||
+		 bes2600_cdev.bus_probe != BES2600_BUS_PROBE_OK);
+	spin_unlock_irqrestore(&bes2600_cdev.status_lock, flags);
 
 	return error;
 }
@@ -1164,21 +1167,34 @@ static void bes2600_chrdev_wifi_force_close_work(struct work_struct *work)
 
 void bes2600_chrdev_wifi_force_close(struct bes2600_common *hw_priv, bool halt_dev)
 {
+	unsigned long flags;
+	bool do_close = false;
+
 	if (hw_priv == NULL)
 		return;
 
-	spin_lock(&bes2600_cdev.status_lock);
-	if (bes2600_chrdev_is_wifi_opened() &&
-	   !work_pending(&bes2600_cdev.wifi_force_close_work)) {
-		spin_lock(&bes2600_cdev.status_lock);
+	/*
+	 * Never nest status_lock: is_wifi_opened() takes it.  The old code
+	 * locked, then called is_wifi_opened(), then locked again — hard
+	 * deadlock (blank screen, dead console) after assoc when flush_tx
+	 * hit a stale hw_bufs_used and called force_close.
+	 */
+	if (!bes2600_chrdev_is_wifi_opened())
+		return;
+
+	spin_lock_irqsave(&bes2600_cdev.status_lock, flags);
+	if (!work_pending(&bes2600_cdev.wifi_force_close_work)) {
 		bes2600_cdev.bus_error = true;
 		bes2600_cdev.halt_dev = halt_dev;
-		spin_unlock(&bes2600_cdev.status_lock);
+		do_close = true;
+	}
+	spin_unlock_irqrestore(&bes2600_cdev.status_lock, flags);
 
+	if (do_close) {
+		bes_err("%s: scheduling force close (halt=%d)\n",
+			__func__, halt_dev);
 		bes2600_tx_loop_set_enable(hw_priv, true);
 		schedule_work(&bes2600_cdev.wifi_force_close_work);
-	} else {
-			spin_unlock(&bes2600_cdev.status_lock);
 	}
 }
 

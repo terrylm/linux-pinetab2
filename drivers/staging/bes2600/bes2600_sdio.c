@@ -516,7 +516,7 @@ static void bes2600_sdio_off(const struct bes2600_platform_data_sdio *pdata)
     if (func) {
         sdio_claim_host(func);
         sdio_writeb(func, 0x08, SDIO_CCCR_ABORT, NULL);  // IO reset
-    	bes_info("Sleeping in: %s\n", __func__);
+    	bes_devel("Sleeping in: %s\n", __func__);
         msleep(10);
         sdio_release_host(func);
         // Force bus rescan
@@ -686,7 +686,7 @@ static int bes2600_sdio_extract_packets(struct sbus_priv *self, u32 ctrl_reg, u8
 			if (likely(skb))
 				break;
 			bes_warn("%s,%d no memory and sleep\n", __func__, __LINE__);
-    		bes_info("Sleeping in: %s\n", __func__);
+    		bes_devel("Sleeping in: %s\n", __func__);
 			msleep(100);
 			++alloc_retry;
 		} while(alloc_retry < 10);
@@ -1299,11 +1299,25 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 		sdio_claim_host(self->func);
 		ret = bes2600_sdio_readb_safe(self->func, BES_SLAVE_STATUS_REG_ID);
 		sdio_release_host(self->func);
-		bes_devel("active wait mcu ready cnt:%d, reg:%d\n", cnt++, ret);
-		if(ret < 0) {
+		bes_devel("active wait mcu ready cnt:%d, reg:%d\n", cnt, ret);
+		if (ret < 0)
 			goto err;
+		if ((ret & BES_SLAVE_STATUS_MCU_READY) == 0) {
+			if (++cnt > 500) {
+				bes_err("active wait MCU_READY timeout, subsys:%d\n",
+					sub_system);
+				mutex_unlock(&self->sbus_mutex);
+				return -ETIMEDOUT;
+			}
+			usleep_range(1000, 2000);
 		}
-	} while((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
+	} while ((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
+
+	/* Already active? Re-sending ACTIVE can confuse the firmware. */
+	if (cfm && (ret & cfm)) {
+		mutex_unlock(&self->sbus_mutex);
+		return 0;
+	}
 
 	do {
 		/* claim sdio host */
@@ -1331,7 +1345,7 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 		sdio_release_host(self->func);
 
 		/* wait for device to response */
-    	//bes_info("Sleeping in: %s\n", __func__);
+    	//bes_devel("Sleeping in: %s\n", __func__);
 		usleep_range(10000, 12000);  // Atomic-safe
 
 		/* read device response result */
@@ -1467,12 +1481,20 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 			sdio_claim_host(self->func);
 			ret = bes2600_sdio_readb_safe(self->func, BES_SLAVE_STATUS_REG_ID);
 			sdio_release_host(self->func);
-			bes_devel("deactive wait mcu ready cnt:%d, reg:%d\n", cnt++, ret);
+			bes_devel("deactive wait mcu ready cnt:%d, reg:%d\n", cnt, ret);
 
-			if(ret < 0) {
+			if (ret < 0)
 				goto err;
+			if ((ret & BES_SLAVE_STATUS_MCU_READY) == 0) {
+				if (++cnt > 500) {
+					bes_err("deactive wait MCU_READY timeout, subsys:%d\n",
+						sub_system);
+					mutex_unlock(&self->sbus_mutex);
+					return -ETIMEDOUT;
+				}
+				usleep_range(1000, 2000);
 			}
-		} while((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
+		} while ((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
 
 		do {
 			/* claim sdio host */
@@ -1500,7 +1522,7 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 			sdio_release_host(self->func);
 
 			/* wait device to response */
-    		bes_info("Sleeping in: %s\n", __func__);
+    		bes_devel("Sleeping in: %s\n", __func__);
 			usleep_range(10000, 12000);  // Atomic-safe
 			//msleep(delay_cnt);
 
@@ -1565,7 +1587,7 @@ static void bes2600_sdio_power_down(struct sbus_priv *self)
 	// gpiod_direction_output(pdata->powerup, GPIOD_OUT_LOW);
 #endif
 
-    bes_info("Sleeping in: %s\n", __func__);
+    bes_devel("Sleeping in: %s\n", __func__);
 	msleep(10);
 
 	self->func->card->host->caps &= ~MMC_CAP_NONREMOVABLE;

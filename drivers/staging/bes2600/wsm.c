@@ -30,6 +30,7 @@
 #include "bes2600_factory.h"
 #include "epta_coex.h"
 #include "epta_request.h"
+#include "bes_pwr.h"
 #include "bes_log.h"
 
 #define WSM_CMD_TIMEOUT		(6 * HZ) /* With respect to interrupt loss */
@@ -131,8 +132,11 @@ static int wsm_generic_confirm(struct bes2600_common *hw_priv,
 				 struct wsm_buf *buf)
 {
 	u32 status = WSM_GET32(buf);
-	if (WARN(status != WSM_STATUS_SUCCESS, "wsm_generic_confirm ret %u", status))
+	if (status != WSM_STATUS_SUCCESS) {
+		bes_warn("wsm_generic_confirm ret %u (cmd in flight)\n",
+			 status);
 		return -EINVAL;
+	}
 	return 0;
 
 underflow:
@@ -462,6 +466,10 @@ int wsm_write_mib(struct bes2600_common *hw_priv, u16 mibId, void *_buf,
 	WSM_PUT16(buf, buf_size);
 	WSM_PUT(buf, _buf, buf_size);
 
+	if (hw_priv->bus_stale)
+		bes_warn("%s: mib 0x%04x on stale bus (if_id=%d)\n",
+			 __func__, mibId, if_id);
+
 	ret = wsm_cmd_send(hw_priv, buf, &mib_buf, 0x0006, WSM_CMD_TIMEOUT,
 			if_id);
 	wsm_cmd_unlock(hw_priv);
@@ -524,7 +532,7 @@ int wsm_scan(struct bes2600_common *hw_priv, const struct wsm_scan *arg,
 	if (unlikely(arg->band > 1))
 		return -EINVAL;
 
-	bes_info("%s %d Sending scan cmd to FW, band=%d, type=%d, flags=0x%x, autoInterval=%u\n",
+	bes_devel("%s %d Sending scan cmd to FW, band=%d, type=%d, flags=0x%x, autoInterval=%u\n",
 		__func__, __LINE__, arg->band, arg->scanType, arg->scanFlags, arg->autoScanInterval);
 
 	wsm_oper_lock(hw_priv);
@@ -608,6 +616,14 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 
 	wsm_release_vif_tx_buffer(hw_priv, tx_confirm.if_id, 1);
 
+	/* Sparse: identify the frame whose confirm never arrived (lmac 3s). */
+	bes_info("wsm_tx_confirm: pkt=0x%x status=%d%s flags=0x%x bufs=%d\n",
+		 tx_confirm.packetID, tx_confirm.status,
+		 tx_confirm.status == WSM_STATUS_RETRY_EXCEEDED ?
+			 " (RETRY_EXCEEDED, no ACK)" :
+		 tx_confirm.status == WSM_STATUS_SUCCESS ? " (OK)" : "",
+		 tx_confirm.flags, hw_priv->hw_bufs_used);
+
 	if (hw_priv->wsm_cbc.tx_confirm)
 		hw_priv->wsm_cbc.tx_confirm(hw_priv, &tx_confirm);
 	return 0;
@@ -663,10 +679,13 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 {
 	u32 status = WSM_GET32(buf);
 
-	wsm_oper_unlock(hw_priv);
+	bes_info("%s: 0x040B status=%u%s\n", __func__, status,
+		 status == WSM_STATUS_SUCCESS ? " (OK)" :
+		 status == WSM_STATUS_FAILURE ? " (FAILURE)" : "");
 
 	if (status != WSM_STATUS_SUCCESS) {
-		bes_warn("wsm_join_confirm ret %u\n", status);
+		bes_warn("wsm_join_confirm FW rejected join status=%u\n",
+			 status);
 		return -EINVAL;
 	}
 
@@ -676,6 +695,7 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
+	bes_err("%s: underflow parsing 0x040B\n", __func__);
 	WARN_ON(1);
 	return -EINVAL;
 }
@@ -687,7 +707,6 @@ int wsm_join(struct bes2600_common *hw_priv, struct wsm_join *arg,
 	int ret;
 	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
 
-	wsm_oper_lock(hw_priv);
 	wsm_cmd_lock(hw_priv);
 
 	WSM_PUT8(buf, arg->mode);
@@ -705,6 +724,8 @@ int wsm_join(struct bes2600_common *hw_priv, struct wsm_join *arg,
 	WSM_PUT32(buf, arg->basicRateSet);
 
 	hw_priv->tx_burst_idx = -1;
+	bes_devel("%s: sending join 0x000B ch=%u band=%u flags=0x%x\n",
+		 __func__, arg->channelNumber, arg->band, arg->flags);
 	ret = wsm_cmd_send(hw_priv, buf, arg, 0x000B, WSM_CMD_JOIN_TIMEOUT,
 			   if_id);
 	wsm_cmd_unlock(hw_priv);
@@ -712,7 +733,6 @@ int wsm_join(struct bes2600_common *hw_priv, struct wsm_join *arg,
 
 nomem:
 	wsm_cmd_unlock(hw_priv);
-	wsm_oper_unlock(hw_priv);
 	return -ENOMEM;
 }
 
@@ -1669,6 +1689,23 @@ underflow:
 	return -EINVAL;
 }
 
+static int wsm_join_complete_indication(struct bes2600_common *hw_priv,
+					struct wsm_buf *buf)
+{
+	struct wsm_join_complete arg;
+
+	arg.status = WSM_GET32(buf);
+	bes_info("[WSM] Join complete indication, status=%u\n", arg.status);
+
+	if (hw_priv->wsm_cbc.join_complete)
+		hw_priv->wsm_cbc.join_complete(hw_priv, &arg);
+
+	return 0;
+
+underflow:
+	return -EINVAL;
+}
+
 static int wsm_scan_complete_indication(struct bes2600_common *hw_priv,
 					struct wsm_buf *buf)
 {
@@ -1682,7 +1719,7 @@ static int wsm_scan_complete_indication(struct bes2600_common *hw_priv,
 		arg.psm = WSM_GET8(buf);
 		arg.numChannels = WSM_GET8(buf);
 		if (__ratelimit(&rs) && (arg.status != 0 || arg.numChannels == 0)) {	// Only on "weird" completes
-			bes_info("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
+			bes_devel("%s %d: status=%u, psm=0x%x, numChannels=%u\n",
 			 __func__, __LINE__, arg.status, arg.psm, arg.numChannels);
 		}
 		hw_priv->wsm_cbc.scan_complete(hw_priv, &arg);
@@ -1788,6 +1825,13 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 	size_t buf_len = buf->data - buf->begin;
 	int ret;
 
+	/* Fail fast: do not pile 6–7s timeouts onto a dead bus */
+	if (hw_priv->bus_stale) {
+		bes_warn("%s: refuse cmd 0x%04x — bus_stale\n", __func__, cmd);
+		wsm_buf_reset(buf);
+		return -EIO;
+	}
+
 	if (cmd == 0x0006) /* Write MIB */
 		bes_devel("[WSM] >>> 0x%.4X [MIB: 0x%.4X] (%lu)\n",
 			cmd, __le16_to_cpu(((__le16 *)buf->begin)[2]),
@@ -1828,6 +1872,12 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 	spin_unlock(&hw_priv->wsm_cmd.lock);
 	bes2600_tx_loop_record_wsm_cmd(hw_priv, hw_priv->wsm_cmd.ptr);
 
+	if (cmd == 0x000B)
+		bes_devel("%s: join pending bufs=%d bh_tx=%d bh_err=%d\n",
+			  __func__, hw_priv->hw_bufs_used,
+			  atomic_read(&hw_priv->bh_tx),
+			  atomic_read(&hw_priv->bh_error));
+
 	bes2600_bh_wakeup(hw_priv);
 
 	if (unlikely(atomic_read(&hw_priv->bh_error))) {
@@ -1838,35 +1888,72 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		long wsm_cmd_starttime = jiffies;
 		long wsm_cmd_runtime;
 		long wsm_cmd_max_tmo = WSM_CMD_DEFAULT_TIMEOUT;
+		long slice = (cmd == 0x000B) ? HZ : tmo;
 
 		/* Give start cmd a little more time */
 		if (tmo == WSM_CMD_START_TIMEOUT)
 			wsm_cmd_max_tmo = WSM_CMD_START_TIMEOUT;
-		/* Firmware prioritizes data traffic over control confirm.
-		 * Loop below checks if data was RXed and increases timeout
-		 * accordingly. */
+		/*
+		 * Join: wait the full tmo in 1s slices.  Kick RX once.
+		 * Do not treat (runtime > HZ) as failure: after wait(HZ)
+		 * runtime is HZ+epsilon, so the old else-branch aborted
+		 * join at ~1s (log: TX auth @52.678, 0x000B -110 @53.738).
+		 */
 		do {
-			/* It's safe to use unprotected access to
-			 * wsm_cmd.done here */
 			ret = wait_event_timeout(
 					hw_priv->wsm_cmd_wq,
-					hw_priv->wsm_cmd.done, tmo);
-			rx_timestamp = jiffies - hw_priv->rx_timestamp;
+					hw_priv->wsm_cmd.done ||
+						hw_priv->bus_stale,
+					slice);
+
 			wsm_cmd_runtime = jiffies - wsm_cmd_starttime;
+			if (hw_priv->bus_stale && !hw_priv->wsm_cmd.done) {
+				bes_warn("%s: abort cmd 0x%04x — bus_stale "
+					 "t=%ld\n",
+					 __func__, cmd, wsm_cmd_runtime);
+				ret = 0;
+				break;
+			}
+			if (!ret && cmd == 0x000B && !hw_priv->wsm_cmd.done) {
+				bes_pin("join still pending bufs=%d t=%ld\n",
+					hw_priv->hw_bufs_used,
+					wsm_cmd_runtime);
+				if (wsm_cmd_runtime < 2 * HZ) {
+					atomic_inc(&hw_priv->bh_rx);
+					bes2600_bh_wakeup(hw_priv);
+				}
+			}
+			rx_timestamp = jiffies - hw_priv->rx_timestamp;
 			if (unlikely(rx_timestamp < 0) || wsm_cmd_runtime < 0)
 				rx_timestamp = tmo + 1;
-		} while (!ret && rx_timestamp <= tmo &&
-					wsm_cmd_runtime < wsm_cmd_max_tmo);
+		} while (!ret && wsm_cmd_runtime < wsm_cmd_max_tmo &&
+			 (cmd == 0x000B ||
+			  (rx_timestamp <= tmo && wsm_cmd_runtime < wsm_cmd_max_tmo)));
 	}
 
 	if (unlikely(ret == 0)) {
 		u16 raceCheck;
 
+		if (cmd == 0x000B)
+			bes_err("[WSM] join command 0x%.4X timed out (tmo=%ld)\n",
+				cmd, tmo);
+
 		spin_lock(&hw_priv->wsm_cmd.lock);
 		raceCheck = hw_priv->wsm_cmd.cmd;
+		hw_priv->wsm_cmd.done = 1;
 		hw_priv->wsm_cmd.arg = NULL;
 		hw_priv->wsm_cmd.ptr = NULL;
 		spin_unlock(&hw_priv->wsm_cmd.lock);
+
+		/*
+		 * Timed-out WSM with a silent bus: quarantine until RX resumes.
+		 * Prevents enter_lp set_op + mon thrash hard-lock after join -110.
+		 */
+		if (cmd == 0x000B ||
+		    time_is_before_jiffies(hw_priv->rx_timestamp + 2 * HZ))
+			bes2600_bh_mark_bus_stale(hw_priv);
+		else
+			bes2600_bh_abort_pending_tx(hw_priv);
 
 		/* Race condition check to make sure _confirm is not called
 		 * after exit of _send */
@@ -1947,6 +2034,21 @@ bool wsm_flush_tx(struct bes2600_common *hw_priv)
 	if (!hw_priv->hw_bufs_used)
 		return true;
 
+	/*
+	 * Auth TX with no confirm left bufs>0 and no RX for seconds.
+	 * Waiting LAST_CHANCE here blocked unjoin ~5s then keep_alive
+	 * another ~6s and hard-locked the tablet (poweroff failed).
+	 */
+	if (bes2600_bh_bus_quiet(hw_priv)) {
+		bes_warn("%s: skip wait, bus quiet bufs=%d — drop host count\n",
+			 __func__, hw_priv->hw_bufs_used);
+		if (hw_priv->hw_bufs_used > 0)
+			wsm_release_tx_buffer(hw_priv, hw_priv->hw_bufs_used);
+		if (hw_priv->hw_bufs_used < 0)
+			hw_priv->hw_bufs_used = 0;
+		return true;
+	}
+
 	if (atomic_read(&hw_priv->bh_error)) {
 		/* In case of failure do not wait for magic. */
 		bes_err("[WSM] Fatal error occured, "
@@ -1967,11 +2069,19 @@ bool wsm_flush_tx(struct bes2600_common *hw_priv)
 		if (timeout < 0 || wait_event_timeout(hw_priv->bh_evt_wq,
 				!hw_priv->hw_bufs_used,
 				timeout) <= 0) {
-			/* Hmmm... Not good. Frame had stuck in firmware. */
-			bes2600_chrdev_wifi_force_close(hw_priv, true);
+			/*
+			 * Host accounting can be stale after scan/join.  Do not
+			 * force_close (that has hard-locked the tablet).  Drop
+			 * host-side count so TX can proceed; FW will recover.
+			 */
+			bes_err("%s: flush timeout hw_bufs_used=%d — drop host count\n",
+				__func__, hw_priv->hw_bufs_used);
+			if (hw_priv->hw_bufs_used > 0)
+				wsm_release_tx_buffer(hw_priv, hw_priv->hw_bufs_used);
+			if (hw_priv->hw_bufs_used < 0)
+				hw_priv->hw_bufs_used = 0;
 		}
 
-		/* Ok, everything is flushed. */
 		return true;
 	}
 }
@@ -2022,11 +2132,12 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 		if (wait_event_timeout(hw_priv->bh_evt_wq,
 				!hw_priv->hw_bufs_used_vif[if_id],
 				timeout) <= 0) {
-			/* Hmmm... Not good. Frame had stuck in firmware. */
-			bes2600_chrdev_wifi_force_close(hw_priv, true);
+			bes_err("%s: vif %d flush timeout used=%d — soft clear\n",
+				__func__, if_id,
+				hw_priv->hw_bufs_used_vif[if_id]);
+			hw_priv->hw_bufs_used_vif[if_id] = 0;
 		}
 
-		/* Ok, everything is flushed. */
 		return true;
 	}
 }
@@ -2178,6 +2289,11 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 	bes_devel("[WSM] <<< 0x%.4X (%ld)\n", id,
 			(long)(wsm_buf.end - wsm_buf.begin));
 
+	/* DIAG: while join is outstanding, log every RX WSM id (confirm or not) */
+	if ((hw_priv->wsm_cmd.cmd & 0x0fff) == 0x000B && !hw_priv->wsm_cmd.done)
+		bes_devel("%s: RX while join pending id=0x%04x len=%u\n",
+			 __func__, id, __le16_to_cpu(wsm->len));
+
 	if (IS_DRIVER_TO_MCU_CMD(id))
 		ind_confirm_label = __le32_to_cpu(((struct wsm_mcu_hdr *)wsm)->handle_label);
 
@@ -2204,8 +2320,10 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		hw_priv->wsm_cmd.cmd = 0xFFFF;
 		spin_unlock(&hw_priv->wsm_cmd.lock);
 
-		if (((id & 0x0f00) == 0x0400) && WARN_ON((id & ~0x0400) != wsm_cmd)) {
-			/* Note that any non-zero is a fatal retcode. */
+		if (((id & 0x0f00) == 0x0400) && ((id & ~0x0400) != wsm_cmd)) {
+			/* DIAG: confirm id mismatch leaves join hung if we skip done */
+			bes_err("%s: CONFIRM MISMATCH id=0x%04x pending_cmd=0x%04x — not marking done\n",
+				__func__, id, wsm_cmd);
 			ret = -EINVAL;
 			goto out;
 		}
@@ -2290,6 +2408,9 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		hw_priv->wsm_cmd.ret = ret;
 		hw_priv->wsm_cmd.done = 1;
 		spin_unlock(&hw_priv->wsm_cmd.lock);
+		if ((id & 0x0fff) == 0x040B || wsm_cmd == 0x000B)
+			bes_devel("%s: join cmd complete path id=0x%04x ret=%d done=1\n",
+				 __func__, id, ret);
 		ret = 0; /* Error response from device should ne stop BH. */
 
 		wake_up(&hw_priv->wsm_cmd_wq);
@@ -2322,8 +2443,11 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 			ret = wsm_suspend_resume_indication(hw_priv,
 					interface_link_id, &wsm_buf);
 			break;
+		case 0x080F:
+			ret = wsm_join_complete_indication(hw_priv, &wsm_buf);
+			break;
 		default:
-			//STUB();
+			bes_warn("[WSM] Unhandled indication 0x%.4X\n", id);
 			break;
 		}
 	} else if (WSM_TO_MCU_CMD_IND_CONDITION(id, ind_confirm_label)) {
@@ -2517,23 +2641,50 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 	break;
 	case doJoin:
 	{
-		/* There is one more interesting "feature"
-		 * in FW: it can't do RX/TX before "join".
-		 * "Join" here is not an association,
-		 * but just a syncronization between AP and STA.
-		 * priv->join_status is used only in bh thread and does
-		 * not require protection */
-		bes_devel("[WSM] Issue join command.\n");
-		wsm_lock_tx_async(hw_priv);
+		/*
+		 * Queue join_work first.  Do not schedule power_async ahead of
+		 * it (request_awake_async can do that): power_async may take
+		 * pwr_mutex and wait for WSM while BH is still in this path,
+		 * deadlocking so join_work never starts.
+		 * join_work itself calls wake_mcu_for_join().
+		 */
+		/*
+		 * Do not wsm_lock_tx here while still in the TX/BH path: locking
+		 * then running join_work (same time as conf_lock TXPOWER work)
+		 * has hard-frozen the tablet mid-doJoin log line.  Join work
+		 * takes the TX lock itself.
+		 */
+		if (hw_priv->bus_stale || work_busy(&priv->join_work)) {
+			u32 pid = __le32_to_cpu(wsm->packetID);
+
+			bes_warn("[WSM] doJoin refuse stale=%d busy=%d packet=0x%x\n",
+				 hw_priv->bus_stale,
+				 work_busy(&priv->join_work), pid);
+#ifdef CONFIG_BES2600_TESTMODE
+			bes2600_queue_remove(hw_priv, queue, pid);
+#else
+			bes2600_queue_remove(queue, pid);
+#endif
+			handled = true;
+			break;
+		}
+		bes_pin("doJoin if_id=%d packet=0x%x join_status=%d tx_lock=%d\n",
+			priv->if_id, __le32_to_cpu(wsm->packetID),
+			priv->join_status, atomic_read(&hw_priv->tx_lock));
+		bes_info("[WSM] doJoin if_id=%d packet=0x%x join_status=%d "
+			 "tx_lock=%d\n",
+			 priv->if_id, __le32_to_cpu(wsm->packetID),
+			 priv->join_status, atomic_read(&hw_priv->tx_lock));
 		hw_priv->pending_frame_id = __le32_to_cpu(wsm->packetID);
 
-		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
+		if (hw_priv->channel &&
+		    hw_priv->channel->band != NL80211_BAND_2GHZ)
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING_5G);
 		else
 			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING);
 
 		if (queue_work(hw_priv->workqueue, &priv->join_work) <= 0)
-			wsm_unlock_tx(hw_priv);
+			bes_err("[WSM] join_work already queued/running\n");
 		handled = true;
 	}
 	break;
@@ -2689,6 +2840,10 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 	if (count)
 		return count;
 
+	/* Dead bus: do not put another SDIO write on the wire (hard LOCKUP). */
+	if (hw_priv->bus_stale)
+		return 0;
+
 	if (hw_priv->wsm_cmd.ptr) {
 		++count;
 		spin_lock(&hw_priv->wsm_cmd.lock);
@@ -2697,13 +2852,66 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 		*tx_len = hw_priv->wsm_cmd.len;
 		*burst = 1;
 		*vif_selected = -1;
+		if ((hw_priv->wsm_cmd.cmd & 0x0fff) == 0x000B)
+			bes_devel("%s: BH handing join 0x000B to SDIO (len=%zu)\n",
+				 __func__, *tx_len);
 		spin_unlock(&hw_priv->wsm_cmd.lock);
 	} else {
+		/*
+		 * After join, auth may sit unconfirmed.  Do not dequeue
+		 * another data/mgmt (deauth) onto that pipe.  Do not mark
+		 * stale here: that ran during idle (no RX for 2s is normal
+		 * before assoc), aborted a 0x0006, double-released bufs
+		 * to -1, and spammed usedbuf:4294967295.
+		 */
+		if (hw_priv->hw_bufs_used > 1 &&
+		    time_is_before_jiffies(hw_priv->rx_timestamp + 2 * HZ)) {
+			int vi;
+
+			for (vi = 0; vi < CW12XX_MAX_VIFS; vi++) {
+				struct bes2600_vif *vp =
+					__cw12xx_hwpriv_to_vifpriv(hw_priv, vi);
+
+				if (vp &&
+				    vp->join_status == BES2600_JOIN_STATUS_STA &&
+				    vp->vif && !vp->vif->cfg.assoc) {
+					bes_warn("%s: skip data TX, bufs=%d "
+						 "no RX %u ms (pre-assoc)\n",
+						 __func__,
+						 hw_priv->hw_bufs_used,
+						 jiffies_to_msecs(jiffies -
+							hw_priv->rx_timestamp));
+					return 0;
+				}
+			}
+		}
 		for (;;) {
 			int ret;
 			struct bes2600_vif *priv;
-			if (atomic_add_return(0, &hw_priv->tx_lock))
-				break;
+			int tlock = atomic_read(&hw_priv->tx_lock);
+
+			/*
+			 * Normal data must wait for tx_lock.  Pre-key STA
+			 * frames (EAPOL) must not: log showed enter pre-key
+			 * with tx_lock=1 and never set_key.
+			 */
+			if (tlock) {
+				bool allow_prekey = false;
+				int vi;
+
+				for (vi = 0; vi < CW12XX_MAX_VIFS; vi++) {
+					struct bes2600_vif *vp =
+						__cw12xx_hwpriv_to_vifpriv(hw_priv, vi);
+					if (vp &&
+					    vp->join_status == BES2600_JOIN_STATUS_STA &&
+					    !vp->cipherType) {
+						allow_prekey = true;
+						break;
+					}
+				}
+				if (!allow_prekey)
+					break;
+			}
 			/* Keep one buffer reserved for commands. Note
 			   that, hw_bufs_used has already been incremented
 			   before reaching here. */

@@ -802,7 +802,12 @@ int bes2600_queue_get_skb(struct bes2600_queue *queue, u32 packetID,
 	item = &queue->pool[item_id];
 
 	spin_lock_bh(&queue->lock);
-	BUG_ON(queue_id != queue->queue_id);
+	if (unlikely(queue_id != queue->queue_id)) {
+		bes_err("%s: queue_id mismatch %u != %u packetID=0x%x\n",
+			__func__, queue_id, queue->queue_id, packetID);
+		spin_unlock_bh(&queue->lock);
+		return -EINVAL;
+	}
 	/* TODO:COMBO: Add check for interface ID here */
 	if (unlikely(queue_generation != queue->generation)) {
 		bes_info("%s, Queue Generation is not equal\n", __func__);

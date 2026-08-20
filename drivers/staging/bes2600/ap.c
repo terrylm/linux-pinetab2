@@ -324,7 +324,7 @@ void bes2600_set_cts_work(struct work_struct *work)
 	return;
 }
 
-static int bes2600_set_btcoexinfo(struct bes2600_vif *priv)
+static int __maybe_unused bes2600_set_btcoexinfo(struct bes2600_vif *priv)
 {
 	struct wsm_override_internal_txrate arg;
 	int ret = 0;
@@ -442,6 +442,9 @@ static void bes2600_bss_info_changed_arp_filter(struct ieee80211_hw *dev,
 	bes_devel("[STA] arp ip filter enable: %d\n",
 					__le32_to_cpu(filter.enable));
 
+	bes_devel("%s: ARP filter enable=%u addr_cnt=%d\n",
+		 __func__, filter.enable, cfg->arp_addr_cnt);
+
 	if (filter.enable)
 			bes2600_set_arpreply(dev, vif);
 
@@ -522,11 +525,11 @@ static void bes2600_bss_info_changed_assoc(struct bes2600_vif *priv,
 	struct ieee80211_bss_conf *info,
 	struct ieee80211_vif_cfg *cfg)
 {
-	bes_info("In %s.\n", __func__);
-
-	wsm_lock_tx(hw_priv);
+	/*
+	 * Do NOT touch tx_lock here.  Locking around ASSOC stalled EAPOL
+	 * (pre-key TX entered driver but tx_lock=1 blocked SDIO dequeue).
+	 */
 	priv->wep_default_key_id = -1;
-	wsm_unlock_tx(hw_priv);
 
 	if (!cfg->assoc /* && !info->ibss_joined */) {
 			priv->cqm_link_loss_count = 100;
@@ -534,7 +537,6 @@ static void bes2600_bss_info_changed_assoc(struct bes2600_vif *priv,
 			priv->cqm_tx_failure_thold = 0;
 	}
 	priv->cqm_tx_failure_count = 0;
-	bes_info("Leaving %s.\n", __func__);
 }
 
 static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
@@ -566,13 +568,12 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			priv->beacon_int = info->beacon_int;
 
 			/* Associated: kill join timeout */
-			if(changed & BSS_CHANGED_ASSOC) {
-					cancel_delayed_work_sync(&priv->join_timeout);
-					bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
-					bes2600_pwr_set_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_GET_IP);
-#ifdef BES2600_TX_RX_OPT
-					txrx_opt_timer_init(priv);
-#endif
+			if (changed & BSS_CHANGED_ASSOC) {
+					bes_info("%s: ASSOC — post-join setup (if_id=%d)\n",
+						 __func__, priv->if_id);
+					/* Non-sync: avoid deadlocks on bes2600_wq */
+					cancel_delayed_work(&priv->join_timeout);
+					/* GET_IP busy set after conf_lock release */
 			}
 
 			rcu_read_lock();
@@ -594,15 +595,17 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 									hw_priv->channel->hw_value,
 									ch_type, info->ht_operation_mode);
 					if ((changed & BSS_CHANGED_ASSOC) &&
-									priv->join_status == BES2600_JOIN_STATUS_STA) {
-							struct wsm_switch_channel channel;
-
+					    priv->join_status == BES2600_JOIN_STATUS_STA) {
+							/*
+							 * Record HT channel type only.  Do NOT wsm_switch_channel
+							 * here: join already tuned the radio, and switch leaves
+							 * TX locked until a FW indication that often never
+							 * arrives — host freezes right after AssocResp.
+							 */
 							hw_priv->ht_info.channel_type = ch_type;
-							channel.channelMode = hw_priv->ht_info.channel_type << 4;
-							channel.channelSwitchCount = 0;
-							channel.newChannelNumber = hw_priv->channel->hw_value;
-							wsm_switch_channel(hw_priv, &channel, priv->if_id);
-							bes_devel( "channel type changed to %d !!!\n", hw_priv->ht_info.channel_type);
+							bes_devel("%s: assoc ch=%u type=%d (no switch cmd)\n",
+								 __func__, hw_priv->channel->hw_value,
+								 ch_type);
 					}
 					if (hw_priv->ht_info.operation_mode != info->ht_operation_mode)
 							hw_priv->ht_info.operation_mode = info->ht_operation_mode;
@@ -719,14 +722,14 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 									priv->beacon_int * priv->join_dtim_period >
 									MAX_BEACON_SKIP_TIME_MS ? 1 :
 									priv->join_dtim_period, 0, priv->if_id));
-			if (priv->htcap) {
-					wsm_lock_tx(hw_priv);
-					/* Statically enabling block ack for TX/RX */
-					WARN_ON(wsm_set_block_ack_policy(hw_priv,
-											hw_priv->ba_tid_mask, hw_priv->ba_tid_mask,
-											priv->if_id));
-					wsm_unlock_tx(hw_priv);
-			}
+			/*
+			 * Skip block-ack policy under conf_lock for now: it
+			 * wsm_lock_tx + flush and has caused post-assoc stalls.
+			 * BA can be enabled later once the link is stable.
+			 */
+			if (priv->htcap)
+				bes_devel("%s: skip BA policy setup on assoc\n",
+					 __func__);
 
 			if (priv->vif->p2p) {
 					bes_devel(
@@ -739,12 +742,7 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 #endif
 			}
 
-			if (priv->mode == NL80211_IFTYPE_STATION)
-					WARN_ON(bes2600_upload_qosnull(priv));
-
-			if (hw_priv->is_BT_Present)
-					WARN_ON(bes2600_set_btcoexinfo(priv));
-
+			/* Defer qosnull / btcoex / txrx_opt — not required before 4-way */
 			atomic_set(&priv->connect_in_process, 0);
 			if (priv->delayed_unjoin) {
 					priv->delayed_unjoin = false;
@@ -753,9 +751,31 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							wsm_unlock_tx(hw_priv);
 			}
 
-	} else {
 			if (changed & BSS_CHANGED_ASSOC)
+				bes_info("%s: ASSOC rates/HT done (aid=%d)\n",
+					 __func__, priv->bss_params.aid);
+
+	} else {
+			if (changed & BSS_CHANGED_ASSOC) {
+					/* Drop leftover JOIN hold on disconnect */
+					bes2600_pwr_clear_busy_event(hw_priv,
+								     BES_PWR_LOCK_ON_JOIN);
+					bes2600_pwr_clear_busy_event(hw_priv,
+								     BES_PWR_LOCK_ON_GET_IP);
 					bwifi_change_current_status(hw_priv, BWIFI_STATUS_DISCONNECTED);
+					/*
+					 * Disassoc / failed connect: drop FW join so the next
+					 * auth does not unjoin under a stuck connect_in_process.
+					 */
+					if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+						atomic_set(&priv->connect_in_process, 0);
+						cancel_delayed_work(&priv->join_timeout);
+						wsm_lock_tx(hw_priv);
+						if (queue_work(hw_priv->workqueue,
+							       &priv->unjoin_work) <= 0)
+							wsm_unlock_tx(hw_priv);
+					}
+			}
 
 			memset(&hw_priv->ht_info, 0,
 							sizeof(hw_priv->ht_info));
@@ -788,10 +808,11 @@ static void bes2600_bss_info_changed_assoc_and_erp(struct bes2600_vif *priv,
 {
 	__le32 slot_time = info->use_short_slot ?  __cpu_to_le32(9) : __cpu_to_le32(20);
 
-	bes_devel("[STA] Slot time :%d us.\n", __le32_to_cpu(slot_time));
+	bes_info("%s: slot_time=%u us\n", __func__, __le32_to_cpu(slot_time));
 
 	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_SLOT_TIME,
 		&slot_time, sizeof(slot_time), priv->if_id));
+	bes_info("%s: slot_time done\n", __func__);
 }
 
 static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
@@ -803,6 +824,8 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 		.rollingAverageCount = 8,
 	};
 
+	bes_info("%s: enter thold=%d hyst=%d\n", __func__,
+		 info->cqm_rssi_thold, info->cqm_rssi_hyst);
 	bes_devel("[CQM] RSSI threshold subscribe: %d +- %d\n",
 		info->cqm_rssi_thold, info->cqm_rssi_hyst);
 
@@ -844,6 +867,7 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 	}
 	WARN_ON(wsm_set_rcpi_rssi_threshold(hw_priv, &threshold,
 							priv->if_id));
+	bes_info("%s: rcpi threshold done\n", __func__);
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	priv->cqm_tx_failure_thold = info->cqm_tx_fail_thold;
@@ -872,19 +896,19 @@ static void bes2600_bss_info_changed_bandwidth(struct bes2600_vif *priv,
 {
 	enum nl80211_channel_type ch_type = cfg80211_get_chandef_type(&info->chanreq.oper);
 
-	if (cfg->assoc &&
-		hw_priv->ht_info.channel_type != ch_type &&
-		priv->join_status == BES2600_JOIN_STATUS_STA) {
-
-		struct wsm_switch_channel channel;
-
+	/*
+	 * Never wsm_switch_channel while associated: the command locks TX
+	 * until a FW indication that often never arrives — silent hard lock
+	 * right after "associated" / before set_key.
+	 */
+	if (cfg->assoc && priv->join_status == BES2600_JOIN_STATUS_STA) {
+		if (hw_priv->ht_info.channel_type != ch_type)
+			bes_info("%s: record ch_type=%d (no switch cmd)\n",
+				 __func__, ch_type);
 		hw_priv->ht_info.channel_type = ch_type;
-		channel.channelMode = hw_priv->ht_info.channel_type << 4;
-		channel.channelSwitchCount = 0;
-		channel.newChannelNumber = hw_priv->channel->hw_value;
-		wsm_switch_channel(hw_priv, &channel, priv->if_id);
-		bes_devel( "channel type changed to %d !!!\n", hw_priv->ht_info.channel_type);
+		return;
 	}
+
 }
 
 static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
@@ -894,6 +918,20 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 {
 	const u8 override_fpsm_timeout = CONFIG_BES2600_FASTPS_IDLE_TIME;
 
+	/*
+	 * Until pairwise keys exist, ignore mac80211 PS requests.  Logs showed
+	 * ps=1 immediately after associate with no EAPOL/set_key, then lockup.
+	 */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA && !priv->cipherType) {
+		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
+		bes2600_pwr_set_busy_event(priv->hw_priv,
+					   BES_PWR_LOCK_ON_PS_ACTIVE);
+		priv->power_set_true = 1;
+		bes_info("%s: force ACTIVE until set_key (mac80211 ps=%d)\n",
+			 __func__, cfg->ps);
+		return;
+	}
+
 	if (cfg->ps == false)
 		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 	else if (conf->dynamic_ps_timeout <= 0)
@@ -901,43 +939,33 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 	else
 		priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
 
-	/* set/clear ps active power busy event */
-	if(priv->join_status == BES2600_JOIN_STATUS_STA) {
-		if(!cfg->ps) {
-			bes2600_pwr_set_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
-		} else {
-			bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
-		}
+	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+		if (!cfg->ps)
+			bes2600_pwr_set_busy_event(priv->hw_priv,
+						   BES_PWR_LOCK_ON_PS_ACTIVE);
+		else
+			bes2600_pwr_clear_busy_event(priv->hw_priv,
+						     BES_PWR_LOCK_ON_PS_ACTIVE);
 	}
 
-	bes_devel( "[STA] Aid: %d, Joined: %s, Powersave: %s\n",
-		priv->bss_params.aid,
-		priv->join_status == BES2600_JOIN_STATUS_STA ? "yes" : "no",
-		priv->powersave_mode.pmMode == WSM_PSM_ACTIVE ? "WSM_PSM_ACTIVE" :
-			priv->powersave_mode.pmMode == WSM_PSM_PS ? "WSM_PSM_PS" :
-				priv->powersave_mode.pmMode == WSM_PSM_FAST_PS ? "WSM_PSM_FAST_PS" :
-					"UNKNOWN");
+	bes_info("%s: ps=%d mode=%u aid=%d setbss=%d\n",
+		 __func__, cfg->ps, priv->powersave_mode.pmMode,
+		 priv->bss_params.aid, priv->setbssparams_done);
 
-	/* Firmware requires that value for this 1-byte field must
-	 * be specified in units of 500us. Values above the 128ms
-	 * threshold are not supported. */
 	if (conf->dynamic_ps_timeout >= 0x80)
 		priv->powersave_mode.fastPsmIdlePeriod = 0xFF;
 	else
 		priv->powersave_mode.fastPsmIdlePeriod = conf->dynamic_ps_timeout << 1;
 
-	/* override fast psm idle time */
-	if (override_fpsm_timeout) {
+	if (override_fpsm_timeout)
 		priv->powersave_mode.fastPsmIdlePeriod = override_fpsm_timeout << 1;
-	}
 
-	if (priv->join_status ==
-		BES2600_JOIN_STATUS_STA &&
-		priv->bss_params.aid &&
-		priv->setbssparams_done &&
-		priv->filter4.enable &&
-		priv->powersave_mode.pmMode == WSM_PSM_ACTIVE) {
-
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    priv->bss_params.aid &&
+	    priv->setbssparams_done &&
+	    priv->cipherType != 0 &&
+	    priv->filter4.enable &&
+	    priv->powersave_mode.pmMode == WSM_PSM_ACTIVE) {
 		bes2600_set_pm(priv, &priv->powersave_mode);
 	} else {
 		priv->power_set_true = 1;
@@ -1045,7 +1073,19 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		return;
 
-	bes_devel("%s: changed=0x%08llx\n", __func__, changed);
+	/*
+	 * TXPOWER-only notifies fire from beacon/assoc parsing (the mac80211
+	 * "Limiting TX power" path).  Taking conf_lock here races connect /
+	 * join_work and has been seen to hard-lock mid-doJoin.  No WSM needed.
+	 */
+	if (changed == BSS_CHANGED_TXPOWER) {
+		bes_info("%s: BSS_CHANGED_TXPOWER only txpower=%d (no lock, no WSM)\n",
+			 __func__, info->txpower);
+		return;
+	}
+
+	bes_devel("%s: enter changed=0x%08llx\n", __func__,
+		  (unsigned long long)changed);
 
 	down(&hw_priv->conf_lock);
 
@@ -1091,8 +1131,20 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	if (changed & BSS_CHANGED_BANDWIDTH)
 		bes2600_bss_info_changed_bandwidth(priv, hw_priv, info, cfg);
 
-	if (changed & BSS_CHANGED_PS)
+	/*
+	 * mac80211 "Limiting TX power …" sets BSS_CHANGED_TXPOWER after
+	 * reading the AP power constraint IE from beacons/assoc.  We do not
+	 * need a WSM command here; actual programming is in bes2600_config()
+	 * only after keys exist (see CONF_CHANGE_POWER).
+	 */
+	if (changed & BSS_CHANGED_TXPOWER)
+		bes_info("%s: BSS_CHANGED_TXPOWER txpower=%d (no WSM)\n",
+			 __func__, info->txpower);
+
+	if (changed & BSS_CHANGED_PS) {
+		bes_info("%s: BSS_CHANGED_PS\n", __func__);
 		bes2600_bss_info_changed_ps(priv, info, conf, cfg);
+	}
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	if (changed & BSS_CHANGED_P2P_PS)
@@ -1103,6 +1155,19 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	/* Add more handlers here as needed for other changed bits */
 
 	up(&hw_priv->conf_lock);
+	if (changed & BSS_CHANGED_ASSOC && cfg->assoc) {
+		/* After unlock: keep awake for DHCP/IP; re-arm short heartbeat */
+		bes2600_pwr_set_busy_event_async(hw_priv, BES_PWR_LOCK_ON_GET_IP);
+		queue_delayed_work(hw_priv->workqueue, &priv->join_timeout, 5 * HZ);
+		bes_info("%s: ASSOC conf_lock released (aid=%d) — await set_key "
+			 "(tx_lock=%d bufs=%d)\n",
+			 __func__, priv->bss_params.aid,
+			 atomic_read(&hw_priv->tx_lock),
+			 hw_priv->hw_bufs_used);
+	} else {
+		bes_devel("%s: done changed=0x%08llx\n", __func__,
+			  (unsigned long long)changed);
+	}
 }
 
 
@@ -1368,7 +1433,7 @@ static int bes2600_upload_null(struct bes2600_vif *priv)
 	return ret;
 }
 
-static int bes2600_upload_qosnull(struct bes2600_vif *priv)
+static int __maybe_unused bes2600_upload_qosnull(struct bes2600_vif *priv)
 {
 	int ret = 0;
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
@@ -1751,7 +1816,7 @@ void bes2600_notify_noa(struct bes2600_vif *priv, int delay)
 		return;
 
 	if (delay) {
-    	bes_info("Sleeping in: %s\n", __func__);
+    	bes_devel("Sleeping in: %s\n", __func__);
 		msleep(delay);
 	}
 

@@ -28,6 +28,16 @@ int bes2600_register_bh(struct bes2600_common *hw_priv);
 void bes2600_unregister_bh(struct bes2600_common *hw_priv);
 void bes2600_irq_handler(struct bes2600_common *hw_priv);
 int bes2600_bh_wakeup(struct bes2600_common *hw_priv);
+/* Clear stuck host TX accounting before join (does not touch FW) */
+void bes2600_bh_prepare_for_join(struct bes2600_common *hw_priv);
+/* If BH never claims join: force resume + optional direct TX */
+int bes2600_bh_flush_wsm_cmd(struct bes2600_common *hw_priv);
+/* Drop host-side pending after join/WSM timeout (avoid LMAC mon thrash) */
+void bes2600_bh_abort_pending_tx(struct bes2600_common *hw_priv);
+void bes2600_bh_mark_bus_stale(struct bes2600_common *hw_priv);
+void bes2600_bh_clear_bus_stale(struct bes2600_common *hw_priv);
+bool bes2600_bh_bus_quiet(struct bes2600_common *hw_priv);
+void bes2600_bh_tx_fail_work(struct work_struct *work);
 int bes2600_bh_suspend(struct bes2600_common *hw_priv);
 int bes2600_bh_resume(struct bes2600_common *hw_priv);
 /* Must be called from BH thread. */

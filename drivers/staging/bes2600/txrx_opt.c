@@ -289,12 +289,16 @@ static int bes2600_update_pwr_table(struct bes2600_common *hw_priv,
 
 	if (cur_pwr_tbl_idx != pwr_tbl_idx) {
 		cur_pwr_tbl_idx = pwr_tbl_idx;
-		ret = WARN_ON(wsm_write_mib(hw_priv,
-					WSM_MIB_ID_EXT_PWR_TBL_UPDATE,
-					(u8 *)&cur_pwr_tbl_idx,
-					sizeof(cur_pwr_tbl_idx),
-					priv->if_id));
-		bes_devel("%s pwr_tbl_idx=%d\n\r", __func__, pwr_tbl_idx);
+		/* No WARN_ON: bus_stale / timeouts are expected during unjoin */
+		ret = wsm_write_mib(hw_priv,
+				    WSM_MIB_ID_EXT_PWR_TBL_UPDATE,
+				    (u8 *)&cur_pwr_tbl_idx,
+				    sizeof(cur_pwr_tbl_idx),
+				    priv->if_id);
+		if (ret)
+			bes_devel("%s pwr_tbl failed ret=%d\n", __func__, ret);
+		else
+			bes_devel("%s pwr_tbl_idx=%d\n", __func__, pwr_tbl_idx);
 	}
 	return ret;
 }
@@ -494,7 +498,8 @@ static void txrx_opt_timer_start(struct bes2600_common *hw_priv)
 
 static void txrx_opt_timer_stop(struct bes2600_common *hw_priv)
 {
-	del_timer_sync(&hw_priv->txrx_opt_timer); /* Fixed timer API */
+	/* Non-sync: this runs from power-down callbacks that may hold locks */
+	timer_delete(&hw_priv->txrx_opt_timer);
 }
 
 static int bes2600_set_txrx_opt_default_param(struct bes2600_common *hw_priv)
@@ -521,12 +526,21 @@ static int bes2600_set_txrx_opt_default_param(struct bes2600_common *hw_priv)
 	bes2600_update_pwr_table(hw_priv, priv, cur_pwr_tbl);	// use standard pwr table
 
 	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+		bool sgi = false;
+
+		rcu_read_lock();
 		sta = ieee80211_find_sta(priv->vif, priv->vif->bss_conf.bssid);
-		if (sta->deflink.ht_cap.ht_supported &&
-			((priv->vif->bss_conf.chanreq.oper.width == NL80211_CHAN_WIDTH_20 &&
-			 sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_20) ||
-			(priv->vif->bss_conf.chanreq.oper.width == NL80211_CHAN_WIDTH_40 &&
-			 sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_40))) {
+		if (sta && sta->deflink.ht_cap.ht_supported) {
+			if (priv->vif->bss_conf.chanreq.oper.width == NL80211_CHAN_WIDTH_20 &&
+			    (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_20))
+				sgi = true;
+			if (priv->vif->bss_conf.chanreq.oper.width == NL80211_CHAN_WIDTH_40 &&
+			    (sta->deflink.ht_cap.cap & IEEE80211_HT_CAP_SGI_40))
+				sgi = true;
+		}
+		rcu_read_unlock();
+
+		if (sgi) {
 			bes_devel("open short gi tx\n");
 			bes2600_enable_tx_shortgi(hw_priv, priv, 1);
 		} else {
@@ -573,23 +587,31 @@ int txrx_opt_timer_init(struct bes2600_vif *priv)
 {
 	unsigned long flags;
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
+	bool need_default = false;
 
-	bes_devel("txrx_opt_timer_init:%p", txrx_hw_priv);
+	bes_devel("%s: enter if_id=%d\n", __func__, priv->if_id);
 	if (priv->if_id != 0)
 		return 0;
 
+	/*
+	 * Never call WSM (can sleep / wait_event) under spin_lock_irqsave.
+	 * That hard-locked the tablet immediately after AssocResp.
+	 */
 	spin_lock_irqsave(&txrx_opt_lock, flags);
 	if (!txrx_hw_priv) {
 		txrx_hw_priv = hw_priv;
-		bes_devel("####Timer init hw_priv = %p\n", txrx_hw_priv);
 		timer_setup(&hw_priv->txrx_opt_timer, txrx_opt_timer_callback, 0);
-		bes2600_set_txrx_opt_default_param(hw_priv);
+		need_default = true;
 	}
 	spin_unlock_irqrestore(&txrx_opt_lock, flags);
+
+	if (need_default)
+		bes2600_set_txrx_opt_default_param(hw_priv);
 
 	mod_timer(&hw_priv->txrx_opt_timer, jiffies + msecs_to_jiffies(TXRX_OPT_PEROID));
 	bes2600_pwr_register_en_lp_cb(hw_priv, txrx_opt_timer_stop);
 	bes2600_pwr_register_exit_lp_cb(hw_priv, txrx_opt_timer_start);
+	bes_devel("%s: done\n", __func__);
 	return 0;
 }
 
@@ -598,17 +620,22 @@ void txrx_opt_timer_exit(struct bes2600_vif *priv)
 	unsigned long flags;
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 
+#if !BES2600_TX_RX_OPT
+	return;
+#endif
 	bes_devel("txrx_opt_timer_exit");
 
 	if (priv->if_id == 0) {
-		del_timer_sync(&hw_priv->txrx_opt_timer); /* Fixed timer API */
-		cancel_work_sync(&hw_priv->dynamic_opt_txrx_work);
+		/* Non-sync: unjoin runs on bes2600_wq; cancel_sync deadlocks */
+		timer_delete(&hw_priv->txrx_opt_timer);
+		cancel_work(&hw_priv->dynamic_opt_txrx_work);
 		bes2600_pwr_unregister_en_lp_cb(hw_priv, txrx_opt_timer_stop);
 		bes2600_pwr_unregister_exit_lp_cb(hw_priv, txrx_opt_timer_start);
 		spin_lock_irqsave(&txrx_opt_lock, flags);
 		txrx_hw_priv = NULL;
 		spin_unlock_irqrestore(&txrx_opt_lock, flags);
-		bes2600_set_txrx_opt_unjoin_param(hw_priv);
+		if (!hw_priv->bus_stale)
+			bes2600_set_txrx_opt_unjoin_param(hw_priv);
 	} else if (priv->if_id == 1) {
 		bes2600_txrx_opt_timer_restore();
 	}

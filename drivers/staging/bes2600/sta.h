@@ -99,6 +99,8 @@ void bes2600_dynamic_opt_txrx_work(struct work_struct *work);
 
 int bes2600_setup_mac(struct bes2600_common *hw_priv);
 void bes2600_join_work(struct work_struct *work);
+void bes2600_join_complete_cb(struct bes2600_common *hw_priv,
+			      struct wsm_join_complete *arg);
 void bes2600_join_timeout(struct work_struct *work);
 void bes2600_unjoin_work(struct work_struct *work);
 void bes2600_offchannel_work(struct work_struct *work);

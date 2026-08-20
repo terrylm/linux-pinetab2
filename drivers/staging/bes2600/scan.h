@@ -33,6 +33,7 @@ struct bes2600_scan {
 	struct wsm_ssid ssids[WSM_SCAN_MAX_NUM_OF_SSIDS];
 	int output_power;
 	int n_ssids;
+	bool hold_join_awake;
 	int status;
 	atomic_t in_progress;
 	/* Direct probe requests workaround */

@@ -17,8 +17,12 @@
 #ifndef bes2600_TXRX_OPT_H
 #define bes2600_TXRX_OPT_H
 #include <linux/list.h>
-/* open it for enhance wifi throughput */
-#define BES2600_TX_RX_OPT   1
+/*
+ * Disabled: post-assoc timer every 500ms issues WSM (RTS/EDCA/pwr) and has
+ * correlated with hard LOCKUP + dwmmc latency after associate, before set_key.
+ * Re-enable only after 4-way/link is stable.
+ */
+#define BES2600_TX_RX_OPT   0
 
 /* Threshold for powrt table switch */
 #define BES2600_TX_RSSI_LOW     -65

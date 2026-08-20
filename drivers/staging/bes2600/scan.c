@@ -131,7 +131,7 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 			channel.channelSwitchCount = 0;
 			channel.newChannelNumber = hw_priv->channel->hw_value;
 			wsm_switch_channel(hw_priv, &channel, hw_priv->scan_switch_if_id);
-			bes_info("%s: scan start channel type %d num %d\n", __func__, hw_priv->ht_info.channel_type, channel.newChannelNumber);
+			bes_devel("%s: scan start channel type %d num %d\n", __func__, hw_priv->ht_info.channel_type, channel.newChannelNumber);
 		}
 	}
 
@@ -169,12 +169,12 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	struct bes2600_common *hw_priv = hw->priv;
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	if (!priv) {  // Or whatever indicates bad state
-		bes_info("Scan skipped: Invalid state (priv=%p, channel=%p)\n", priv, hw_priv->channel);
+		bes_devel("Scan skipped: Invalid state (priv=%p, channel=%p)\n", priv, hw_priv->channel);
 		//dump_stack();
 		return -EBUSY;  // Fail scan request
 	}
 
-	bes_info("Scan state: (priv=%p, channel=%p)\n", priv, hw_priv->channel);
+	bes_devel("Scan state: (priv=%p, channel=%p)\n", priv, hw_priv->channel);
 
 	struct cfg80211_scan_request *req = &hw_req->req;
 	struct wsm_template_frame frame = {
@@ -182,8 +182,8 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	};
 	int i;
 
-	bes_info("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__,
-		priv->if_id, req->n_channels, req->n_ssids);
+	bes_devel("%s %d if_id:%d,num_channel:%d, n_ssids=%u.\n", __func__, __LINE__,
+		  priv->if_id, req->n_channels, req->n_ssids);
 /*
 	for (size_t i = 0; i < req->n_channels; i++)
 		bes_info("[SCAN] Channel %zu: %u MHz\n", i, req->channels[i]->center_freq);
@@ -192,16 +192,26 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		return -EOPNOTSUPP;
 
+	/* NM pre-connect scan: n_ssids=1 with empty SSID (wildcard).  We zero
+	 * n_ssids for FW below, but must still hold JOIN awake until auth.
+	 * Sticky: a later full-band passive scan must not clear the hold.
+	 */
+	if (req->n_ssids > 0 || req->n_channels == 1)
+		hw_priv->scan.hold_join_awake = true;
+
 	if (req->n_ssids == 1 && !req->ssids[0].ssid_len)
 		req->n_ssids = 0;
 
-	wiphy_info(hw->wiphy, "%s: Scan request for %d SSIDs.\n",
-		__func__, req->n_ssids);
+	wiphy_dbg(hw->wiphy, "%s: Scan request for %d SSIDs.\n",
+		  __func__, req->n_ssids);
 
 	if (req->n_ssids > hw->wiphy->max_scan_ssids)
 		return -EINVAL;
 
 	bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_SCAN);
+
+	if (hw_priv->scan.hold_join_awake)
+		bes2600_pwr_request_awake(hw_priv, BES_PWR_LOCK_ON_JOIN);
 
 	frame.skb = ieee80211_probereq_get(hw, priv->vif->addr, NULL, 0,
 		req->ie_len);
@@ -241,7 +251,7 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	hw_priv->scan.if_id = priv->if_id;
 	/* TODO:COMBO: Populate BIT4 in scanflags to decide on which MAC
 	 * address the SCAN request will be sent */
-	bes_info("%s %d if_id:%d,num_channel:%d.\n", __func__, __LINE__, priv->if_id, req->n_channels);
+	bes_devel("%s %d if_id:%d,num_channel:%d.\n", __func__, __LINE__, priv->if_id, req->n_channels);
 
 	for (i = 0; i < req->n_ssids; ++i) {
 		struct wsm_ssid *dst =
@@ -372,11 +382,11 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
 #endif
 
     if (hw_priv->scan.status < 0)
-		wiphy_info(priv->hw->wiphy, "[SCAN] Scan failed (%d).\n", hw_priv->scan.status);
+		wiphy_dbg(priv->hw->wiphy, "[SCAN] Scan failed (%d).\n", hw_priv->scan.status);
     else if (hw_priv->scan.req)
-		wiphy_info(priv->hw->wiphy, "[SCAN] Scan completed.\n");
+		wiphy_dbg(priv->hw->wiphy, "[SCAN] Scan completed.\n");
     else
-		wiphy_info(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
+		wiphy_dbg(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
 
     if (priv->join_status == BES2600_JOIN_STATUS_STA) {
 		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
@@ -404,6 +414,10 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
 #ifdef CONFIG_BES2600_TESTMODE
     hw_priv->enable_advance_scan = false;
 #endif
+    /* Refresh JOIN hold through scan completion → auth */
+    if (hw_priv->scan.hold_join_awake)
+        bes2600_pwr_request_awake(hw_priv, BES_PWR_LOCK_ON_JOIN);
+
     wsm_unlock_tx(hw_priv);
     bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_SCAN);
     ieee80211_scan_completed(hw_priv->hw, &info);
@@ -525,7 +539,9 @@ static void bes2600_scan_execute(struct bes2600_common *hw_priv, struct bes2600_
 
     kfree(scan->ch);
 
-    if (WARN_ON(hw_priv->scan.status)) {
+    if (hw_priv->scan.status) {
+	bes_warn("%s: scan_start failed status=%d\n",
+		 __func__, hw_priv->scan.status);
 	hw_priv->scan.curr = hw_priv->scan.end;
 	queue_work(hw_priv->workqueue, &hw_priv->scan.work);
 	return;
@@ -541,9 +557,6 @@ void bes2600_scan_work(struct work_struct *work)
     struct bes2600_vif *priv;
     struct wsm_scan scan = {0};
     bool first_run;
-
-	bes_info("bes2600_scan_work started, num_vifs=%d, scan state=%p\n",
-		 atomic_read(&hw_priv->num_vifs), &hw_priv->scan);
 
     priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, hw_priv->scan.if_id);
     /* Problematic: Potential race if vif is removed, needs locking */
@@ -672,46 +685,43 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 	}
 	spin_unlock(&priv->vif_lock);
 
-	wiphy_info(hw_priv->hw->wiphy, "bes2600_scan_complete_cb status: %u", arg->status);
+	bes_devel("%s: FW scan complete status=%d channels=%d\n",
+		  __func__, arg->status, arg->numChannels);
 
-	bes_info("%s %d: FW scan complete, status=%d, channels completed=%d\n",
-		__func__, __LINE__, arg->status, arg->numChannels);
-
-	if (arg->status == 0 && arg->numChannels == 0) {
-		bes_info("Scan completed successfully but 0 channels processed - possible FW issue?\n");
-	}
-
-	if (arg->status == 0 && arg->numChannels > 0) {  // Success, but check if empty (add BSS count if you have it)
+	if (arg->status == 0 && arg->numChannels > 0)
 		empty_scans = 0;
-	} else {
+	else {
 		empty_scans++;
-		bes_info("%s: Scan complete - empty #%d (status=%d, channels=%d)\n",
-			 __func__, empty_scans, arg->status, arg->numChannels);
 		if (empty_scans > 3) {
-			bes_warn("%s: Too many empties - forcing reset\n", __func__);
+			bes_warn("%s: Too many empty scans - soft reset\n", __func__);
 			struct wsm_reset reset = { .reset_statistics = true, .link_id = -1 };
 			wsm_reset(hw_priv, &reset, -1);
-    		bes_info("Sleeping in: %s\n", __func__);
 			msleep(50);
 			empty_scans = 0;
 		}
 	}
 
-	// NEW: Signal completion to waiters (e.g., reset handler)
 	wake_up(&hw_priv->scan.wq);
 
-	// Restore PS
 	bes2600_set_pm(priv, &hw_priv->scan.saved_ps);
-	bes_devel("[SCAN] Restored PS after scan (to pmMode %d)\n", hw_priv->scan.saved_ps.pmMode);
+	bes_devel("[SCAN] Restored PS after scan (to pmMode %d)\n",
+		  hw_priv->scan.saved_ps.pmMode);
 
-	if(hw_priv->scan.status == -ETIMEDOUT)
+	if (hw_priv->scan.status == -ETIMEDOUT)
 		wiphy_warn(hw_priv->hw->wiphy,
-			"Scan timeout already occurred. Don't cancel work");
-	if ((hw_priv->scan.status != -ETIMEDOUT) &&
-		(cancel_delayed_work_sync(&hw_priv->scan.timeout) > 0)) {
+			   "Scan timeout already occurred. Don't cancel work");
+	if (hw_priv->scan.status != -ETIMEDOUT) {
+		/*
+		 * Never cancel_delayed_work_sync() from BH/RX: it can wait on
+		 * scan.timeout while that work waits for conf_lock/BH → freeze.
+		 * Non-blocking cancel + queue is enough; if work is already
+		 * running it will see status=1 and finish cleanly.
+		 */
+		cancel_delayed_work(&hw_priv->scan.timeout);
 		hw_priv->scan.status = 1;
-		queue_delayed_work(hw_priv->workqueue,
-				&hw_priv->scan.timeout, 0);
+		if (atomic_read(&hw_priv->scan.in_progress))
+			queue_delayed_work(hw_priv->workqueue,
+					   &hw_priv->scan.timeout, 0);
 	}
 }
 
@@ -719,7 +729,6 @@ void bes2600_scan_timeout(struct work_struct *work)
 {
 	struct bes2600_common *hw_priv =
 		container_of(work, struct bes2600_common, scan.timeout.work);
-
 	if (likely(atomic_xchg(&hw_priv->scan.in_progress, 0))) {
 		if (hw_priv->scan.status > 0)
 			hw_priv->scan.status = 0;

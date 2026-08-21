@@ -164,7 +164,11 @@ int wsm_configuration(struct bes2600_common *hw_priv,
 	WSM_PUT16(buf, 5); /* DPD flags */
 	WSM_PUT(buf, arg->dpdData, arg->dpdData_size);
 
+	bes_err("LMAC cfg send station ID %pM if_id=%d (host mac_addr=%pM)\n",
+		arg->dot11StationId, if_id, hw_priv->mac_addr);
 	ret = wsm_cmd_send(hw_priv, buf, arg, 0x0009, WSM_CMD_TIMEOUT, if_id);
+	bes_err("LMAC cfg send ret=%d station ID now %pM\n",
+		ret, arg->dot11StationId);
 
 	wsm_cmd_unlock(hw_priv);
 	return ret;
@@ -187,6 +191,8 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		WSM_GET(buf, arg->dot11StationId, ETH_ALEN);
+		bes_err("LMAC cfg confirm station ID %pM\n",
+			arg->dot11StationId);
 		arg->dot11FrequencyBandsSupported = WSM_GET8(buf);
 		WSM_SKIP(buf, 1);
 		arg->supportedRateMask = WSM_GET32(buf);
@@ -614,6 +620,9 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 		tx_confirm.if_id = 0;
 	}
 
+	bes_pin("P40 tx_confirm pkt=0x%x status=%d bufs=%d\n",
+		tx_confirm.packetID, tx_confirm.status,
+		hw_priv->hw_bufs_used);
 	wsm_release_vif_tx_buffer(hw_priv, tx_confirm.if_id, 1);
 
 	/* Sparse: identify the frame whose confirm never arrived (lmac 3s). */
@@ -679,6 +688,8 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 {
 	u32 status = WSM_GET32(buf);
 
+	bes_pin("P39 join confirm status=%u bufs=%d\n",
+		status, hw_priv->hw_bufs_used);
 	bes_info("%s: 0x040B status=%u%s\n", __func__, status,
 		 status == WSM_STATUS_SUCCESS ? " (OK)" :
 		 status == WSM_STATUS_FAILURE ? " (FAILURE)" : "");
@@ -1104,6 +1115,19 @@ int wsm_epta_cmd(struct bes2600_common *hw_priv, struct wsm_epta_msg *arg)
 	} else if (epta_lock_tx && arg->wlan_duration != 0) {
 		wsm_unlock_tx(hw_priv);
 		epta_lock_tx = false;
+	}
+
+	/* Join uses the same cmd lock; a 6s 0x0029 wait missed the auth window. */
+	{
+		u16 cmd;
+		bool busy;
+
+		spin_lock(&hw_priv->wsm_cmd.lock);
+		cmd = hw_priv->wsm_cmd.cmd;
+		busy = cmd != 0 && cmd != 0xFFFF && !hw_priv->wsm_cmd.done;
+		spin_unlock(&hw_priv->wsm_cmd.lock);
+		if (busy)
+			return 0;
 	}
 
 	wsm_cmd_lock(hw_priv);
@@ -1914,15 +1938,10 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 				ret = 0;
 				break;
 			}
-			if (!ret && cmd == 0x000B && !hw_priv->wsm_cmd.done) {
+			if (!ret && cmd == 0x000B && !hw_priv->wsm_cmd.done)
 				bes_pin("join still pending bufs=%d t=%ld\n",
 					hw_priv->hw_bufs_used,
 					wsm_cmd_runtime);
-				if (wsm_cmd_runtime < 2 * HZ) {
-					atomic_inc(&hw_priv->bh_rx);
-					bes2600_bh_wakeup(hw_priv);
-				}
-			}
 			rx_timestamp = jiffies - hw_priv->rx_timestamp;
 			if (unlikely(rx_timestamp < 0) || wsm_cmd_runtime < 0)
 				rx_timestamp = tmo + 1;
@@ -1946,14 +1965,26 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		spin_unlock(&hw_priv->wsm_cmd.lock);
 
 		/*
-		 * Timed-out WSM with a silent bus: quarantine until RX resumes.
-		 * Prevents enter_lp set_op + mon thrash hard-lock after join -110.
+		 * Join -110 is often RF (range) or FW NAK-by-silence, not a
+		 * dead SDIO.  mark_stale+abort after that has hard-locked the
+		 * tablet.  Free the join slot; leave the bus usable so NM can
+		 * scan/retry.  Other cmds: quarantine only if RX has been
+		 * silent.
 		 */
-		if (cmd == 0x000B ||
-		    time_is_before_jiffies(hw_priv->rx_timestamp + 2 * HZ))
-			bes2600_bh_mark_bus_stale(hw_priv);
-		else
-			bes2600_bh_abort_pending_tx(hw_priv);
+		/*
+		 * Command timeout (join, reset, …) is not proof of a dead
+		 * SDIO.  mark_stale+abort after reset -110 hard-locked this
+		 * boot.  Free the slot; leave the bus for scan/retry.
+		 */
+		bes_err("cmd 0x%04x timeout — not marking stale bufs=%d\n",
+			cmd, hw_priv->hw_bufs_used);
+		timer_delete(&hw_priv->lmac_mon_timer);
+		hw_priv->wsm_tx_pending[0] = 0;
+		if (hw_priv->hw_bufs_used > 0) {
+			wsm_release_tx_buffer(hw_priv, 1);
+			if (hw_priv->hw_bufs_used < 0)
+				hw_priv->hw_bufs_used = 0;
+		}
 
 		/* Race condition check to make sure _confirm is not called
 		 * after exit of _send */
@@ -2641,22 +2672,16 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 	break;
 	case doJoin:
 	{
+		u32 pid = __le32_to_cpu(wsm->packetID);
+
 		/*
-		 * Queue join_work first.  Do not schedule power_async ahead of
-		 * it (request_awake_async can do that): power_async may take
-		 * pwr_mutex and wait for WSM while BH is still in this path,
-		 * deadlocking so join_work never starts.
-		 * join_work itself calls wake_mcu_for_join().
-		 */
-		/*
-		 * Do not wsm_lock_tx here while still in the TX/BH path: locking
-		 * then running join_work (same time as conf_lock TXPOWER work)
-		 * has hard-frozen the tablet mid-doJoin log line.  Join work
-		 * takes the TX lock itself.
+		 * AUTH is already on queue->pending (queue_get moved it).
+		 * Lock TX so this BH loop does not dequeue/SDIO-write another
+		 * frame before join_work runs.  TXPOWER no longer takes
+		 * conf_lock, which was the old mid-doJoin freeze with this
+		 * lock.  Do not call bwifi_change from BH (defer to join_work).
 		 */
 		if (hw_priv->bus_stale || work_busy(&priv->join_work)) {
-			u32 pid = __le32_to_cpu(wsm->packetID);
-
 			bes_warn("[WSM] doJoin refuse stale=%d busy=%d packet=0x%x\n",
 				 hw_priv->bus_stale,
 				 work_busy(&priv->join_work), pid);
@@ -2669,22 +2694,17 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			break;
 		}
 		bes_pin("doJoin if_id=%d packet=0x%x join_status=%d tx_lock=%d\n",
-			priv->if_id, __le32_to_cpu(wsm->packetID),
-			priv->join_status, atomic_read(&hw_priv->tx_lock));
-		bes_info("[WSM] doJoin if_id=%d packet=0x%x join_status=%d "
-			 "tx_lock=%d\n",
-			 priv->if_id, __le32_to_cpu(wsm->packetID),
-			 priv->join_status, atomic_read(&hw_priv->tx_lock));
-		hw_priv->pending_frame_id = __le32_to_cpu(wsm->packetID);
-
-		if (hw_priv->channel &&
-		    hw_priv->channel->band != NL80211_BAND_2GHZ)
-			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING_5G);
-		else
-			bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING);
-
-		if (queue_work(hw_priv->workqueue, &priv->join_work) <= 0)
+			priv->if_id, pid, priv->join_status,
+			atomic_read(&hw_priv->tx_lock));
+		wsm_lock_tx_async(hw_priv);
+		hw_priv->pending_frame_id = pid;
+		if (queue_work(hw_priv->workqueue, &priv->join_work) <= 0) {
 			bes_err("[WSM] join_work already queued/running\n");
+			wsm_unlock_tx(hw_priv);
+		} else {
+			bes_pin("doJoin queued join_work tx_lock=%d\n",
+				atomic_read(&hw_priv->tx_lock));
+		}
 		handled = true;
 	}
 	break;

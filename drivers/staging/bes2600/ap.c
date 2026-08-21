@@ -1156,9 +1156,11 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 
 	up(&hw_priv->conf_lock);
 	if (changed & BSS_CHANGED_ASSOC && cfg->assoc) {
-		/* After unlock: keep awake for DHCP/IP; re-arm short heartbeat */
 		bes2600_pwr_set_busy_event_async(hw_priv, BES_PWR_LOCK_ON_GET_IP);
-		queue_delayed_work(hw_priv->workqueue, &priv->join_timeout, 5 * HZ);
+		/* Filter was deferred through join/auth.  Apply now so EAPOL
+		 * is not stuck behind set_key.
+		 */
+		queue_work(hw_priv->workqueue, &priv->update_filtering_work);
 		bes_info("%s: ASSOC conf_lock released (aid=%d) — await set_key "
 			 "(tx_lock=%d bufs=%d)\n",
 			 __func__, priv->bss_params.aid,

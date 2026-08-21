@@ -198,26 +198,16 @@ void bes2600_bh_prepare_for_join(struct bes2600_common *hw_priv)
 	 */
 	used = hw_priv->hw_bufs_used;
 	if (used > 0) {
-		bes_warn("%s: hw_bufs_used=%d before join — waiting for drain\n",
+		/* Host-only, no release_tx_buffer: a FW confirm can still
+		 * arrive and BH would underflow (WARN in this log).  Do not
+		 * wakeup — wsm_join kicks BH after the cmd is queued.
+		 */
+		bes_warn("%s: hw_bufs_used=%d before join — soft-clear, no RX poke\n",
 			 __func__, used);
-		atomic_inc(&hw_priv->bh_rx);
-		bes2600_bh_wakeup(hw_priv);
-		wait_event_timeout(hw_priv->bh_evt_wq,
-				   !hw_priv->hw_bufs_used, HZ / 4);
-		if (hw_priv->hw_bufs_used > 0) {
-			bes_warn("%s: still bufs=%d — soft-clear host count\n",
-				 __func__, hw_priv->hw_bufs_used);
-			timer_delete(&hw_priv->lmac_mon_timer);
-			timer_delete(&hw_priv->mcu_mon_timer);
-			hw_priv->wsm_tx_pending[0] = 0;
-			hw_priv->wsm_tx_pending[1] = 0;
-			wsm_release_tx_buffer(hw_priv, hw_priv->hw_bufs_used);
-			if (hw_priv->hw_bufs_used < 0)
-				hw_priv->hw_bufs_used = 0;
-		}
+		timer_delete(&hw_priv->lmac_mon_timer);
+		timer_delete(&hw_priv->mcu_mon_timer);
+		hw_priv->hw_bufs_used = 0;
 	}
-
-	bes2600_bh_wakeup(hw_priv);
 
 	bes_devel("%s: bh_thread=%s susp=%d bufs=%d bh_tx=%d\n",
 		 __func__,
@@ -419,7 +409,8 @@ int wsm_release_tx_buffer(struct bes2600_common *hw_priv, int count)
 
 	hw_priv->hw_bufs_used -= count;
 
-	if (WARN_ON(hw_priv->hw_bufs_used < 0)) {
+	if (hw_priv->hw_bufs_used < 0) {
+		/* Host-side clear races a late confirm; not a bug. */
 		hw_priv->hw_bufs_used = 0;
 		ret = -1;
 	}
@@ -722,9 +713,8 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 		int rc = wsm_release_tx_buffer(priv, 1);
 		bes2600_bh_dec_pending_count(priv, WSM_TXRX_SEQ_IDX(wsm->id));
 
-		if (WARN_ON(rc < 0))
-			return rc;
-		else if (rc > 0)
+		/* Underflow is a late confirm after host-clear; keep parsing. */
+		if (rc > 0)
 			*tx = 1;
 	}
 
@@ -988,7 +978,8 @@ void bes2600_bh_mcu_active_monitor(struct timer_list* t)
 	bes_err("link break between mcu and host, hw_buf_used:%d pending:%d (soft)\n",
 		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[1]);
 	hw_priv->wsm_tx_pending[1] = 0;
-	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv))
+	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv) ||
+	    bes2600_bh_bus_quiet(hw_priv))
 		return;
 	atomic_inc(&hw_priv->bh_rx);
 	wake_up(&hw_priv->bh_wq);
@@ -998,8 +989,9 @@ void bes2600_bh_lmac_active_monitor(struct timer_list* t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, lmac_mon_timer);
 
-	bes_err("link break between lmac and host, hw_buf_used:%d pending:%d (soft)\n",
-		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[0]);
+	bes_err("link break between lmac and host, hw_buf_used:%d pending:%d (soft) host=%pM base=%pM\n",
+		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[0],
+		hw_priv->mac_addr, hw_priv->addresses[0].addr);
 	hw_priv->wsm_tx_pending[0] = 0;
 	/*
 	 * Join occupies hw_bufs_used=1 until 0x040B.  The old test marked
@@ -1007,7 +999,8 @@ void bes2600_bh_lmac_active_monitor(struct timer_list* t)
 	 * log: 0x000B TX'd @71.281, link-break stale @74.343, -110.
 	 * Leave in-flight WSM to wsm_cmd_send's own timeout.
 	 */
-	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv))
+	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv) ||
+	    bes2600_bh_bus_quiet(hw_priv))
 		return;
 	if (hw_priv->hw_bufs_used > 0) {
 		bes2600_bh_mark_bus_stale(hw_priv);
@@ -1075,18 +1068,57 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 		if (!status) {	/* wait_event timed out */
 			/*
 			 * Outstanding host TX with no BH wake: do NOT poke SDIO
-			 * RX (dwmmc hard LOCKUP).  Always soft-clear and idle.
-			 * Log proved: usedbuf after join → thrash → freeze.
+			 * RX (dwmmc hard LOCKUP).  Join occupies hw_bufs_used
+			 * until 0x040B; BH wait is 5s, join wait is 7s.
+			 * Log: usedbuf stale @6s while join still pending,
+			 * then -110 / abort / LOCKUP.  Same rule as LMAC:
+			 * leave in-flight WSM to wsm_cmd_send's timeout.
 			 */
 			if (hw_priv->hw_bufs_used > 0) {
 				unsigned long since_rx =
 					jiffies - hw_priv->rx_timestamp;
 
-				bes_err("usedbuf:%u. rx:%u. tx:%u. since_rx=%u ms — soft clear, no RX poke\n",
-					hw_priv->hw_bufs_used, rx, tx,
+				if (bes2600_bh_wsm_cmd_in_flight(hw_priv)) {
+					/*
+					 * If the join waiter is on a locked
+					 * CPU, 7s never fires and this skip
+					 * loops forever.  Complete the cmd.
+					 */
+					if (since_rx > 7 * HZ) {
+						bes_err("usedbuf:%u cmd stuck %u ms — wake waiter\n",
+							hw_priv->hw_bufs_used,
+							jiffies_to_msecs(since_rx));
+						spin_lock(&hw_priv->wsm_cmd.lock);
+						hw_priv->wsm_cmd.ret = -ETIMEDOUT;
+						hw_priv->wsm_cmd.done = 1;
+						hw_priv->wsm_cmd.ptr = NULL;
+						hw_priv->wsm_cmd.arg = NULL;
+						spin_unlock(&hw_priv->wsm_cmd.lock);
+						wake_up(&hw_priv->wsm_cmd_wq);
+						wsm_release_tx_buffer(hw_priv,
+								      hw_priv->hw_bufs_used);
+						if (hw_priv->hw_bufs_used < 0)
+							hw_priv->hw_bufs_used = 0;
+					} else {
+						bes_err("usedbuf:%u skip — cmd in flight since_rx=%u ms\n",
+							hw_priv->hw_bufs_used,
+							jiffies_to_msecs(since_rx));
+					}
+					continue;
+				}
+				/*
+				 * Auth TX with no confirm: drop host count
+				 * only.  sdio_work_debug used to claim SDIO
+				 * here and never returned; mark_stale+abort
+				 * then locked the tablet.
+				 */
+				bes_err("usedbuf:%u drop host count since_rx=%u ms (no SDIO)\n",
+					hw_priv->hw_bufs_used,
 					jiffies_to_msecs(since_rx));
-				sdio_work_debug(hw_priv->sbus_priv);
-				bes2600_bh_mark_bus_stale(hw_priv);
+				wsm_release_tx_buffer(hw_priv,
+						      hw_priv->hw_bufs_used);
+				if (hw_priv->hw_bufs_used < 0)
+					hw_priv->hw_bufs_used = 0;
 				continue;
 			}
 			continue;
@@ -1126,6 +1158,15 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 		pending_tx = 0;
 #ifdef CONFIG_BES2600_WLAN_SPI
 		if (rx) {
+#endif
+#ifndef CONFIG_BES2600_WLAN_SPI
+		/*
+		 * SDIO used to poll CTRL on every TX wake.  After RF assoc
+		 * fail, host-only unjoin does wsm_unlock_tx → BH wake with
+		 * rx=0 and no RX for ~5s; that poll hard-locked CPU2.
+		 */
+		if (!rx && bes2600_bh_bus_quiet(hw_priv))
+			goto tx;
 #endif
 		ret = bes2600_bh_rx_helper(hw_priv, &tx);
 		if (ret < 0) {

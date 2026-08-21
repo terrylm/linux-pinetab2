@@ -192,6 +192,15 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		return -EOPNOTSUPP;
 
+	/* NM scan during 4-way piled 0x0006/0x0007 on a quiet bus after
+	 * assoc (CONFIRM MISMATCH, scan_work WARN, lockup).
+	 */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    !priv->cipherType && priv->vif && priv->vif->cfg.assoc) {
+		bes_info("%s: skip scan, waiting for set_key\n", __func__);
+		return -EBUSY;
+	}
+
 	/* NM pre-connect scan: n_ssids=1 with empty SSID (wildcard).  We zero
 	 * n_ssids for FW below, but must still hold JOIN awake until auth.
 	 * Sticky: a later full-band passive scan must not clear the hold.

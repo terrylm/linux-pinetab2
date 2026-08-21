@@ -747,14 +747,27 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		return;
 	}
 	if (priv->join_status == BES2600_JOIN_STATUS_STA && !priv->cipherType) {
+		static struct wsm_beacon_filter_control bf_disabled = {
+			.enabled = __cpu_to_le32(0),
+			.bcn_count = __cpu_to_le32(1),
+		};
+
+		if (!(priv->vif && priv->vif->cfg.assoc)) {
+			bes_info("%s: defer filter WSM until associated\n",
+				 __func__);
+			return;
+		}
 		/*
-		 * Do not send even the beacon-filter MIB here.  Log showed:
-		 * join 0x040B OK, then this MIB + auth both outstanding
-		 * (bufs=2), no further RX, join_work blocked 6s, usedbuf
-		 * stale, hard LOCKUP.  NEED_DTIM is off; filter waits for
-		 * set_key.
+		 * Full update_filtering is 5 MIBs.  After assoc that ran
+		 * then ~20s silence and hard LOCKUP, no EAPOL, first
+		 * beacon 30s late.  Only disable beacon filter so TIM
+		 * can indicate EAPOL.
 		 */
-		bes_info("%s: defer filter WSM until set_key\n", __func__);
+		bes_info("%s: pre-key beacon filter off only\n", __func__);
+		if (wsm_beacon_filter_control(hw_priv, &bf_disabled,
+					      priv->if_id))
+			bes_warn("%s: beacon filter disable failed\n",
+				 __func__);
 		return;
 	}
 	bes_info("%s: applying filter update\n", __func__);
@@ -2186,11 +2199,17 @@ void bes2600_join_work(struct work_struct *work)
 		priv->if_id, hw_priv->pending_frame_id);
 	bes_info("%s: start if_id=%d pending=0x%x\n",
 		 __func__, priv->if_id, hw_priv->pending_frame_id);
+	/*
+	 * TX already locked by doJoin.  Do not lock again (would leak a
+	 * hold when join_send_cmd unlocks once).
+	 * Do not call bwifi_change here: 0x0029 (EPTA) takes wsm_cmd_sema
+	 * and blocked join ~6s (auth timed out, then 0x000B).
+	 */
 	if (hw_priv->bus_stale) {
 		bes_warn("%s: refuse — bus_stale\n", __func__);
+		wsm_unlock_tx(hw_priv);
 		return;
 	}
-	wsm_lock_tx_async(hw_priv);
 	ret = bes2600_join_send_cmd(priv);
 	if (ret) {
 		bes_err("bes2600_join_send_cmd FAILED (ret=%d) - aborting join\n", ret);
@@ -2344,14 +2363,11 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 		return 0;
 	}
 
+	bes_pin("P08 before wsm_unlock_tx\n");
 	wsm_unlock_tx(hw_priv);
-	/*
-	 * Auth was requeued in join_finish_success — kick BH and return.
-	 * Do not issue any WSM here (including beacon-filter disable).
-	 * That MIB + auth left bufs=2, join_work blocked ~6s, no RX,
-	 * then usedbuf stale + hard LOCKUP.
-	 */
+	bes_pin("P09 after wsm_unlock_tx, wakeup BH\n");
 	bes2600_bh_wakeup(hw_priv);
+	bes_pin("P10 after bh_wakeup\n");
 	bes_info("%s: join OK — auth requeued (if_id=%d)\n",
 		 __func__, priv->if_id);
 	return 0;
@@ -2449,18 +2465,13 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 		 hw_priv->bes_power.mcu_slept,
 		 jiffies_to_msecs(jiffies - hw_priv->rx_timestamp));
 
-	/*
-	 * When the bus has been quiet for seconds, join is almost always
-	 * TX'd with no 0x040B (then mon/sleep thrash locks the tablet).
-	 * Refuse join so NM can scan first and re-sync; success path had
-	 * last_rx ~0.5s, failure path ~4s+.
+	/* Idle (no host RX for seconds) is normal before connect; GPIO-wake
+	 * and try join.  Only refuse if the bus was already declared dead.
 	 */
-	if (hw_priv->bus_stale ||
-	    time_is_before_jiffies(hw_priv->rx_timestamp + 3 * HZ)) {
-		bes_warn("%s: refuse join — bus quiet %u ms stale=%d (scan first)\n",
+	if (hw_priv->bus_stale) {
+		bes_warn("%s: refuse join — bus_stale last_rx=%u ms\n",
 			 __func__,
-			 jiffies_to_msecs(jiffies - hw_priv->rx_timestamp),
-			 hw_priv->bus_stale);
+			 jiffies_to_msecs(jiffies - hw_priv->rx_timestamp));
 		ret = -EAGAIN;
 		goto fail;
 	}
@@ -2492,8 +2503,10 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 	hw_priv->ba_cnt_rx = hw_priv->ba_acc_rx = 0;
 	spin_unlock_bh(&hw_priv->ba_lock);
 
-	bes_pin("Calling wsm_join() ch%u band=%u\n",
-		join.channelNumber, join.band);
+	bes_pin("Calling wsm_join() ch%u band=%u vif=%pM host=%pM base=%pM\n",
+		join.channelNumber, join.band,
+		priv->vif->addr, hw_priv->mac_addr,
+		hw_priv->addresses[0].addr);
 	bes_info("Calling wsm_join() ch%u (%u MHz) band=%u BSSID %pM probe=%u ssid_len=%u flags=0x%x\n",
 		 join.channelNumber, bss->channel->center_freq, join.band,
 		 join.bssid, join.probeForJoin, join.ssidLength, join.flags);
@@ -2574,10 +2587,8 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int ret;
 
-	/* Auth frame only — filtering runs after TX unlock in post_setup.
-	 * update_filtering under TX lock timed out (~6s) and aborted join
-	 * after a successful 0x000B, so auth never got on the air.
-	 */
+	bes_pin("P01 join_finish_success enter pending=0x%x bufs=%d\n",
+		hw_priv->pending_frame_id, hw_priv->hw_bufs_used);
 #ifdef CONFIG_BES2600_TESTMODE
 	ret = bes2600_queue_requeue(hw_priv,
 		&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
@@ -2587,31 +2598,36 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 		&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
 		hw_priv->pending_frame_id, true);
 #endif
+	bes_pin("P02 after requeue ret=%d\n", ret);
 	if (ret) {
 		bes_err("%s: auth requeue FAILED ret=%d pending=0x%x queueId=%u\n",
 			__func__, ret, hw_priv->pending_frame_id,
 			bes2600_queue_get_queue_id(hw_priv->pending_frame_id));
 		return ret;
 	}
-	/* packetID 0 is valid (queue 0, item 0, all generations 0) */
 	bes_info("%s: auth frame requeued (pending=0x%x)\n",
 		 __func__, hw_priv->pending_frame_id);
 
+	bes_pin("P03 set join_status=STA\n");
 	priv->join_status = BES2600_JOIN_STATUS_STA;
 	atomic_set(&priv->connect_in_process, 1);
-	/* Programmed after TX unlock — see join_send_cmd / join_complete_work */
+	bes_pin("P04 before bwifi_change\n");
+	if (hw_priv->channel &&
+	    hw_priv->channel->band != NL80211_BAND_2GHZ)
+		bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING_5G);
+	else
+		bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING);
+	bes_pin("P05 after bwifi_change\n");
 	priv->disable_beacon_filter = true;
 
-	/*
-	 * Join itself succeeded; keep a watchdog so auth/assoc failure
-	 * does not leave join_status=STA forever (blocks scan + rejoin).
-	 */
+	bes_pin("P06 queue join_timeout 5s\n");
 	cancel_delayed_work(&priv->join_timeout);
 	if (!queue_delayed_work(hw_priv->workqueue, &priv->join_timeout, 5 * HZ))
 		bes_warn("%s: could not queue auth/assoc watchdog\n", __func__);
 	else
 		bes_info("%s: auth/assoc watchdog 5s\n", __func__);
 
+	bes_pin("P07 join_finish_success return 0\n");
 	return 0;
 }
 
@@ -2690,21 +2706,11 @@ void bes2600_join_timeout(struct work_struct *work)
 		container_of(work, struct bes2600_vif, join_timeout.work);
 	struct bes2600_common *hw_priv = priv->hw_priv;
 
-	/* mac80211 fully associated: heartbeat until set_key */
-	if (priv->vif && priv->vif->cfg.assoc) {
-		if (!priv->cipherType) {
-			bes_info("%s: still assoc, no set_key (tx_lock=%d bufs=%d "
-				 "bus_stale=%d)\n",
-				 __func__, atomic_read(&hw_priv->tx_lock),
-				 hw_priv->hw_bufs_used, hw_priv->bus_stale);
-			queue_delayed_work(hw_priv->workqueue, &priv->join_timeout,
-					   5 * HZ);
-		} else {
-			bes_info("%s: associated, keys present — stop heartbeat\n",
-				 __func__);
-		}
+	/* Associated: do not re-arm.  The 5s heartbeat looked like a hang
+	 * loop while we waited for EAPOL that never arrived.
+	 */
+	if (priv->vif && priv->vif->cfg.assoc)
 		return;
-	}
 
 	/*
 	 * 0x040B succeeded but mac80211 is not associated.  Auth in the
@@ -2719,7 +2725,7 @@ void bes2600_join_timeout(struct work_struct *work)
 			 __func__);
 		hw_priv->join_pending_if_id = -1;
 		atomic_set(&priv->connect_in_process, 0);
-		bes2600_pwr_release_awake(hw_priv, BES_PWR_LOCK_ON_JOIN);
+		/* Keep JOIN awake until unjoin's wsm_reset finishes */
 		wsm_lock_tx(hw_priv);
 		bes2600_unjoin_work(&priv->unjoin_work);
 		return;
@@ -2729,7 +2735,6 @@ void bes2600_join_timeout(struct work_struct *work)
 		__func__, priv->if_id, priv->join_status);
 	hw_priv->join_pending_if_id = -1;
 	atomic_set(&priv->connect_in_process, 0);
-	bes2600_pwr_release_awake(hw_priv, BES_PWR_LOCK_ON_JOIN);
 	wsm_lock_tx(hw_priv);
 	if (queue_work(hw_priv->workqueue, &priv->unjoin_work) <= 0)
 		wsm_unlock_tx(hw_priv);
@@ -2783,47 +2788,29 @@ void bes2600_unjoin_work(struct work_struct *work)
 		txrx_opt_timer_exit(priv);
 #endif
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
-		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
 		bes2600_pwr_clear_ap_lp_bad_mark(hw_priv);
 		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
 		atomic_set(&priv->connect_in_process, 0);
 		priv->delayed_unjoin = false;
 
 		/*
-		 * If the bus went silent after join (auth TX, no confirm,
-		 * no RX for seconds), do not wait on flush or issue unjoin
-		 * WSM.  That path waited keep_alive ~6s and hard-locked
-		 * so poweroff failed.  Host-only teardown; a later scan
-		 * can re-sync if the bus wakes.
+		 * After join, a silent 5s (no auth confirm, or RF miss then
+		 * idle) is not a reason to poke SDIO.  wsm_reset on that
+		 * pipe waited 7s, then mark_stale+abort locked the tablet.
+		 * Host-only unless the bus has actually been RX'ing.
 		 */
-		if (bes2600_bh_bus_quiet(hw_priv)) {
-			bes_warn("%s: bus quiet — host-only unjoin (no WSM)\n",
-				 __func__);
-			bes2600_bh_mark_bus_stale(hw_priv);
+		if (hw_priv->bus_stale || bes2600_bh_bus_quiet(hw_priv)) {
+			bes_err("%s: host-only unjoin (stale=%d no WSM)\n",
+				__func__, hw_priv->bus_stale);
+			/* Clear TX before unlock_tx wakes BH */
+			bes2600_bh_tx_fail_work(&hw_priv->tx_fail_work);
 		} else {
-			wsm_flush_tx(hw_priv);
-			if (wsm_keep_alive_period(hw_priv, 0, priv->if_id))
-				bes_warn("%s: keep_alive clear failed\n",
-					 __func__);
+			bes_err("%s: wsm_reset after join (bus live)\n",
+				__func__);
 			if (wsm_reset(hw_priv, &reset, priv->if_id))
 				bes_warn("%s: wsm_reset failed\n", __func__);
-			if (wsm_set_output_power(hw_priv,
-						 hw_priv->output_power * 10,
-						 priv->if_id))
-				bes_warn("%s: set_output_power failed\n",
-					 __func__);
-			if (bes2600_setup_mac_pvif(priv))
-				bes_warn("%s: setup_mac_pvif failed\n",
-					 __func__);
-			if (wsm_set_block_ack_policy(hw_priv, 0, 0,
-						     priv->if_id))
-				bes_warn("%s: clear block_ack failed\n",
-					 __func__);
-			priv->disable_beacon_filter = false;
-			if (bes2600_update_filtering(priv))
-				bes_warn("%s: update_filtering failed\n",
-					 __func__);
 		}
+		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
 		priv->join_dtim_period = 0;
 		priv->cipherType = 0;
 		priv->disable_beacon_filter = false;

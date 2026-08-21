@@ -374,21 +374,11 @@ static void bes2600_get_base_mac(struct bes2600_common *hw_priv)
 {
 	int ret;
 
-	/* 1. Try proper hardware MAC read from firmware (currently broken) */
-	/* 
-	 * ret = wsm_get_station_id(hw_priv, hw_priv->addresses[0].addr);
-	 * if (ret == 0 && is_valid_ether_addr(hw_priv->addresses[0].addr)) {
-	 *     bes_info("Read permanent MAC from firmware: %pM\n",
-	 *              hw_priv->addresses[0].addr);
-	 *     goto derive;
-	 * }
-	 *
-	 * Note: This command consistently times out (-110) on current BES2600
-	 * firmware (Dec 2023). Left here for future reference if a newer
-	 * firmware fixes it.
+	/* wsm_get_station_id (MIB 0x0005) times out at probe (-110, ~6s).
+	 * Do not call it.  Address bookkeeping is a later cleanup.
 	 */
 
-	/* 2. Primary method: Generate stable MAC from RK3566 serial number */
+	/* Generate stable MAC from RK3566 serial number */
 	ret = bes2600_generate_mac_from_serial(hw_priv);
 	if (ret == 0)
 		goto derive;

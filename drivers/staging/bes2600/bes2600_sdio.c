@@ -556,8 +556,11 @@ static int bes2600_sdio_set_block_size(struct sbus_priv *self, size_t size)
 
 void sdio_work_debug(struct sbus_priv *self)
 {
-	u8 cfg;
-	int ret;
+	/*
+	 * Print-only.  Claiming the SDIO host and reading CTRL after a
+	 * silent pipe has hard-locked CPU2 (log: four lines, never
+	 * "realtime ctrl=", then LOCKUP).  Do not poke the bus here.
+	 */
 	bes_err("%s now=%u last irq timestamp=%u\n", __func__,
 			(u32)jiffies_to_msecs(jiffies), jiffies_to_msecs(self->last_irq_timestamp));
 	bes_err("%s rx ctrl: total=%u continuous=%u xfer=%u remain=%u zero=%u last=%x(%x) next=%d\n", __func__,
@@ -569,15 +572,6 @@ void sdio_work_debug(struct sbus_priv *self)
 	bes_err("%s tx: last timestamp=%u, total=%u,%u, proc=%u\n", __func__,
 			(u32)jiffies_to_msecs(self->last_tx_data_timestamp),
 			self->tx_data_cnt, self->tx_xfer_cnt, self->tx_proc_cnt);
-	mutex_lock(&self->sbus_mutex);
-	sdio_claim_host(self->func);
-	bes2600_sdio_reg_read(self, BES_TX_CTRL_REG_ID + 1, &cfg, 1);
-	bes_err("realtime ctrl=%x\n", cfg);
-	cfg = BES_HOST_INT | BES_SUBSYSTEM_WIFI_DEBUG;
-	sdio_writeb(self->func, 0, BES_HOST_INT_REG_ID + 1, &ret);
-	sdio_writeb(self->func, cfg, BES_HOST_INT_REG_ID, &ret);
-	sdio_release_host(self->func);
-	mutex_unlock(&self->sbus_mutex);
 }
 
 

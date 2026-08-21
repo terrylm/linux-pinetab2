@@ -661,12 +661,14 @@ bes2600_tx_h_action(struct bes2600_vif *priv,
 	struct ieee80211_mgmt *mgmt =
 		(struct ieee80211_mgmt *)t->hdr;
 
+	/* After keys, FW owns BA.  Before set_key the AP retries ADDBA
+	 * every ~2s; dropping it left no BA and no EAPOL.
+	 */
 	if (ieee80211_is_action(t->hdr->frame_control) &&
-			mgmt->u.action.category == WLAN_CATEGORY_BACK)
-		/* Drop: FW handles BA.  Do not log every AP retry. */
+	    mgmt->u.action.category == WLAN_CATEGORY_BACK &&
+	    priv->cipherType)
 		return 1;
-	else
-		return 0;
+	return 0;
 }
 
 /* Add WSM header */
@@ -997,8 +999,9 @@ void bes2600_tx(struct ieee80211_hw *dev,
 
 	/* Before any power/SDIO: prove we got the first auth from mac80211 */
 	if (ieee80211_is_auth(frame->frame_control))
-		bes_pin("TX auth enter join_status=%d tx_lock=%d\n",
-			priv->join_status, atomic_read(&hw_priv->tx_lock));
+		bes_pin("TX auth enter join_status=%d tx_lock=%d sa=%pM vif=%pM host=%pM\n",
+			priv->join_status, atomic_read(&hw_priv->tx_lock),
+			frame->addr2, priv->vif->addr, hw_priv->mac_addr);
 
 	/* Earliest pre-key breadcrumb (before power/async can hang) */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA && !priv->cipherType) {
@@ -1749,8 +1752,14 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 		if (priv->disable_beacon_filter)
 			bes_info("%s: first join-bssid beacon (DTIM path)\n",
 				 __func__);
-		priv->disable_beacon_filter = false;
-		queue_work(hw_priv->workqueue, &priv->update_filtering_work);
+		/* Keep beacon filter off until set_key so unicast EAPOL is
+		 * not stuck in FW PS/beacon-filter buffering.
+		 */
+		if (priv->cipherType)
+			priv->disable_beacon_filter = false;
+		if (priv->cipherType)
+			queue_work(hw_priv->workqueue,
+				   &priv->update_filtering_work);
 		ies = ((struct ieee80211_mgmt *)
 			  (skb->data))->u.beacon.variable;
 		ies_len = skb->len - (ies - (u8 *)(skb->data));
@@ -1911,20 +1920,12 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		if (ieee80211_is_action(frame->frame_control) &&
 		    skb->len >= hdrlen + 1)
 			cat = *((u8 *)frame + hdrlen);
-		bes_info("[RX] pre-key fc=0x%04x len=%d eth=0x%04x cat=%u st=%u\n",
-			 fc, skb->len, eth, cat, arg->status);
-
-		/*
-		 * TX_AMPDU_SETUP_IN_HW: FW owns BlockAck.  Passing ADDBA
-		 * to mac80211 makes it generate responses that tx_h_action
-		 * then drops — AP retries every ~2s, no BA, often no EAPOL.
-		 */
-		if (ieee80211_is_action(frame->frame_control) &&
-		    cat == WLAN_CATEGORY_BACK) {
-			consume_skb(skb);
-			*skb_p = NULL;
-			return;
-		}
+		bes_info("[RX] pre-key fc=0x%04x len=%d eth=0x%04x cat=%u st=%u "
+			 "da=%pM sa=%pM vif=%pM host=%pM a1match=%d\n",
+			 fc, skb->len, eth, cat, arg->status,
+			 frame->addr1, frame->addr2, priv->vif->addr,
+			 hw_priv->mac_addr,
+			 !!(arg->flags & WSM_RX_STATUS_ADDRESS1));
 	}
 
 	if (bes2600_rx_handle_decryption(priv, hdr, arg, skb, frame, hdrlen))

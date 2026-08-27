@@ -620,18 +620,21 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 		tx_confirm.if_id = 0;
 	}
 
-	bes_pin("P40 tx_confirm pkt=0x%x status=%d bufs=%d\n",
-		tx_confirm.packetID, tx_confirm.status,
-		hw_priv->hw_bufs_used);
+	if (tx_confirm.status)
+		bes_pin("P40 tx_confirm pkt=0x%x status=%d bufs=%d\n",
+			tx_confirm.packetID, tx_confirm.status,
+			hw_priv->hw_bufs_used);
 	wsm_release_vif_tx_buffer(hw_priv, tx_confirm.if_id, 1);
 
-	/* Sparse: identify the frame whose confirm never arrived (lmac 3s). */
-	bes_info("wsm_tx_confirm: pkt=0x%x status=%d%s flags=0x%x bufs=%d\n",
-		 tx_confirm.packetID, tx_confirm.status,
-		 tx_confirm.status == WSM_STATUS_RETRY_EXCEEDED ?
-			 " (RETRY_EXCEEDED, no ACK)" :
-		 tx_confirm.status == WSM_STATUS_SUCCESS ? " (OK)" : "",
-		 tx_confirm.flags, hw_priv->hw_bufs_used);
+	if (tx_confirm.status)
+		bes_info("wsm_tx_confirm: pkt=0x%x status=%d%s flags=0x%x bufs=%d\n",
+			 tx_confirm.packetID, tx_confirm.status,
+			 tx_confirm.status == WSM_STATUS_RETRY_EXCEEDED ?
+				 " (RETRY_EXCEEDED, no ACK)" : "",
+			 tx_confirm.flags, hw_priv->hw_bufs_used);
+	else
+		bes_devel("wsm_tx_confirm: pkt=0x%x OK bufs=%d\n",
+			  tx_confirm.packetID, hw_priv->hw_bufs_used);
 
 	if (hw_priv->wsm_cbc.tx_confirm)
 		hw_priv->wsm_cbc.tx_confirm(hw_priv, &tx_confirm);
@@ -2911,9 +2914,12 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 			int tlock = atomic_read(&hw_priv->tx_lock);
 
 			/*
-			 * Normal data must wait for tx_lock.  Pre-key STA
-			 * frames (EAPOL) must not: log showed enter pre-key
-			 * with tx_lock=1 and never set_key.
+			 * Normal data must wait for tx_lock.  After
+			 * mac80211 assoc, EAPOL may bypass a stuck lock.
+			 * Do NOT treat join_status=STA alone as pre-key:
+			 * that TX'd auth during join_finish / bwifi_change
+			 * (before P08 unlock).  Join OK, first auth
+			 * confirm, then no RX and no further confirms.
 			 */
 			if (tlock) {
 				bool allow_prekey = false;
@@ -2924,7 +2930,8 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 						__cw12xx_hwpriv_to_vifpriv(hw_priv, vi);
 					if (vp &&
 					    vp->join_status == BES2600_JOIN_STATUS_STA &&
-					    !vp->cipherType) {
+					    !vp->cipherType &&
+					    vp->vif && vp->vif->cfg.assoc) {
 						allow_prekey = true;
 						break;
 					}

@@ -661,13 +661,18 @@ bes2600_tx_h_action(struct bes2600_vif *priv,
 	struct ieee80211_mgmt *mgmt =
 		(struct ieee80211_mgmt *)t->hdr;
 
-	/* After keys, FW owns BA.  Before set_key the AP retries ADDBA
-	 * every ~2s; dropping it left no BA and no EAPOL.
+	/*
+	 * Firmware owns BlockAck (ampdu_action comment: host ADDBA-Resp
+	 * is discarded; FW generates its own).  Allowing host ADDBA
+	 * before wsm_set_block_ack_policy made the AP aggregate,
+	 * including EAPOL, while LMAC BA was still off — no P50/P51.
 	 */
 	if (ieee80211_is_action(t->hdr->frame_control) &&
-	    mgmt->u.action.category == WLAN_CATEGORY_BACK &&
-	    priv->cipherType)
+	    mgmt->u.action.category == WLAN_CATEGORY_BACK) {
+		bes_pin("P59 TX ADDBA dropped (FW owns BA, cipher=%u)\n",
+			priv->cipherType);
 		return 1;
+	}
 	return 0;
 }
 
@@ -1012,7 +1017,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 		if (ieee80211_is_data(frame->frame_control) &&
 		    hdrlen + 8 <= skb->len)
 			eth = get_unaligned_be16(skb->data + hdrlen + 6);
-		bes_info("[TX] enter pre-key fc=0x%04x len=%d eth=0x%04x tx_lock=%d\n",
+		bes_devel("[TX] enter pre-key fc=0x%04x len=%d eth=0x%04x tx_lock=%d\n",
 			 fc, skb->len, eth, atomic_read(&hw_priv->tx_lock));
 	}
 
@@ -1062,7 +1067,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 
 		if (t.hdrlen + 8 <= skb->len)
 			ethertype = get_unaligned_be16(skb->data + t.hdrlen + 6);
-		bes_info("[TX] pre-key data if_id=%d len=%d eth=0x%04x tx_lock=%d\n",
+		bes_devel("[TX] pre-key data if_id=%d len=%d eth=0x%04x tx_lock=%d\n",
 			 priv->if_id, skb->len, ethertype,
 			 atomic_read(&hw_priv->tx_lock));
 	}
@@ -1769,6 +1774,32 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 			struct ieee80211_tim_ie *tim =
 				(struct ieee80211_tim_ie *)&tim_ie[2];
 
+			if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+			    !priv->cipherType) {
+				u8 tim_len = tim_ie[1];
+				bool mcast = !!(tim->bitmap_ctrl & 0x01);
+				bool our = ieee80211_check_tim(tim, tim_len,
+							       priv->bss_params.aid);
+				u8 v0 = tim_len >= 4 ? tim->virtual_map[0] : 0;
+				u8 v1 = tim_len >= 5 ? tim->virtual_map[1] : 0;
+				static unsigned tim_pin_mcast;
+				static unsigned tim_pin_first;
+
+				/* First TIM always; our AID always; mcast
+				 * rate-limited. Empty first TIM is useful. */
+				if (our || !tim_pin_first ||
+				    (mcast && tim_pin_mcast < 4)) {
+					if (!our && mcast)
+						tim_pin_mcast++;
+					tim_pin_first = 1;
+					bes_pin("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
+						"v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
+						tim->dtim_count, tim->dtim_period,
+						tim->bitmap_ctrl, v0, v1,
+						priv->bss_params.aid, our, mcast);
+				}
+			}
+
 			if (priv->join_dtim_period != tim->dtim_period) {
 				priv->join_dtim_period = tim->dtim_period;
 				queue_work(hw_priv->workqueue,
@@ -1893,9 +1924,15 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_handle_link_id(priv, arg, frame, &early_data, &entry);
 
 	if (early_data)
-		bes_info("%s: Frame filtered (type=0x%04x)\n", __func__, frame->frame_control);
+		bes_pin("P52 RX early_data filtered fc=0x%04x\n",
+			le16_to_cpu(frame->frame_control));
 
-	if (bes2600_rx_handle_status_drop(priv, arg, hdr)) goto drop;
+	if (bes2600_rx_handle_status_drop(priv, arg, hdr)) {
+		bes_pin("P53 RX status drop st=%u fc=0x%04x da=%pM enc=%u\n",
+			arg->status, le16_to_cpu(frame->frame_control),
+			frame->addr1, WSM_RX_STATUS_ENCRYPTION(arg->flags));
+		goto drop;
+	}
 	if (bes2600_rx_validate_skb_len(priv, skb)) goto drop;
 	if (bes2600_rx_handle_pspoll(priv, frame, skb)) goto drop;
 
@@ -1920,16 +1957,52 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		if (ieee80211_is_action(frame->frame_control) &&
 		    skb->len >= hdrlen + 1)
 			cat = *((u8 *)frame + hdrlen);
-		bes_info("[RX] pre-key fc=0x%04x len=%d eth=0x%04x cat=%u st=%u "
+		bes_devel("[RX] pre-key fc=0x%04x len=%d eth=0x%04x cat=%u st=%u "
 			 "da=%pM sa=%pM vif=%pM host=%pM a1match=%d\n",
 			 fc, skb->len, eth, cat, arg->status,
 			 frame->addr1, frame->addr2, priv->vif->addr,
 			 hw_priv->mac_addr,
 			 !!(arg->flags & WSM_RX_STATUS_ADDRESS1));
+		if (ieee80211_is_data(frame->frame_control)) {
+			bes_devel("P50 RX data eth=0x%04x da=%pM a1match=%d "
+				  "grp=%d enc=%u len=%d\n",
+				  eth, frame->addr1,
+				  !!(arg->flags & WSM_RX_STATUS_ADDRESS1),
+				  !!(arg->flags & WSM_RX_STATUS_GROUP),
+				  WSM_RX_STATUS_ENCRYPTION(arg->flags),
+				  skb->len);
+			if (eth == 0x888e)
+				bes_pin("P51 RX EAPOL M1? da=%pM a1match=%d\n",
+					frame->addr1,
+					!!(arg->flags & WSM_RX_STATUS_ADDRESS1));
+		}
 	}
 
-	if (bes2600_rx_handle_decryption(priv, hdr, arg, skb, frame, hdrlen))
+	/*
+	 * Until set_key, do not let mac80211 start an RX BA session.
+	 * RX_START would TX ADDBA-Resp; even if we drop that, reorder
+	 * state is a mess while LMAC BA policy is still off.
+	 */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    !priv->cipherType &&
+	    ieee80211_is_action(frame->frame_control) &&
+	    skb->len >= hdrlen + 1 &&
+	    *((u8 *)frame + hdrlen) == WLAN_CATEGORY_BACK) {
+		static unsigned addba_pin;
+
+		if (addba_pin < 1) {
+			addba_pin++;
+			bes_pin("P59 RX ADDBA swallowed until set_key\n");
+		}
 		goto drop;
+	}
+
+	if (bes2600_rx_handle_decryption(priv, hdr, arg, skb, frame, hdrlen)) {
+		bes_pin("P54 RX decrypt drop fc=0x%04x enc=%u\n",
+			le16_to_cpu(frame->frame_control),
+			WSM_RX_STATUS_ENCRYPTION(arg->flags));
+		goto drop;
+	}
 
 	bes2600_rx_update_debug(priv, arg);
 	bes2600_rx_handle_beacon(priv, hw_priv, frame, arg, skb);
@@ -1953,7 +2026,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 drop:
 	/* TODO: update failure counters */
-	bes_info("%s: Frame dropped (type=0x%04x)\n", __func__, frame->frame_control);
+	bes_devel("%s: Frame dropped (type=0x%04x)\n", __func__, frame->frame_control);
 	return;
 }
 

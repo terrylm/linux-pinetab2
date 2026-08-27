@@ -196,7 +196,8 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	 * assoc (CONFIRM MISMATCH, scan_work WARN, lockup).
 	 */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    !priv->cipherType && priv->vif && priv->vif->cfg.assoc) {
+	    priv->ap_privacy && !priv->cipherType &&
+	    priv->vif && priv->vif->cfg.assoc) {
 		bes_info("%s: skip scan, waiting for set_key\n", __func__);
 		return -EBUSY;
 	}

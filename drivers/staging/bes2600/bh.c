@@ -809,8 +809,8 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	if ((__le16_to_cpu(wsm->id) & 0x0fff) == 0x000B)
 		bes_pin("join 0x000B TX'd bufs=%d\n", hw_priv->hw_bufs_used);
 	else if ((__le16_to_cpu(wsm->id) & 0x0fff) == 0x0004)
-		bes_info("%s: data/mgmt 0x0004 TX'd len=%zu bufs=%d\n",
-			 __func__, tx_len, hw_priv->hw_bufs_used);
+		bes_devel("%s: data/mgmt 0x0004 TX'd len=%zu bufs=%d\n",
+			  __func__, tx_len, hw_priv->hw_bufs_used);
 
 	if (*tx_burst > 1) {
 		bes2600_debug_tx_burst(hw_priv);

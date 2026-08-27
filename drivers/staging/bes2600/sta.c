@@ -961,6 +961,34 @@ int bes2600_get_tx_stats(struct ieee80211_hw *dev,
 }
 */
 
+void bes2600_pin_fw_counters(struct bes2600_common *hw_priv, const char *tag)
+{
+	struct wsm_counters_table c;
+	int ret;
+
+	if (!hw_priv || hw_priv->bus_stale)
+		return;
+	ret = wsm_get_counters_table(hw_priv, &c);
+	if (ret) {
+		bes_pin("P60 counters %s ret=%d\n", tag, ret);
+		return;
+	}
+	/* rxOK vs rxMcast: unicast data the LMAC counted but host never
+	 * saw would show rxOK growing with no P50. noKey/decryptFail
+	 * mean FW dropped frames we would never see as P50. */
+	bes_pin("P60 %s rxPkts=%u rxOK=%u rxMcast=%u rxErr=%u "
+		"noKey=%u decryptFail=%u txOK=%u ackFail=%u\n",
+		tag,
+		le32_to_cpu(c.countRxPackets),
+		le32_to_cpu(c.countRxFramesSuccess),
+		le32_to_cpu(c.countRxMulticastFrames),
+		le32_to_cpu(c.countRxPacketErrors),
+		le32_to_cpu(c.countRxNoKeyFailures),
+		le32_to_cpu(c.countRxDecryptionFailures),
+		le32_to_cpu(c.countTxFramesSuccess),
+		le32_to_cpu(c.countAckFailures));
+}
+
 int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg)
 {
 	struct wsm_set_pm pm = *arg;
@@ -990,6 +1018,10 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
 	memset(&mgmt_policy, 0, sizeof(mgmt_policy));
 	/* INFO: if this never appears after "associated", freeze is before 4-way */
+	bes_pin("P57 set_key cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
+		cmd, key->cipher, key->keyidx,
+		!!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
+		priv->join_status);
 	bes_info("%s: enter cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
 		 __func__, cmd, key->cipher, key->keyidx,
 		 !!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
@@ -2368,6 +2400,12 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 	bes_pin("P09 after wsm_unlock_tx, wakeup BH\n");
 	bes2600_bh_wakeup(hw_priv);
 	bes_pin("P10 after bh_wakeup\n");
+	/*
+	 * Do not bwifi_change here.  CONNECTING queues 0x0029 on system
+	 * WQ; this boot TXd auth 150us after P10 with bufs=2 and never
+	 * got a confirm (join had just reported bufs=0).  Assoc already
+	 * sends CONNECTED.
+	 */
 	bes_info("%s: join OK — auth requeued (if_id=%d)\n",
 		 __func__, priv->if_id);
 	return 0;
@@ -2389,6 +2427,7 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 	/* === Build join parameters === */
 	join.mode = (bss->capability & WLAN_CAPABILITY_IBSS) ?
 			WSM_JOIN_MODE_IBSS : WSM_JOIN_MODE_BSS;
+	priv->ap_privacy = !!(bss->capability & WLAN_CAPABILITY_PRIVACY);
 	join.preambleType     = WSM_JOIN_PREAMBLE_LONG;
 	/*
 	 * probeForJoin=1 after a 5 GHz scan has been observed to leave the FW
@@ -2610,14 +2649,18 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 
 	bes_pin("P03 set join_status=STA\n");
 	priv->join_status = BES2600_JOIN_STATUS_STA;
+	/*
+	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
+	 * never sends 0x0010, so that cache is a lie — the next set_pm
+	 * would skip the command.  Mark LMAC PS unknown until assoc.
+	 */
+	priv->firmware_ps_mode.pmMode = 0xff;
 	atomic_set(&priv->connect_in_process, 1);
-	bes_pin("P04 before bwifi_change\n");
-	if (hw_priv->channel &&
-	    hw_priv->channel->band != NL80211_BAND_2GHZ)
-		bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING_5G);
-	else
-		bwifi_change_current_status(hw_priv, BWIFI_STATUS_CONNECTING);
-	bes_pin("P05 after bwifi_change\n");
+	/*
+	 * Do not bwifi_change here.  It schedules 0x0029 on system WQ;
+	 * combined with allow_prekey this TX'd auth mid-join_finish
+	 * (P04→P05) and the bus then went silent.
+	 */
 	priv->disable_beacon_filter = true;
 
 	bes_pin("P06 queue join_timeout 5s\n");
@@ -2706,9 +2749,7 @@ void bes2600_join_timeout(struct work_struct *work)
 		container_of(work, struct bes2600_vif, join_timeout.work);
 	struct bes2600_common *hw_priv = priv->hw_priv;
 
-	/* Associated: do not re-arm.  The 5s heartbeat looked like a hang
-	 * loop while we waited for EAPOL that never arrived.
-	 */
+	/* Associated: do not re-arm. */
 	if (priv->vif && priv->vif->cfg.assoc)
 		return;
 
@@ -2813,6 +2854,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
 		priv->join_dtim_period = 0;
 		priv->cipherType = 0;
+		priv->ap_privacy = false;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -3089,6 +3131,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		memset(priv->bssid, ~0, ETH_ALEN);
 		priv->wep_default_key_id = -1;
 		priv->cipherType = 0;
+		priv->ap_privacy = false;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 

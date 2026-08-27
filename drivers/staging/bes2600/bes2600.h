@@ -578,6 +578,7 @@ struct bes2600_vif {
 	struct work_struct	wep_key_work;
 		unsigned long			rx_timestamp;
 		u32						cipherType;
+	bool				ap_privacy; /* BSS Privacy bit from join */
 
 
 	/* AP powersave */

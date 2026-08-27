@@ -571,7 +571,6 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			if (changed & BSS_CHANGED_ASSOC) {
 					bes_info("%s: ASSOC — post-join setup (if_id=%d)\n",
 						 __func__, priv->if_id);
-					/* Non-sync: avoid deadlocks on bes2600_wq */
 					cancel_delayed_work(&priv->join_timeout);
 					/* GET_IP busy set after conf_lock release */
 			}
@@ -722,6 +721,31 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 									priv->beacon_int * priv->join_dtim_period >
 									MAX_BEACON_SKIP_TIME_MS ? 1 :
 									priv->join_dtim_period, 0, priv->if_id));
+			/*
+			 * Tell LMAC ACTIVE now.  Host already forces
+			 * powersave_mode=ACTIVE until set_key, but
+			 * bss_info_changed_ps returns without wsm_set_pm
+			 * while cipherType==0, and the PM cache matched
+			 * ACTIVE after unjoin so even a call would skip.
+			 * If LMAC is in PS, the AP buffers unicast EAPOL
+			 * until we leave PS (null with PM=0 / PS-Poll).
+			 */
+			if (changed & BSS_CHANGED_ASSOC) {
+				int pm_ret;
+
+				priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
+				bes2600_pwr_set_busy_event(hw_priv,
+							   BES_PWR_LOCK_ON_PS_ACTIVE);
+				pm_ret = bes2600_set_pm(priv,
+							&priv->powersave_mode);
+				bes_pin("P58 ASSOC set_pm ACTIVE ret=%d "
+					"aid=%d fw_ps=%u\n",
+					pm_ret, priv->bss_params.aid,
+					priv->firmware_ps_mode.pmMode);
+				if (pm_ret)
+					bes_warn("%s: set_pm ACTIVE failed %d\n",
+						 __func__, pm_ret);
+			}
 			/*
 			 * Skip block-ack policy under conf_lock for now: it
 			 * wsm_lock_tx + flush and has caused post-assoc stalls.
@@ -927,6 +951,8 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 		bes2600_pwr_set_busy_event(priv->hw_priv,
 					   BES_PWR_LOCK_ON_PS_ACTIVE);
 		priv->power_set_true = 1;
+		/* Keep LMAC ACTIVE; do not wait for set_key. */
+		bes2600_set_pm(priv, &priv->powersave_mode);
 		bes_info("%s: force ACTIVE until set_key (mac80211 ps=%d)\n",
 			 __func__, cfg->ps);
 		return;

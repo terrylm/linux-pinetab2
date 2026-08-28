@@ -565,7 +565,7 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 		 * the FW only once keys exist (or immediately if already keyed).
 		 */
 		int want = conf->power_level;
-		bool have_key = priv && priv->cipherType != 0;
+		bool have_key = priv && !bes2600_waiting_for_key(priv);
 
 		if (!want)
 			want = 20;
@@ -593,7 +593,7 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 			bes_info("%s: wsm_set_output_power ret=%d\n",
 				 __func__, pret);
 		} else {
-			bes_info("%s: skip wsm_set_output_power until set_key\n",
+			bes_info("%s: skip wsm_set_output_power until 4-way\n",
 				 __func__);
 		}
 	}
@@ -746,7 +746,8 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		bes_warn("%s: skip, bus_stale\n", __func__);
 		return;
 	}
-	if (priv->join_status == BES2600_JOIN_STATUS_STA && !priv->cipherType) {
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    bes2600_waiting_for_key(priv)) {
 		static struct wsm_beacon_filter_control bf_disabled = {
 			.enabled = __cpu_to_le32(0),
 			.bcn_count = __cpu_to_le32(1),
@@ -770,7 +771,7 @@ void bes2600_update_filtering_work(struct work_struct *work)
 				 __func__);
 		return;
 	}
-	bes_info("%s: applying filter update\n", __func__);
+	bes_devel("%s: applying filter update\n", __func__);
 	bes2600_update_filtering(priv);
 }
 
@@ -2855,6 +2856,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->join_dtim_period = 0;
 		priv->cipherType = 0;
 		priv->ap_privacy = false;
+		priv->assoc_jiffies = 0;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -3132,6 +3134,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		priv->wep_default_key_id = -1;
 		priv->cipherType = 0;
 		priv->ap_privacy = false;
+		priv->assoc_jiffies = 0;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 

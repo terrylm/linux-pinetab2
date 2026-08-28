@@ -669,8 +669,8 @@ bes2600_tx_h_action(struct bes2600_vif *priv,
 	 */
 	if (ieee80211_is_action(t->hdr->frame_control) &&
 	    mgmt->u.action.category == WLAN_CATEGORY_BACK) {
-		bes_pin("P59 TX ADDBA dropped (FW owns BA, cipher=%u)\n",
-			priv->cipherType);
+		bes_devel("TX ADDBA dropped (FW owns BA, cipher=%u)\n",
+			  priv->cipherType);
 		return 1;
 	}
 	return 0;
@@ -1756,18 +1756,20 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 		const u8 *tim_ie;
 		u8 *ies;
 		size_t ies_len;
-		/* One-shot: confirms host sees AP beacons after join */
-		if (priv->disable_beacon_filter)
+		/*
+		 * One-shot: do not queue filter MIBs on every beacon.
+		 * Open BSS queued 5-MIB updates here each DTIM and starved
+		 * DHCP TX (RETRY_EXCEEDED).
+		 */
+		if (priv->disable_beacon_filter) {
 			bes_info("%s: first join-bssid beacon (DTIM path)\n",
 				 __func__);
-		/* Keep beacon filter off until set_key so unicast EAPOL is
-		 * not stuck in FW PS/beacon-filter buffering.
-		 */
-		if (priv->cipherType)
-			priv->disable_beacon_filter = false;
-		if (priv->cipherType)
-			queue_work(hw_priv->workqueue,
-				   &priv->update_filtering_work);
+			if (!bes2600_waiting_for_key(priv)) {
+				priv->disable_beacon_filter = false;
+				queue_work(hw_priv->workqueue,
+					   &priv->update_filtering_work);
+			}
+		}
 		ies = ((struct ieee80211_mgmt *)
 			  (skb->data))->u.beacon.variable;
 		ies_len = skb->len - (ies - (u8 *)(skb->data));
@@ -1803,7 +1805,8 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 					&priv->set_beacon_wakeup_period_work);
 			}
 		}
-		if (unlikely(priv->disable_beacon_filter)) {
+		if (unlikely(priv->disable_beacon_filter) &&
+		    !bes2600_waiting_for_key(priv)) {
 			priv->disable_beacon_filter = false;
 			queue_work(hw_priv->workqueue,
 				&priv->update_filtering_work);
@@ -1976,12 +1979,11 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	}
 
 	/*
-	 * Until set_key, do not let mac80211 start an RX BA session.
-	 * RX_START would TX ADDBA-Resp; even if we drop that, reorder
-	 * state is a mess while LMAC BA policy is still off.
+	 * During 4-way only: do not let mac80211 start RX BA.  Open BSS
+	 * has no set_key; LMAC BA policy is programmed at assoc.
 	 */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    !priv->cipherType &&
+	    bes2600_waiting_for_key(priv) &&
 	    ieee80211_is_action(frame->frame_control) &&
 	    skb->len >= hdrlen + 1 &&
 	    *((u8 *)frame + hdrlen) == WLAN_CATEGORY_BACK) {
@@ -1989,7 +1991,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 		if (addba_pin < 1) {
 			addba_pin++;
-			bes_pin("P59 RX ADDBA swallowed until set_key\n");
+			bes_pin("P59 RX ADDBA swallowed until 4-way\n");
 		}
 		goto drop;
 	}

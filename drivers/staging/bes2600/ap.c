@@ -571,6 +571,8 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			if (changed & BSS_CHANGED_ASSOC) {
 					bes_info("%s: ASSOC — post-join setup (if_id=%d)\n",
 						 __func__, priv->if_id);
+					if (cfg->assoc)
+						priv->assoc_jiffies = jiffies;
 					cancel_delayed_work(&priv->join_timeout);
 					/* GET_IP busy set after conf_lock release */
 			}
@@ -747,13 +749,13 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 						 __func__, pm_ret);
 			}
 			/*
-			 * Skip block-ack policy under conf_lock for now: it
-			 * wsm_lock_tx + flush and has caused post-assoc stalls.
-			 * BA can be enabled later once the link is stable.
+			 * Do not wsm_set_block_ack_policy here.  Enabling it
+			 * on open assoc this boot made the first DHCP TX
+			 * RETRY_EXCEEDED; the working DHCP path had BA off.
 			 */
 			if (priv->htcap)
 				bes_devel("%s: skip BA policy setup on assoc\n",
-					 __func__);
+					  __func__);
 
 			if (priv->vif->p2p) {
 					bes_devel(
@@ -946,14 +948,14 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 	 * Until pairwise keys exist, ignore mac80211 PS requests.  Logs showed
 	 * ps=1 immediately after associate with no EAPOL/set_key, then lockup.
 	 */
-	if (priv->join_status == BES2600_JOIN_STATUS_STA && !priv->cipherType) {
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    bes2600_waiting_for_key(priv)) {
 		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 		bes2600_pwr_set_busy_event(priv->hw_priv,
 					   BES_PWR_LOCK_ON_PS_ACTIVE);
 		priv->power_set_true = 1;
-		/* Keep LMAC ACTIVE; do not wait for set_key. */
 		bes2600_set_pm(priv, &priv->powersave_mode);
-		bes_info("%s: force ACTIVE until set_key (mac80211 ps=%d)\n",
+		bes_info("%s: force ACTIVE during 4-way (mac80211 ps=%d)\n",
 			 __func__, cfg->ps);
 		return;
 	}
@@ -1187,9 +1189,9 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		 * is not stuck behind set_key.
 		 */
 		queue_work(hw_priv->workqueue, &priv->update_filtering_work);
-		bes_info("%s: ASSOC conf_lock released (aid=%d) — await set_key "
+		bes_info("%s: ASSOC conf_lock released (aid=%d privacy=%d) "
 			 "(tx_lock=%d bufs=%d)\n",
-			 __func__, priv->bss_params.aid,
+			 __func__, priv->bss_params.aid, priv->ap_privacy,
 			 atomic_read(&hw_priv->tx_lock),
 			 hw_priv->hw_bufs_used);
 	} else {

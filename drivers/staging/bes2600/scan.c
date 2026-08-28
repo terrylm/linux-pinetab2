@@ -192,12 +192,19 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		return -EOPNOTSUPP;
 
-	/* NM scan during 4-way piled 0x0006/0x0007 on a quiet bus after
-	 * assoc (CONFIRM MISMATCH, scan_work WARN, lockup).
+	/*
+	 * Associated scans send 0x0007 then 0x0010 and time out (log:
+	 * "Timeout waiting for scan complete" every ~30s, then
+	 * RETRY_EXCEEDED).  Skip all STA scans while associated.
 	 */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    !priv->cipherType && priv->vif && priv->vif->cfg.assoc) {
-		bes_info("%s: skip scan, waiting for set_key\n", __func__);
+	    priv->vif && priv->vif->cfg.assoc) {
+		static unsigned long last_msg;
+
+		if (!last_msg || time_after(jiffies, last_msg + 30 * HZ)) {
+			last_msg = jiffies;
+			bes_info("%s: skip scan (associated)\n", __func__);
+		}
 		return -EBUSY;
 	}
 

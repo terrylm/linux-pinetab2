@@ -579,6 +579,7 @@ struct bes2600_vif {
 		unsigned long			rx_timestamp;
 		u32						cipherType;
 	bool				ap_privacy; /* BSS Privacy bit from join */
+	unsigned long			assoc_jiffies;
 
 
 	/* AP powersave */
@@ -672,6 +673,12 @@ static inline
 struct bes2600_vif *cw12xx_get_vif_from_ieee80211(struct ieee80211_vif *vif)
 {
 	return	(struct bes2600_vif *)vif->drv_priv;
+}
+
+/* WPA 4-way only. Open BSS never gets set_key. */
+static inline bool bes2600_waiting_for_key(const struct bes2600_vif *priv)
+{
+	return priv && priv->ap_privacy && !priv->cipherType;
 }
 
 static inline

@@ -88,6 +88,7 @@ struct sbus_priv {
 #endif
 #ifdef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
 	u8 *tx_buffer;
+	u8 *tx_pad;
 	struct list_head tx_bufferlist;
 	struct kmem_cache *tx_bufferlistpool;
 	spinlock_t tx_bufferlock;
@@ -721,10 +722,16 @@ static void sdio_rx_work(struct work_struct *work)
 		bes2600_sdio_lock(self);
 		again = bes2600_sdio_read_ctrl(self, &ctrl_reg);
 
-		if(again == -EBUSY || again == -ETIMEDOUT) {
-			bes_err("%s sdio read error\n", __func__);
+		if (again == -EBUSY || again == -ETIMEDOUT) {
+			/*
+			 * EBUSY is claim_host contention, not a dead chip.
+			 * force_close from here WARNed in tx_loop and then
+			 * hard-locked the SoC before wlan even started.
+			 */
+			bes_err("%s ctrl read %d — skip force_close\n",
+				__func__, again);
 			bes2600_sdio_unlock(self);
-			goto failed;
+			return;
 		}
 
 		total_len = PACKET_TOTAL_LEN(ctrl_reg);
@@ -981,7 +988,22 @@ static void sdio_tx_work(struct work_struct *work)
 				}
 			}
 
-			sg_set_buf(&sg[scatters], tx_buffer->buf, align);
+			/*
+			 * FW wants each packet padded to 'align' in the
+			 * CMD53 stream.  Do not DMA 'align' bytes from the
+			 * skb (KFENCE: 704B object, 1632 map).  Bounce.
+			 */
+			{
+				u8 *slot = self->tx_pad + scatters * 1632;
+
+				if (align > 1632)
+					align = 1632;
+				memcpy(slot, tx_buffer->buf, tx_buffer->len);
+				if (align > tx_buffer->len)
+					memset(slot + tx_buffer->len, 0,
+					       align - tx_buffer->len);
+				sg_set_buf(&sg[scatters], slot, align);
+			}
 			total_len += align;
 			++scatters;
 /*del_node:*/
@@ -1085,6 +1107,13 @@ static int bes2600_sdio_misc_init(struct sbus_priv *self, struct bes2600_common 
 	if (!self->tx_buffer) {
 		goto err2;
 	}
+	self->tx_pad = (u8 *)__get_dma_pages(GFP_KERNEL,
+		get_order(1632 * BES_SDIO_TX_MULTIPLE_NUM));
+	if (!self->tx_pad) {
+		kfree(self->tx_buffer);
+		self->tx_buffer = NULL;
+		goto err2;
+	}
 	self->tx_bufferlistpool = kmem_cache_create("sdio_tx_bufferlistpool", sizeof(struct bes_sdio_tx_list_t), 0, SLAB_HWCACHE_ALIGN, NULL);
 	if (!self->tx_bufferlistpool)
 		goto err1;
@@ -1096,6 +1125,11 @@ static int bes2600_sdio_misc_init(struct sbus_priv *self, struct bes2600_common 
 err0:
 	kmem_cache_destroy(self->tx_bufferlistpool);
 err1:
+	if (self->tx_pad) {
+		free_pages((unsigned long)self->tx_pad,
+			   get_order(1632 * BES_SDIO_TX_MULTIPLE_NUM));
+		self->tx_pad = NULL;
+	}
 	kfree(self->tx_buffer);
 err2:
 	free_pages((unsigned long)self->rx_buffer, get_order(1632 * BES_SDIO_RX_MULTIPLE_NUM));
@@ -1781,6 +1815,11 @@ int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 		if (bus_priv->tx_buffer) {
 			kfree(bus_priv->tx_buffer);
 			bus_priv->tx_buffer = NULL;
+		}
+		if (bus_priv->tx_pad) {
+			free_pages((unsigned long)bus_priv->tx_pad,
+				   get_order(1632 * BES_SDIO_TX_MULTIPLE_NUM));
+			bus_priv->tx_pad = NULL;
 		}
 
 		if (bus_priv->tx_bufferlistpool) {

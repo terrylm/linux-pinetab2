@@ -1061,15 +1061,18 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	if (ret)
 		goto drop;
 
-	/* Before keys: log data (incl. EAPOL) so we see if 4-way leaves host */
+	/* One-shot: first data TX after assoc (DHCP vs EAPOL vs other). */
 	if (ieee80211_is_data(t.hdr->frame_control) && !priv->cipherType) {
 		u16 ethertype = 0;
+		static unsigned first_data_tx;
 
 		if (t.hdrlen + 8 <= skb->len)
 			ethertype = get_unaligned_be16(skb->data + t.hdrlen + 6);
-		bes_devel("[TX] pre-key data if_id=%d len=%d eth=0x%04x tx_lock=%d\n",
-			 priv->if_id, skb->len, ethertype,
-			 atomic_read(&hw_priv->tx_lock));
+		if (first_data_tx < 1) {
+			first_data_tx++;
+			bes_info("[TX] first data eth=0x%04x len=%d\n",
+				 ethertype, skb->len);
+		}
 	}
 
 	bes_devel("[TX] TX %d bytes (if_id: %d,"
@@ -1782,21 +1785,15 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 							       priv->bss_params.aid);
 				u8 v0 = tim_len >= 4 ? tim->virtual_map[0] : 0;
 				u8 v1 = tim_len >= 5 ? tim->virtual_map[1] : 0;
-				static unsigned tim_pin_mcast;
 				static unsigned tim_pin_first;
 
-				/* First TIM always; our AID always; mcast
-				 * rate-limited. Empty first TIM is useful. */
-				if (our || !tim_pin_first ||
-				    (mcast && tim_pin_mcast < 4)) {
-					if (!our && mcast)
-						tim_pin_mcast++;
+				if (!tim_pin_first) {
 					tim_pin_first = 1;
-					bes_pin("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
-						"v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
-						tim->dtim_count, tim->dtim_period,
-						tim->bitmap_ctrl, v0, v1,
-						priv->bss_params.aid, our, mcast);
+					bes_info("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
+						 "v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
+						 tim->dtim_count, tim->dtim_period,
+						 tim->bitmap_ctrl, v0, v1,
+						 priv->bss_params.aid, our, mcast);
 				}
 			}
 

@@ -713,6 +713,17 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							priv->association_mode.basicRateSet);
 			WARN_ON(wsm_set_association_mode(hw_priv,
 									&priv->association_mode, priv->if_id));
+			/*
+			 * USE_HT_MODE above re-enables FW default BA even
+			 * after join sent policy 0.  Host then skipped a
+			 * second disable (ba_fw_mask already 0) and TX
+			 * confirms still had flags=0x1.
+			 */
+			if (!hw_priv->ba_want) {
+				hw_priv->ba_fw_mask = 0xff;
+				bes2600_set_ba_policy(hw_priv, priv->if_id,
+						      false);
+			}
 			WARN_ON(wsm_keep_alive_period(hw_priv,
 									BES2600_KEEP_ALIVE_PERIOD /* sec */,
 									priv->if_id));
@@ -949,13 +960,13 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 	 * ps=1 immediately after associate with no EAPOL/set_key, then lockup.
 	 */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    bes2600_waiting_for_key(priv)) {
+	    !priv->data_acked) {
 		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 		bes2600_pwr_set_busy_event(priv->hw_priv,
 					   BES_PWR_LOCK_ON_PS_ACTIVE);
 		priv->power_set_true = 1;
 		bes2600_set_pm(priv, &priv->powersave_mode);
-		bes_info("%s: force ACTIVE during 4-way (mac80211 ps=%d)\n",
+		bes_info("%s: force ACTIVE until IP ACK (mac80211 ps=%d)\n",
 			 __func__, cfg->ps);
 		return;
 	}

@@ -30,12 +30,14 @@
 #define BES2600_HT_HW_VALUE	14
 #define BES2600_MCS_FAIL_RECLAMP	8
 
-static bool bes2600_frame_is_eapol(const struct sk_buff *skb, u8 offset)
+static bool bes2600_data_eth(const struct sk_buff *skb, u8 offset,
+			     u16 *eth, u8 *ip_proto)
 {
 	const struct ieee80211_hdr *hdr;
 	int hdrlen;
-	u16 eth;
 
+	*eth = 0;
+	*ip_proto = 0;
 	if (skb->len < offset + 24 + 8)
 		return false;
 	hdr = (const struct ieee80211_hdr *)(skb->data + offset);
@@ -44,8 +46,49 @@ static bool bes2600_frame_is_eapol(const struct sk_buff *skb, u8 offset)
 	hdrlen = ieee80211_hdrlen(hdr->frame_control);
 	if (skb->len < offset + hdrlen + 8)
 		return false;
-	eth = get_unaligned_be16(skb->data + offset + hdrlen + 6);
-	return eth == ETH_P_PAE;
+	*eth = get_unaligned_be16(skb->data + offset + hdrlen + 6);
+	if (*eth == ETH_P_IP && skb->len >= offset + hdrlen + 8 + 10)
+		*ip_proto = skb->data[offset + hdrlen + 8 + 9];
+	return true;
+}
+
+static bool bes2600_frame_is_eapol(const struct sk_buff *skb, u8 offset)
+{
+	u16 eth;
+	u8 ip_proto;
+
+	return bes2600_data_eth(skb, offset, &eth, &ip_proto) &&
+	       eth == ETH_P_PAE;
+}
+
+/* ICMP / DNS / DHCP: keep 1 Mbps.  MCS TX can be 802.11-ACKed while
+ * replies never arrive (93% ping loss, name lookup hangs). */
+static bool bes2600_want_basic_rate(const struct ieee80211_hdr *hdr,
+				    const u8 *end)
+{
+	int hdrlen = ieee80211_hdrlen(hdr->frame_control);
+	int llc = hdrlen;
+	const u8 *p = (const u8 *)hdr;
+	u16 eth, dport;
+
+	if (ieee80211_has_protected(hdr->frame_control))
+		llc += 8;
+	if (p + llc + 8 > end)
+		return false;
+	eth = get_unaligned_be16(p + llc + 6);
+	if (eth == ETH_P_ARP)
+		return true;
+	if (eth != ETH_P_IP || p + llc + 8 + 22 > end)
+		return false;
+	switch (p[llc + 8 + 9]) {
+	case 1:
+		return true;
+	case 17:
+		dport = get_unaligned_be16(p + llc + 8 + 22);
+		return dport == 53 || dport == 67 || dport == 68;
+	default:
+		return false;
+	}
 }
 
 #ifdef CONFIG_BES2600_TESTMODE
@@ -789,15 +832,15 @@ bes2600_tx_h_rate_policy(struct bes2600_common *hw_priv,
 				cw12xx_get_vif_from_ieee80211(t->tx_info->control.vif);
 
 	/*
-	 * Auth/assoc get through at 1 Mbps; minstrel then starts data at
-	 * HT MCS and the AP never ACKs (RETRY_EXCEEDED, no DHCP).  Stay
-	 * on 1/6 Mbps until one unicast *IP* frame is ACKed — not EAPOL.
-	 * Broadcast/multicast stay on the basic rate always.
+	 * 1 Mbps for DHCP/DNS/ICMP and until the first IP ACK.
+	 * Log: ping at MCS 0 was 802.11-ACKed (st=0 rate=14) but 93% of
+	 * replies never arrived; same loss made google.com hang.
 	 */
 	if (priv &&
 	    priv->join_status == BES2600_JOIN_STATUS_STA &&
 	    ieee80211_is_data(t->hdr->frame_control) &&
-	    (!priv->data_acked || is_multicast_ether_addr(t->da))) {
+	    (!priv->data_acked || is_multicast_ether_addr(t->da) ||
+	     bes2600_want_basic_rate(t->hdr, t->skb->data + t->skb->len))) {
 		struct ieee80211_tx_rate *rates = t->tx_info->control.rates;
 		int i;
 
@@ -1341,6 +1384,34 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 		if (priv->association_mode.greenfieldMode)
 			ht_flags |= IEEE80211_TX_RC_GREEN_FIELD;
 
+		{
+			u16 eth;
+			u8 ip_proto;
+			static unsigned tx_eth_logs;
+
+			if (bes2600_data_eth(skb, txpriv->offset, &eth,
+					     &ip_proto) &&
+			    (eth == ETH_P_IP || eth == ETH_P_ARP ||
+			     eth == ETH_P_IPV6)) {
+				bool icmp = (eth == ETH_P_IP && ip_proto == 1);
+
+				if (icmp || tx_eth_logs < 8) {
+					if (!icmp)
+						tx_eth_logs++;
+					bes_info("TX data eth=0x%04x ip=%u "
+						 "st=%d rate=%u fl=0x%x "
+						 "mcast=%d\n",
+						 eth, ip_proto, arg->status,
+						 arg->txedRate, arg->flags,
+						 is_multicast_ether_addr(
+						     ieee80211_get_DA(
+							 (struct ieee80211_hdr *)
+							 (skb->data +
+							  txpriv->offset))));
+				}
+			}
+		}
+
 		if (likely(!arg->status)) {
 			struct ieee80211_hdr *hdr =
 				(struct ieee80211_hdr *)(skb->data + txpriv->offset);
@@ -1361,21 +1432,30 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			    !bes2600_frame_is_eapol(skb, txpriv->offset)) {
 				if (!priv->data_acked) {
 					priv->data_acked = true;
-					bes_info("%s: first unicast data ACK "
-						 "txedRate=%u\n",
-						 __func__, arg->txedRate);
-				}
-				priv->mcs_fail_streak = 0;
-				/*
-				 * Do not enable BA on a 1 Mbps ACK.  AMPDU
-				 * cannot fall back to DSSS (log: txedRate=14
-				 * flags=0x1 acks_fail=15).  Wait until HT
-				 * actually ACKs.
-				 */
-				if (priv->htcap && !hw_priv->ba_ena &&
-				    arg->txedRate >= BES2600_HT_HW_VALUE)
+					{
+						u16 e = 0;
+						u8 p = 0;
+
+						bes2600_data_eth(skb,
+							txpriv->offset, &e, &p);
+						bes_info("%s: first unicast "
+							 "data ACK txedRate=%u "
+							 "eth=0x%04x ip=%u\n",
+							 __func__,
+							 arg->txedRate, e, p);
+					}
 					queue_work(hw_priv->workqueue,
-						   &hw_priv->ba_work);
+						   &priv->update_filtering_work);
+				}
+				if (arg->txedRate >= BES2600_HT_HW_VALUE)
+					priv->mcs_fail_streak = 0;
+				/*
+				 * Do not auto-enable BA.  Eight HT ACKs in ~2s
+				 * turned policy on (mask 0xb1); STARLINK then
+				 * showed connected with 0% ping and no TX
+				 * RETRY — AP aggregated RX we do not reorder.
+				 * Open DHCP used to work with BA left off.
+				 */
 			}
 		} else {
 			spin_lock(&priv->bss_loss_lock);
@@ -1406,13 +1486,29 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			 * weak link stays at txedRate=14 until timeout.
 			 * Re-clamp after a short MCS fail streak.
 			 */
+			if ((arg->flags & WSM_TX_STATUS_AGGREGATION) &&
+			    !hw_priv->ba_ena) {
+				static unsigned long last_agg;
+
+				if (!last_agg ||
+				    time_after(jiffies, last_agg + 30 * HZ)) {
+					last_agg = jiffies;
+					bes_info("%s: AMPDU while BA policy off "
+						 "txedRate=%u\n",
+						 __func__, arg->txedRate);
+				}
+			}
 			if (priv->data_acked &&
 			    arg->status == WSM_STATUS_RETRY_EXCEEDED &&
 			    arg->txedRate >= BES2600_HT_HW_VALUE) {
+				priv->ht_ack_streak = 0;
 				if (++priv->mcs_fail_streak >=
 				    BES2600_MCS_FAIL_RECLAMP) {
 					priv->data_acked = false;
 					priv->mcs_fail_streak = 0;
+					hw_priv->ba_want = false;
+					queue_work(hw_priv->workqueue,
+						   &hw_priv->ba_work);
 					bes_info("%s: re-clamp 1 Mbps "
 						 "(MCS txedRate=%u)\n",
 						 __func__, arg->txedRate);
@@ -2023,6 +2119,29 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_set_rx_fields(hdr, arg);
 	bes2600_rx_log_probe_resp(priv, frame, arg, hdr);
 	hdrlen = ieee80211_hdrlen(frame->frame_control);
+
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    ieee80211_is_data(frame->frame_control)) {
+		u16 eth;
+		u8 ip_proto;
+		static unsigned rx_eth_logs;
+
+		if (bes2600_data_eth(skb, 0, &eth, &ip_proto) &&
+		    (eth == ETH_P_IP || eth == ETH_P_ARP ||
+		     eth == ETH_P_IPV6)) {
+			bool icmp = (eth == ETH_P_IP && ip_proto == 1);
+
+			if (icmp || rx_eth_logs < 8) {
+				if (!icmp)
+					rx_eth_logs++;
+				bes_info("RX data eth=0x%04x ip=%u da=%pM "
+					 "grp=%d enc=%u\n",
+					 eth, ip_proto, frame->addr1,
+					 !!(arg->flags & WSM_RX_STATUS_GROUP),
+					 WSM_RX_STATUS_ENCRYPTION(arg->flags));
+			}
+		}
+	}
 
 	/*
 	 * Pre-key: prove whether EAPOL M1 / other non-beacon RX reaches host.

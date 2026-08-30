@@ -340,6 +340,8 @@ struct bes2600_common {
 	struct timer_list		ba_timer;/*TODO: Same as above */
 	spinlock_t			ba_lock; /*TODO: Same as above */
 	bool				ba_ena; /*TODO: Same as above */
+	u8				ba_fw_mask; /* last policy sent; 0xff = unknown */
+	bool				ba_want;
 	struct work_struct				ba_work; /*TODO: Same as above */
 	bool				is_BT_Present;
 	bool				is_go_thru_go_neg;
@@ -586,6 +588,7 @@ struct bes2600_vif {
 	 */
 	bool				data_acked;
 	u8				mcs_fail_streak;
+	u8				ht_ack_streak;
 
 
 	/* AP powersave */

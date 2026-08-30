@@ -757,7 +757,7 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		return;
 	}
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    bes2600_waiting_for_key(priv)) {
+	    !priv->data_acked) {
 		static struct wsm_beacon_filter_control bf_disabled = {
 			.enabled = __cpu_to_le32(0),
 			.bcn_count = __cpu_to_le32(1),
@@ -774,14 +774,18 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		 * beacon 30s late.  Only disable beacon filter so TIM
 		 * can indicate EAPOL.
 		 */
-		bes_info("%s: pre-key beacon filter off only\n", __func__);
+		bes_info("%s: pre-IP beacon filter off only\n", __func__);
 		if (wsm_beacon_filter_control(hw_priv, &bf_disabled,
 					      priv->if_id))
 			bes_warn("%s: beacon filter disable failed\n",
 				 __func__);
 		return;
 	}
-	bes_devel("%s: applying filter update\n", __func__);
+	if (priv->join_status == BES2600_JOIN_STATUS_PASSIVE) {
+		bes2600_update_filtering(priv);
+		return;
+	}
+	bes_info("%s: applying full filter update\n", __func__);
 	bes2600_update_filtering(priv);
 }
 
@@ -1009,6 +1013,8 @@ int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg)
 
 	if (memcmp(&pm, &priv->firmware_ps_mode,
 			sizeof(struct wsm_set_pm))) {
+		bes_info("%s: pmMode=0x%x (was 0x%x)\n", __func__,
+			 pm.pmMode, priv->firmware_ps_mode.pmMode);
 		priv->firmware_ps_mode = pm;
 		return wsm_set_pm(priv->hw_priv, &pm,
 				priv->if_id);
@@ -2540,9 +2546,10 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 		goto fail;
 	}
 
-	/* Skipped: block ack policy (known to cause long stalls) */
 	spin_lock_bh(&hw_priv->ba_lock);
 	hw_priv->ba_ena = false;
+	hw_priv->ba_want = false;
+	hw_priv->ba_fw_mask = 0xff;
 	hw_priv->ba_cnt = hw_priv->ba_acc = hw_priv->ba_hist = 0;
 	hw_priv->ba_cnt_rx = hw_priv->ba_acc_rx = 0;
 	spin_unlock_bh(&hw_priv->ba_lock);
@@ -2560,6 +2567,8 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 		goto fail;
 	}
 	bes_devel("wsm_join() cmd acked (flags=0x%x)\n", join.flags);
+	/* FW defaults BA on.  Not sending 0 left flags=0x1 AMPDU. */
+	bes2600_set_ba_policy(hw_priv, priv->if_id, false);
 
 	if (join.flags & WSM_JOIN_FLAGS_FORCE_WITH_COMPLETE_IND) {
 		hw_priv->join_pending_if_id = priv->if_id;
@@ -2656,6 +2665,7 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	priv->join_status = BES2600_JOIN_STATUS_STA;
 	priv->data_acked = false;
 	priv->mcs_fail_streak = 0;
+	priv->ht_ack_streak = 0;
 	/*
 	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
 	 * never sends 0x0010, so that cache is a lie — the next set_pm
@@ -2866,6 +2876,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
 		priv->mcs_fail_streak = 0;
+		priv->ht_ack_streak = 0;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -2991,21 +3002,25 @@ int bes2600_set_uapsd_param(struct bes2600_vif *priv,
 	return ret;
 }
 
-void bes2600_enable_ba_policy(struct bes2600_common *hw_priv, int if_id)
+void bes2600_set_ba_policy(struct bes2600_common *hw_priv, int if_id,
+			   bool enable)
 {
+	u8 mask = enable ? hw_priv->ba_tid_mask : 0;
 	int ret;
 
-	if (hw_priv->ba_ena)
+	if (hw_priv->ba_fw_mask == mask)
 		return;
 
-	ret = wsm_set_block_ack_policy(hw_priv,
-				       hw_priv->ba_tid_mask,
-				       hw_priv->ba_tid_mask,
-				       if_id);
-	if (!ret)
-		hw_priv->ba_ena = true;
-	else
-		bes_warn("%s: BA policy %d\n", __func__, ret);
+	ret = wsm_set_block_ack_policy(hw_priv, mask, mask, if_id);
+	if (!ret) {
+		hw_priv->ba_ena = enable;
+		hw_priv->ba_fw_mask = mask;
+		bes_info("%s: BA policy %s mask=0x%02x if_id=%d\n",
+			 __func__, enable ? "on" : "off", mask, if_id);
+	} else {
+		bes_warn("%s: BA policy enable=%d ret=%d\n",
+			 __func__, enable, ret);
+	}
 }
 
 void bes2600_ba_work(struct work_struct *work)
@@ -3014,7 +3029,7 @@ void bes2600_ba_work(struct work_struct *work)
 		container_of(work, struct bes2600_common, ba_work);
 
 	wsm_lock_tx(hw_priv);
-	bes2600_enable_ba_policy(hw_priv, 0);
+	bes2600_set_ba_policy(hw_priv, 0, hw_priv->ba_want);
 	wsm_unlock_tx(hw_priv);
 }
 
@@ -3134,6 +3149,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
 		priv->mcs_fail_streak = 0;
+		priv->ht_ack_streak = 0;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 

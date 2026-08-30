@@ -117,7 +117,8 @@ int bes2600_set_uapsd_param(struct bes2600_vif *priv,
 				const struct wsm_edca_params *arg);
 void bes2600_ba_work(struct work_struct *work);
 void bes2600_ba_timer(struct timer_list *t);
-void bes2600_enable_ba_policy(struct bes2600_common *hw_priv, int if_id);
+void bes2600_set_ba_policy(struct bes2600_common *hw_priv, int if_id,
+			   bool enable);
 const u8 *bes2600_get_ie(u8 *start, size_t len, u8 ie);
 int bes2600_vif_setup(struct bes2600_vif *priv);
 int bes2600_setup_mac_pvif(struct bes2600_vif *priv);

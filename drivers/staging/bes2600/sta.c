@@ -307,12 +307,7 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 
 		priv->if_id = 0;
 	}
-	/* FIXME: NL80211_IFTYPE_P2P_DEVICE (type 10) is not handled here.  NM adds
-	 * it with addresses[0] while a STA VIF already holds if_id=0, so we hit
-	 * "VIF if_id=0 already in use" below.  Needs a dedicated slot or a mac80211-
-	 * only virtual iface that does not program firmware.  Disable P2P in NM
-	 * until fixed.
-	 */
+	/* P2P_DEVICE uses addresses[1] → if_id=2; firmware not programmed. */
 	/* Handle other known address slots (mainly for P2P or special cases) */
 	else if (!memcmp(vif->addr, hw_priv->addresses[0].addr, ETH_ALEN)) {
 		if (hw_priv->vif_list[0]) {
@@ -1013,11 +1008,14 @@ int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg)
 
 	if (memcmp(&pm, &priv->firmware_ps_mode,
 			sizeof(struct wsm_set_pm))) {
+		int ret;
+
 		bes_info("%s: pmMode=0x%x (was 0x%x)\n", __func__,
 			 pm.pmMode, priv->firmware_ps_mode.pmMode);
-		priv->firmware_ps_mode = pm;
-		return wsm_set_pm(priv->hw_priv, &pm,
-				priv->if_id);
+		ret = wsm_set_pm(priv->hw_priv, &pm, priv->if_id);
+		if (!ret)
+			priv->firmware_ps_mode = pm;
+		return ret;
 	} else {
 		return 0;
 	}
@@ -2845,9 +2843,15 @@ void bes2600_unjoin_work(struct work_struct *work)
 #if BES2600_TX_RX_OPT
 		txrx_opt_timer_exit(priv);
 #endif
+		/*
+		 * Drop STA before releasing PS_ACTIVE.  enter_lp_mode
+		 * would otherwise send 0x0010 FAST_PS while still joined
+		 * (that command times out and stalls WPA stop on shutdown).
+		 */
+		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
+		priv->setbssparams_done = false;
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
 		bes2600_pwr_clear_ap_lp_bad_mark(hw_priv);
-		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
 		atomic_set(&priv->connect_in_process, 0);
 		priv->delayed_unjoin = false;
 

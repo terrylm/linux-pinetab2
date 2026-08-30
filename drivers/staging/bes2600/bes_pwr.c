@@ -559,19 +559,34 @@ static int bes2600_pwr_enter_lp_mode(struct bes2600_common *hw_priv)
 				bes_devel("%s, psMode:%s, fastPsmIdlePeriod:%d apPsmChangePeriod:%d minAutoPsPollPeriod:%d\n",
 						__func__, bes2600_get_ps_mode_str(priv->powersave_mode.pmMode), priv->powersave_mode.fastPsmIdlePeriod,
 						priv->powersave_mode.apPsmChangePeriod, priv->powersave_mode.minAutoPsPollPeriod);
-				atomic_set(&hw_priv->bes_power.pm_set_in_process, 1);
-				ret = bes2600_set_pm(priv, &priv->powersave_mode);
-				if (ret) {
-					atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
-					bes_err("%s, set operation mode fail\n", __func__);
-				}
+				/*
+				 * powersave_mode is often FAST_PS (0x81) while
+				 * firmware is still ACTIVE.  Sending that
+				 * 0x0010 hangs confirm (associated scan and
+				 * WPA stop).  Stay ACTIVE until FAST_PS is
+				 * proven on this FW.
+				 */
+				if (priv->powersave_mode.pmMode & WSM_PSM_PS) {
+					bes_info("%s: skip 0x0010 FAST_PS/PS "
+						 "(fw=0x%x desired=0x%x)\n",
+						 __func__,
+						 priv->firmware_ps_mode.pmMode,
+						 priv->powersave_mode.pmMode);
+				} else {
+					atomic_set(&hw_priv->bes_power.pm_set_in_process, 1);
+					ret = bes2600_set_pm(priv, &priv->powersave_mode);
+					if (ret) {
+						atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
+						bes_err("%s, set operation mode fail\n", __func__);
+					}
 
-				/* wait power save mode changed indication */
-				status = wait_for_completion_timeout(&hw_priv->bes_power.pm_enter_cmpl, 5 * HZ);
-				atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
-				reinit_completion(&hw_priv->bes_power.pm_enter_cmpl);
-				if (!status)
-					bes_err("%s, wait pm ind timeout\n", __func__);
+					/* wait power save mode changed indication */
+					status = wait_for_completion_timeout(&hw_priv->bes_power.pm_enter_cmpl, 5 * HZ);
+					atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
+					reinit_completion(&hw_priv->bes_power.pm_enter_cmpl);
+					if (!status)
+						bes_err("%s, wait pm ind timeout\n", __func__);
+				}
 			} else {
 				bes_devel("skip enter lp mode\n");
 			}

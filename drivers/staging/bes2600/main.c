@@ -199,8 +199,7 @@ static const struct ieee80211_iface_limit bes2600_if_limits[] = {
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_AP) |
 				 BIT(NL80211_IFTYPE_P2P_CLIENT) |
 				 BIT(NL80211_IFTYPE_P2P_GO) },
-	/* FIXME: P2P_DEVICE advertised but bes2600_add_interface() cannot host it
-	 * alongside STA on if_id=0 — see sta.c. */
+	/* P2P_DEVICE: host-only vif (if_id=2), no LMAC RCPI/MIB. */
 	{ .max = 1, .types = BIT(NL80211_IFTYPE_P2P_DEVICE) },
 };
 
@@ -487,9 +486,8 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 					  BIT(NL80211_IFTYPE_AP) |
 					  BIT(NL80211_IFTYPE_MESH_POINT) |
 					  BIT(NL80211_IFTYPE_P2P_CLIENT) |
-					  BIT(NL80211_IFTYPE_P2P_GO);
-	/* FIXME: advertising P2P_DEVICE invites NM to create type-10 VIFs we mishandle */
-	hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_P2P_DEVICE);
+					  BIT(NL80211_IFTYPE_P2P_GO) |
+					  BIT(NL80211_IFTYPE_P2P_DEVICE);
 
 	/* Support only for limited wowlan functionalities */
 #ifdef CONFIG_PM

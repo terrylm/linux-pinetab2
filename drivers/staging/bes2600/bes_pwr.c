@@ -605,8 +605,15 @@ static void bes2600_pwr_device_exit_lp_mode(struct bes2600_common *hw_priv)
 
 	if(hw_priv->sbus_ops->sbus_active) {
 		ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv, SUBSYSTEM_MCU);
-		if (ret)
+		if (ret) {
 			bes_err("%s, active mcu fail\n", __func__);
+			/*
+			 * Do not send 0x0006 operational-mode on a bus that
+			 * just failed CMD52.  Nested WSM from wsm_cmd_lock
+			 * piled 6s timeouts until force_close hard-locked.
+			 */
+			return;
+		}
 	}
 
 	/* Let MCU/SDIO settle before first WSM command after sleep */

@@ -80,6 +80,7 @@ struct sbus_priv {
 	u32 rx_continuous_ctrl_cnt;
 	u32 rx_zero_ctrl_cnt;
 	u32 rx_remain_ctrl_cnt;
+	u8 rx_ebusy_streak;
 	u32 rx_data_cnt;
 	u32 rx_xfer_cnt;
 	u32 rx_proc_cnt;
@@ -585,7 +586,9 @@ static int bes2600_sdio_read_ctrl(struct sbus_priv *self, u32 *ctrl_reg)
 	/* clear sdio slave gen interrupt */
 	ret = bes2600_sdio_reg_read(self, BES_TX_CTRL_REG_ID + 1, data, 1);
 	if (unlikely(ret)) {
-		bes_err("[SBUS] Failed(%d) to read control register.\n", ret);
+		if (ret != -EBUSY && ret != -ETIMEDOUT)
+			bes_err("[SBUS] Failed(%d) to read control register.\n",
+				ret);
 		return ret;
 	}
 	self->rx_total_ctrl_cnt++;
@@ -706,7 +709,7 @@ static int bes2600_sdio_extract_packets(struct sbus_priv *self, u32 ctrl_reg, u8
 
 static void sdio_rx_work(struct work_struct *work)
 {
-	int ret, again = 0, retry = 0, crc_retry = 0;
+	int ret, again = 0, retry = 0, crc_retry = 0, ebusy_tries = 0;
 	u32 ctrl_reg = 0;
 	int total_len;
 	struct sbus_priv *self = container_of(work, struct sbus_priv, rx_work);
@@ -724,15 +727,33 @@ static void sdio_rx_work(struct work_struct *work)
 
 		if (again == -EBUSY || again == -ETIMEDOUT) {
 			/*
-			 * EBUSY is claim_host contention, not a dead chip.
-			 * force_close from here WARNed in tx_loop and then
-			 * hard-locked the SoC before wlan even started.
+			 * CMD52 during MCU wake returns -EBUSY.  Dropping
+			 * GPIO and returning lost the WSM confirm (idle
+			 * 0x0006 timeout, CONFIRM MISMATCH).  Keep the
+			 * wake line and retry; never force_close.
 			 */
+			bes2600_sdio_unlock(self);
+			if (++ebusy_tries <= 30) {
+				usleep_range(1000, 2000);
+				continue;
+			}
+			if (self->rx_ebusy_streak < 3) {
+				self->rx_ebusy_streak++;
+				bes_err("%s ctrl read %d — retry later (%u)\n",
+					__func__, again, self->rx_ebusy_streak);
+				bes2600_gpio_allow_mcu_sleep(self);
+				msleep(20);
+				if (!bes2600_chrdev_is_bus_error())
+					queue_work(self->sdio_wq, &self->rx_work);
+				return;
+			}
 			bes_err("%s ctrl read %d — skip force_close\n",
 				__func__, again);
-			bes2600_sdio_unlock(self);
+			bes2600_gpio_allow_mcu_sleep(self);
 			return;
 		}
+		self->rx_ebusy_streak = 0;
+		ebusy_tries = 0;
 
 		total_len = PACKET_TOTAL_LEN(ctrl_reg);
 		if (!total_len) {
@@ -1044,9 +1065,27 @@ flush_previous:
 			sdio_release_host(self->func);
 			queue_work(self->sdio_wq, &self->rx_work);
 			if (ret) {
-				bes_err("%s,%d err=%d,%d,%d\n", __func__, __LINE__, ret, scatters, cur_blk);
+				bes_err("%s,%d err=%d,%d,%d\n", __func__,
+					__LINE__, ret, scatters, cur_blk);
 				sdio_work_debug(self);
-				bes2600_chrdev_wifi_force_close(self->core, false);
+				/*
+				 * CMD53 -EBUSY is the same class as CTRL
+				 * -EBUSY: MCU/MMC contention, not a dead
+				 * chip.  force_close from this worker
+				 * WARNed in tx_loop then hard-locked CPU1
+				 * (kworker bes_sdio).
+				 */
+				if (ret == -EBUSY || ret == -ETIMEDOUT) {
+					bes_err("%s: TX %d — skip force_close\n",
+						__func__, ret);
+					spin_lock(&self->tx_bufferlock);
+					list_splice_tail_init(&proc_list,
+							      &self->tx_bufferlist);
+					spin_unlock(&self->tx_bufferlock);
+					goto tx_done;
+				}
+				bes2600_chrdev_wifi_force_close(self->core,
+								false);
 			}
 			scatters = 0;
 			total_len = 0;
@@ -1055,6 +1094,8 @@ flush_previous:
 			self->last_tx_data_timestamp = jiffies;
 		}
 	}
+tx_done:
+	return;
 }
 
 static int bes2600_sdio_pipe_send(struct sbus_priv *self, u8 pipe, u32 len, u8 *buf)
@@ -1210,6 +1251,14 @@ static int bes2600_sdio_reset(struct sbus_priv *self)
 	return 0;
 }
 
+static int bes2600_sdio_readb_once(struct sdio_func *func, unsigned int addr)
+{
+	int ret = 0;
+	u8 val = sdio_readb(func, addr, &ret);
+
+	return (ret < 0) ? ret : val;
+}
+
 static int bes2600_sdio_readb_safe(struct sdio_func *func, unsigned int addr)
 {
 	int ret = 0;
@@ -1250,9 +1299,12 @@ static void bes2600_gpio_wakeup_mcu(struct sbus_priv *self)
 	if (atomic_inc_return(&self->gpio_wakeup_ref) == 1) {
 		bes_devel("pull high gpio (first user)\n");
 		gpiod_direction_output(pdata->wakeup, GPIOD_OUT_HIGH);
+		mutex_unlock(&self->io_mutex);
+		/* MCU ignores CMD52 until the wake GPIO has settled. */
+		usleep_range(2000, 4000);
+		return;
 	}
 
-	//bes_info("gpio wakeup ref now: %d\n", atomic_read(&self->gpio_wakeup_ref));
 	mutex_unlock(&self->io_mutex);
 }
 
@@ -1325,11 +1377,22 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 	/* wait until device ready */
 	do {
 		sdio_claim_host(self->func);
-		ret = bes2600_sdio_readb_safe(self->func, BES_SLAVE_STATUS_REG_ID);
+		ret = bes2600_sdio_readb_once(self->func, BES_SLAVE_STATUS_REG_ID);
 		sdio_release_host(self->func);
 		bes_devel("active wait mcu ready cnt:%d, reg:%d\n", cnt, ret);
-		if (ret < 0)
+		if (ret < 0) {
+			/*
+			 * -EBUSY is MMC contention / MCU still waking, not a
+			 * dead chip.  force_close from here (scan_work →
+			 * wsm_cmd_lock → exit_lp) WARNed in tx_loop then
+			 * hard-locked CPU3.
+			 */
+			if ((ret == -EBUSY || ret == -ETIMEDOUT) && ++cnt <= 500) {
+				usleep_range(1000, 2000);
+				continue;
+			}
 			goto err;
+		}
 		if ((ret & BES_SLAVE_STATUS_MCU_READY) == 0) {
 			if (++cnt > 500) {
 				bes_err("active wait MCU_READY timeout, subsys:%d\n",
@@ -1339,7 +1402,7 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 			}
 			usleep_range(1000, 2000);
 		}
-	} while ((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
+	} while (ret < 0 || (ret & BES_SLAVE_STATUS_MCU_READY) == 0);
 
 	/* Already active? Re-sending ACTIVE can confuse the firmware. */
 	if (cfm && (ret & cfm)) {
@@ -1378,9 +1441,14 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 
 		/* read device response result */
 		sdio_claim_host(self->func);
-		ret = bes2600_sdio_readb_safe(self->func, BES_SLAVE_STATUS_REG_ID);
+		ret = bes2600_sdio_readb_once(self->func, BES_SLAVE_STATUS_REG_ID);
 		sdio_release_host(self->func);
-		if(ret < 0) {
+		if (ret < 0) {
+			if ((ret == -EBUSY || ret == -ETIMEDOUT) &&
+			    ++retries <= 200) {
+				usleep_range(10000, 12000);
+				continue;
+			}
 			bes_err("active read response failed\n");
 			goto err;
 		}
@@ -1413,6 +1481,13 @@ static int bes2600_sdio_active(struct sbus_priv *self, int sub_system)
 	return ret;
 err:
 	mutex_unlock(&self->sbus_mutex);
+	if (ret == -EBUSY || ret == -ETIMEDOUT) {
+		bes_err("bes2600_sdio_active: %d — skip force_close, subsys:%d\n",
+			ret, sub_system);
+		if (sub_system == SUBSYSTEM_WIFI)
+			self->fw_started = false;
+		return ret;
+	}
 	bes2600_chrdev_wifi_force_close(self->core, false);
 	return -ENODEV;
 }
@@ -1507,12 +1582,18 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 		/* wait until device ready */
 		do {
 			sdio_claim_host(self->func);
-			ret = bes2600_sdio_readb_safe(self->func, BES_SLAVE_STATUS_REG_ID);
+			ret = bes2600_sdio_readb_once(self->func, BES_SLAVE_STATUS_REG_ID);
 			sdio_release_host(self->func);
 			bes_devel("deactive wait mcu ready cnt:%d, reg:%d\n", cnt, ret);
 
-			if (ret < 0)
+			if (ret < 0) {
+				if ((ret == -EBUSY || ret == -ETIMEDOUT) &&
+				    ++cnt <= 500) {
+					usleep_range(1000, 2000);
+					continue;
+				}
 				goto err;
+			}
 			if ((ret & BES_SLAVE_STATUS_MCU_READY) == 0) {
 				if (++cnt > 500) {
 					bes_err("deactive wait MCU_READY timeout, subsys:%d\n",
@@ -1522,7 +1603,7 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 				}
 				usleep_range(1000, 2000);
 			}
-		} while ((ret & BES_SLAVE_STATUS_MCU_READY) == 0);
+		} while (ret < 0 || (ret & BES_SLAVE_STATUS_MCU_READY) == 0);
 
 		do {
 			/* claim sdio host */
@@ -1591,6 +1672,11 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 
 err:
 	mutex_unlock(&self->sbus_mutex);
+	if (ret == -EBUSY || ret == -ETIMEDOUT) {
+		bes_err("bes2600_sdio_deactive: %d — skip force_close, subsys:%d\n",
+			ret, sub_system);
+		return ret;
+	}
 	bes2600_chrdev_wifi_force_close(self->core, false);
 	return -ENODEV;
 }

@@ -16,8 +16,14 @@
 #include "pm.h"
 #include "epta_request.h"
 #include "bes_pwr.h"
+#include "bes_chardev.h"
 
 static void bes2600_scan_restart_delayed(struct bes2600_vif *priv);
+
+static bool bes2600_scan_bus_unusable(struct bes2600_common *hw_priv)
+{
+	return hw_priv->bus_stale || bes2600_chrdev_is_bus_error();
+}
 
 #ifdef CONFIG_BES2600_TESTMODE
 static int bes2600_advance_scan_start(struct bes2600_common *hw_priv)
@@ -143,6 +149,23 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 	queue_delayed_work(hw_priv->workqueue, &hw_priv->scan.timeout, tmo * HZ / 1000);
 
 	ret = wsm_scan(hw_priv, scan, 0);
+	/*
+	 * FW status 13 = scan refused while LMAC still joined.
+	 * Recover with a reset and one retry (idle unjoin used to skip
+	 * 0x000A when RX was quiet after failed auth).
+	 */
+	if (ret && !hw_priv->bus_stale) {
+		struct wsm_reset reset = {
+			.reset_statistics = true,
+		};
+
+		bes_warn("%s: scan 0x0007 failed %d — reset and retry\n",
+			 __func__, ret);
+		if (wsm_reset(hw_priv, &reset, priv->if_id))
+			bes_warn("%s: recovery reset failed\n", __func__);
+		else
+			ret = wsm_scan(hw_priv, scan, 0);
+	}
 	if (unlikely(ret)) {
 		atomic_set(&hw_priv->scan.in_progress, 0);
 		cancel_delayed_work_sync(&hw_priv->scan.timeout);
@@ -205,6 +228,11 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 			last_msg = jiffies;
 			bes_info("%s: skip scan (associated)\n", __func__);
 		}
+		return -EBUSY;
+	}
+
+	if (bes2600_scan_bus_unusable(hw_priv)) {
+		bes_warn("%s: skip scan (bus unusable)\n", __func__);
 		return -EBUSY;
 	}
 
@@ -324,12 +352,19 @@ static void bes2600_scan_update_vif_flags(struct bes2600_common *hw_priv, struct
 static bool bes2600_scan_setup(struct bes2600_common *hw_priv, struct bes2600_vif *priv,
 			      bool first_run)
 {
-	// Always save and force PS off for reliable scans
-	hw_priv->scan.saved_ps = priv->powersave_mode;
-	struct wsm_set_pm pm = priv->powersave_mode;
-	pm.pmMode = WSM_PSM_ACTIVE;  // Force PS off (active mode)
-	bes2600_set_pm(priv, &pm);
-	bes_devel("[SCAN] Auto-disabled PS for scan (saved pmMode=%d)\n", hw_priv->scan.saved_ps.pmMode);
+	/*
+	 * Only toggle PS when we are a STA.  Idle/disconnect scans were
+	 * sending 0x0010, then unjoin raced ("cmd in flight" ret 13)
+	 * and scan timed out.
+	 */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    priv->vif && priv->vif->cfg.assoc) {
+		hw_priv->scan.saved_ps = priv->powersave_mode;
+		struct wsm_set_pm pm = priv->powersave_mode;
+
+		pm.pmMode = WSM_PSM_ACTIVE;
+		bes2600_set_pm(priv, &pm);
+	}
 
     if (first_run) {
 #ifdef CONFIG_BES2600_TESTMODE
@@ -388,10 +423,11 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
     } else {
 		if (!hw_priv->enable_advance_scan) {
 #endif
-	    if (hw_priv->scan.output_power != hw_priv->output_power)
-		/* Problematic: Redundant ternary operator, always 0 */
-		WARN_ON(wsm_set_output_power(hw_priv, hw_priv->output_power * 10,
-					     priv->if_id ? 0 : 0));
+	    if (hw_priv->scan.status >= 0 &&
+		!bes2600_scan_bus_unusable(hw_priv) &&
+		hw_priv->scan.output_power != hw_priv->output_power)
+		wsm_set_output_power(hw_priv, hw_priv->output_power * 10,
+				     priv->if_id ? 0 : 0);
 #ifdef CONFIG_BES2600_TESTMODE
 		}
     }
@@ -404,17 +440,24 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
     else
 		wiphy_dbg(priv->hw->wiphy, "[SCAN] Scan canceled.\n");
 
-    if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+    /*
+     * Failed/aborted scans already timed out on 0x0006.  Do not pile
+     * 0x0029 / switch-channel on a sick bus (that WARN-looped into a
+     * hard lockup).
+     */
+    if (hw_priv->scan.status >= 0 &&
+	!bes2600_scan_bus_unusable(hw_priv)) {
+	    if (priv->join_status == BES2600_JOIN_STATUS_STA) {
 		if (hw_priv->channel->band != NL80211_BAND_2GHZ)
 	    	bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP_5G);
 		else
 	    	bwifi_change_current_status(hw_priv, BWIFI_STATUS_GOT_IP);
-    } else {
+	    } else {
 		bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
-    }
+	    }
 
-    bes_devel("%s %d %d.", __func__, __LINE__, hw_priv->ht_info.channel_type);
-    if (hw_priv->scan_switch_if_id >= 0) {
+	    bes_devel("%s %d %d.", __func__, __LINE__, hw_priv->ht_info.channel_type);
+	    if (hw_priv->scan_switch_if_id >= 0) {
 		struct wsm_switch_channel channel;
 		channel.channelMode = hw_priv->ht_info.channel_type << 4;
 		channel.channelSwitchCount = 0;
@@ -423,6 +466,9 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
 		hw_priv->scan_switch_if_id = -1;
 		bes_devel("scan done channel type %d num %d\n", hw_priv->ht_info.channel_type,
 		  channel.newChannelNumber);
+	    }
+    } else {
+	    hw_priv->scan_switch_if_id = -1;
     }
 
     hw_priv->scan.req = NULL;
@@ -523,10 +569,20 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
 #endif
 	if (!(first->flags & IEEE80211_CHAN_NO_IR) &&
 	    hw_priv->scan.output_power != first->max_power) {
+	    int pret;
+
 	    hw_priv->scan.output_power = first->max_power;
-	    /* Problematic: Redundant ternary operator, always 0 */
-	    WARN_ON(wsm_set_output_power(hw_priv, hw_priv->scan.output_power * 10,
-					 priv->if_id ? 0 : 0));
+	    pret = wsm_set_output_power(hw_priv,
+					hw_priv->scan.output_power * 10,
+					priv->if_id ? 0 : 0);
+	    if (pret) {
+		bes_warn("%s: set_output_power failed %d\n",
+			 __func__, pret);
+		kfree(scan->ch);
+		scan->ch = NULL;
+		hw_priv->scan.status = pret;
+		return pret;
+	    }
 	}
 #ifdef CONFIG_BES2600_TESTMODE
     }
@@ -583,6 +639,13 @@ void bes2600_scan_work(struct work_struct *work)
 
     down(&hw_priv->conf_lock);
 
+    if (bes2600_scan_bus_unusable(hw_priv)) {
+	hw_priv->scan.status = -EIO;
+	bes2600_scan_finish(hw_priv, priv, true);
+	up(&hw_priv->conf_lock);
+	return;
+    }
+
     bes2600_scan_init(hw_priv, priv, &scan);
     bes2600_scan_update_vif_flags(hw_priv, &scan);
 
@@ -608,6 +671,9 @@ void bes2600_scan_work(struct work_struct *work)
     }
 
     if (bes2600_scan_configure_channels(hw_priv, priv, &scan)) {
+		if (!hw_priv->scan.status)
+			hw_priv->scan.status = -EIO;
+		bes2600_scan_finish(hw_priv, priv, true);
 		up(&hw_priv->conf_lock);
 		return;
     }
@@ -719,9 +785,8 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 
 	wake_up(&hw_priv->scan.wq);
 
-	bes2600_set_pm(priv, &hw_priv->scan.saved_ps);
-	bes_devel("[SCAN] Restored PS after scan (to pmMode %d)\n",
-		  hw_priv->scan.saved_ps.pmMode);
+	if (priv->join_status == BES2600_JOIN_STATUS_STA)
+		bes2600_set_pm(priv, &hw_priv->scan.saved_ps);
 
 	if (hw_priv->scan.status == -ETIMEDOUT)
 		wiphy_warn(hw_priv->hw->wiphy,
@@ -754,8 +819,9 @@ void bes2600_scan_timeout(struct work_struct *work)
 				"complete notification.\n");
 			hw_priv->scan.status = -ETIMEDOUT;
 			hw_priv->scan.curr = hw_priv->scan.end;
-			WARN_ON(wsm_stop_scan(hw_priv,
-						hw_priv->scan.if_id ? 1 : 0));
+			if (!bes2600_scan_bus_unusable(hw_priv))
+				wsm_stop_scan(hw_priv,
+					      hw_priv->scan.if_id ? 1 : 0);
 		}
 		bes2600_scan_complete(hw_priv, hw_priv->scan.if_id);
 	}

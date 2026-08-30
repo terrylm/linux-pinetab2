@@ -569,7 +569,7 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 
 			/* Associated: kill join timeout */
 			if (changed & BSS_CHANGED_ASSOC) {
-					bes_info("%s: ASSOC — post-join setup (if_id=%d)\n",
+					bes_devel("%s: ASSOC — post-join setup (if_id=%d)\n",
 						 __func__, priv->if_id);
 					if (cfg->assoc)
 						priv->assoc_jiffies = jiffies;
@@ -740,8 +740,8 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							   BES_PWR_LOCK_ON_PS_ACTIVE);
 				pm_ret = bes2600_set_pm(priv,
 							&priv->powersave_mode);
-				bes_pin("P58 ASSOC set_pm ACTIVE ret=%d "
-					"aid=%d fw_ps=%u\n",
+				bes_devel("P58 ASSOC set_pm ACTIVE ret=%d "
+					  "aid=%d fw_ps=%u\n",
 					pm_ret, priv->bss_params.aid,
 					priv->firmware_ps_mode.pmMode);
 				if (pm_ret)
@@ -778,7 +778,7 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			}
 
 			if (changed & BSS_CHANGED_ASSOC)
-				bes_info("%s: ASSOC rates/HT done (aid=%d)\n",
+				bes_devel("%s: ASSOC rates/HT done (aid=%d)\n",
 					 __func__, priv->bss_params.aid);
 
 	} else {
@@ -834,11 +834,11 @@ static void bes2600_bss_info_changed_assoc_and_erp(struct bes2600_vif *priv,
 {
 	__le32 slot_time = info->use_short_slot ?  __cpu_to_le32(9) : __cpu_to_le32(20);
 
-	bes_info("%s: slot_time=%u us\n", __func__, __le32_to_cpu(slot_time));
+	bes_devel("%s: slot_time=%u us\n", __func__, __le32_to_cpu(slot_time));
 
 	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_SLOT_TIME,
 		&slot_time, sizeof(slot_time), priv->if_id));
-	bes_info("%s: slot_time done\n", __func__);
+	bes_devel("%s: slot_time done\n", __func__);
 }
 
 static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
@@ -850,7 +850,7 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 		.rollingAverageCount = 8,
 	};
 
-	bes_info("%s: enter thold=%d hyst=%d\n", __func__,
+	bes_devel("%s: enter thold=%d hyst=%d\n", __func__,
 		 info->cqm_rssi_thold, info->cqm_rssi_hyst);
 	bes_devel("[CQM] RSSI threshold subscribe: %d +- %d\n",
 		info->cqm_rssi_thold, info->cqm_rssi_hyst);
@@ -893,7 +893,7 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 	}
 	WARN_ON(wsm_set_rcpi_rssi_threshold(hw_priv, &threshold,
 							priv->if_id));
-	bes_info("%s: rcpi threshold done\n", __func__);
+	bes_devel("%s: rcpi threshold done\n", __func__);
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 	priv->cqm_tx_failure_thold = info->cqm_tx_fail_thold;
@@ -1107,8 +1107,8 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	 * join_work and has been seen to hard-lock mid-doJoin.  No WSM needed.
 	 */
 	if (changed == BSS_CHANGED_TXPOWER) {
-		bes_info("%s: BSS_CHANGED_TXPOWER only txpower=%d (no lock, no WSM)\n",
-			 __func__, info->txpower);
+		bes_devel("%s: BSS_CHANGED_TXPOWER only txpower=%d (no lock, no WSM)\n",
+			  __func__, info->txpower);
 		return;
 	}
 
@@ -1166,8 +1166,8 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 	 * only after keys exist (see CONF_CHANGE_POWER).
 	 */
 	if (changed & BSS_CHANGED_TXPOWER)
-		bes_info("%s: BSS_CHANGED_TXPOWER txpower=%d (no WSM)\n",
-			 __func__, info->txpower);
+		bes_devel("%s: BSS_CHANGED_TXPOWER txpower=%d (no WSM)\n",
+			  __func__, info->txpower);
 
 	if (changed & BSS_CHANGED_PS) {
 		bes_info("%s: BSS_CHANGED_PS\n", __func__);
@@ -1189,8 +1189,8 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 		 * is not stuck behind set_key.
 		 */
 		queue_work(hw_priv->workqueue, &priv->update_filtering_work);
-		bes_info("%s: ASSOC conf_lock released (aid=%d privacy=%d) "
-			 "(tx_lock=%d bufs=%d)\n",
+		bes_devel("%s: ASSOC conf_lock released (aid=%d privacy=%d) "
+			  "(tx_lock=%d bufs=%d)\n",
 			 __func__, priv->bss_params.aid, priv->ap_privacy,
 			 atomic_read(&hw_priv->tx_lock),
 			 hw_priv->hw_bufs_used);

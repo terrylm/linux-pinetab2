@@ -580,6 +580,11 @@ struct bes2600_vif {
 		u32						cipherType;
 	bool				ap_privacy; /* BSS Privacy bit from join */
 	unsigned long			assoc_jiffies;
+	/* First unicast data ACK from the AP.  Until then, clamp TX to
+	 * 1/6 Mbps — minstrel HT after assoc is why DHCP gets
+	 * RETRY_EXCEEDED on a link that just authenticated at 1 Mbps.
+	 */
+	bool				data_acked;
 
 
 	/* AP powersave */

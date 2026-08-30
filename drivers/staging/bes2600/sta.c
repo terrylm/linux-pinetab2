@@ -354,7 +354,9 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	priv->hw = dev;
 	priv->vif = vif;
 
-	memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
+	/* P2P_DEVICE uses addresses[0]+1; do not clobber the STA MAC. */
+	if (priv->if_id == 0)
+		memcpy(hw_priv->mac_addr, vif->addr, ETH_ALEN);
 
 	bes_devel("[STA] Interface ID:%d of type:%d added\n", priv->if_id, priv->mode);
 
@@ -362,6 +364,14 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	up(&hw_priv->conf_lock);
 
 	bes2600_vif_setup(priv);
+
+	/*
+	 * P2P_DEVICE is host-only.  setup_mac_pvif sent a second 0x0006
+	 * (RCPI) on if_id 0 right after STA setup; that confirm was
+	 * lost to CTRL -EBUSY and wedged idle scan.
+	 */
+	if (vif->type == NL80211_IFTYPE_P2P_DEVICE)
+		return 0;
 
 	return WARN_ON(bes2600_setup_mac_pvif(priv));
 }
@@ -870,8 +880,8 @@ void bes2600_configure_filter(struct ieee80211_hw *hw,
 		    priv->rx_filter.bssid == bssid &&
 		    priv->rx_filter.fcs == fcs &&
 		    priv->bf_control.bcn_count == bcn) {
-			bes_info("%s: flags=0x%x unchanged, skip WSM\n",
-				 __func__, *total_flags);
+			bes_devel("%s: flags=0x%x unchanged, skip WSM\n",
+				  __func__, *total_flags);
 			return;
 		}
 
@@ -882,8 +892,8 @@ void bes2600_configure_filter(struct ieee80211_hw *hw,
 		priv->filter_cfg_valid = true;
 	}
 
-	bes_info("%s: flags=0x%x → queue filter update (async)\n",
-		 __func__, *total_flags);
+	bes_devel("%s: flags=0x%x → queue filter update (async)\n",
+		  __func__, *total_flags);
 	if (!hw_priv->bus_stale)
 		queue_work(hw_priv->workqueue, &priv->update_filtering_work);
 }
@@ -1180,10 +1190,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 		}
 #endif
 
-		bes_info("%s: wsm_add_key type=%u idx=%d\n",
-			 __func__, wsm_key->type, idx);
 		ret = wsm_add_key(hw_priv, wsm_key, priv->if_id);
-		bes_info("%s: wsm_add_key returned %d\n", __func__, ret);
 		if (!ret) {
 			key->hw_key_idx = idx;
 			/* 4-way progressing: JOIN hold no longer required */
@@ -1191,22 +1198,20 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				bes2600_pwr_clear_busy_event(hw_priv,
 							     BES_PWR_LOCK_ON_JOIN);
 				cancel_delayed_work(&priv->join_timeout);
-				/* Apply any deferred AP TX-power limit now */
-				if (hw_priv->output_power) {
-					int pret;
-
-					bes_info("%s: post-key apply output_power=%d\n",
-						 __func__, hw_priv->output_power);
-					pret = wsm_set_output_power(
-						hw_priv,
+				if (hw_priv->output_power)
+					wsm_set_output_power(hw_priv,
 						hw_priv->output_power * 10,
 						priv->if_id);
-					bes_info("%s: post-key set_output_power ret=%d\n",
-						 __func__, pret);
-				}
-				/* Filter WSM deferred during 4-way */
 				queue_work(hw_priv->workqueue,
 					   &priv->update_filtering_work);
+				/*
+				 * BA was held off during 4-way.  Enable now
+				 * or the AP aggregates data we cannot ACK
+				 * (1/33 pings after P57).
+				 */
+				if (priv->htcap)
+					bes2600_enable_ba_policy(hw_priv,
+								 priv->if_id);
 			}
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
 			if(wsm_key->type == WSM_KEY_TYPE_WAPI_PAIRWISE)
@@ -1257,7 +1262,7 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 
 finally:
 	up(&hw_priv->conf_lock);
-	bes_info("%s: leave cmd=%d ret=%d\n", __func__, cmd, ret);
+	bes_devel("%s: leave cmd=%d ret=%d\n", __func__, cmd, ret);
 	return ret;
 }
 
@@ -2228,9 +2233,9 @@ void bes2600_join_work(struct work_struct *work)
 	 * Take TX lock here (not in BH doJoin) so BH is never nested under
 	 * tx_lock while queuing this work.
 	 */
-	bes_pin("join_work start if_id=%d pending=0x%x\n",
+	bes_devel("join_work start if_id=%d pending=0x%x\n",
 		priv->if_id, hw_priv->pending_frame_id);
-	bes_info("%s: start if_id=%d pending=0x%x\n",
+	bes_devel("%s: start if_id=%d pending=0x%x\n",
 		 __func__, priv->if_id, hw_priv->pending_frame_id);
 	/*
 	 * TX already locked by doJoin.  Do not lock again (would leak a
@@ -2258,7 +2263,7 @@ void bes2600_join_work(struct work_struct *work)
 	}
 
 	if (priv->join_status == BES2600_JOIN_STATUS_STA)
-		bes_info("%s: finished — join_status=STA, awaiting auth TX\n",
+		bes_devel("%s: finished — join_status=STA, awaiting auth TX\n",
 			 __func__);
 	else
 		bes_info("%s: finished — join_status=%d\n",
@@ -2352,7 +2357,7 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 		wsm_unlock_tx(hw_priv);
 		return -ENOENT;
 	}
-	bes_info("%s: BSS found for %pM ch=%u\n", __func__, bssid,
+	bes_devel("%s: BSS found for %pM ch=%u\n", __func__, bssid,
 		 bss->channel ? bss->channel->hw_value : 0);
 
 	/* Copy IEs under RCU — join sleeps and cannot hold rcu_read_lock */
@@ -2373,9 +2378,9 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 	}
 	rcu_read_unlock();
 
-	bes_info("%s: calling do_wsm_join\n", __func__);
+	bes_devel("%s: calling do_wsm_join\n", __func__);
 	ret = bes2600_join_do_wsm_join(priv, bss, ssidie, bssid, tim);
-	bes_info("%s: do_wsm_join returned %d\n", __func__, ret);
+	bes_devel("%s: do_wsm_join returned %d\n", __func__, ret);
 
 	/* Always clean up */
 	if (bss)
@@ -2396,18 +2401,18 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 		return 0;
 	}
 
-	bes_pin("P08 before wsm_unlock_tx\n");
+	bes_devel("P08 before wsm_unlock_tx\n");
 	wsm_unlock_tx(hw_priv);
-	bes_pin("P09 after wsm_unlock_tx, wakeup BH\n");
+	bes_devel("P09 after wsm_unlock_tx, wakeup BH\n");
 	bes2600_bh_wakeup(hw_priv);
-	bes_pin("P10 after bh_wakeup\n");
+	bes_devel("P10 after bh_wakeup\n");
 	/*
 	 * Do not bwifi_change here.  CONNECTING queues 0x0029 on system
 	 * WQ; this boot TXd auth 150us after P10 with bufs=2 and never
 	 * got a confirm (join had just reported bufs=0).  Assoc already
 	 * sends CONNECTED.
 	 */
-	bes_info("%s: join OK — auth requeued (if_id=%d)\n",
+	bes_devel("%s: join OK — auth requeued (if_id=%d)\n",
 		 __func__, priv->if_id);
 	return 0;
 }
@@ -2500,7 +2505,7 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 			__func__, ret);
 		goto fail;
 	}
-	bes_info("%s: wake done (hw_awake=%d mcu_slept=%d last_rx=%u ms)\n",
+	bes_devel("%s: wake done (hw_awake=%d mcu_slept=%d last_rx=%u ms)\n",
 		 __func__, bes2600_pwr_hw_is_awake(hw_priv),
 		 hw_priv->bes_power.mcu_slept,
 		 jiffies_to_msecs(jiffies - hw_priv->rx_timestamp));
@@ -2518,7 +2523,7 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 
 	/* Free stuck host TX slots / unstick BH before wsm_join */
 	bes2600_bh_prepare_for_join(hw_priv);
-	bes_info("%s: after prepare bufs=%d bh_tx=%d susp=%d\n",
+	bes_devel("%s: after prepare bufs=%d bh_tx=%d susp=%d\n",
 		 __func__, hw_priv->hw_bufs_used,
 		 atomic_read(&hw_priv->bh_tx),
 		 atomic_read(&hw_priv->bh_suspend));
@@ -2543,11 +2548,11 @@ static int bes2600_join_do_wsm_join(struct bes2600_vif *priv,
 	hw_priv->ba_cnt_rx = hw_priv->ba_acc_rx = 0;
 	spin_unlock_bh(&hw_priv->ba_lock);
 
-	bes_pin("Calling wsm_join() ch%u band=%u vif=%pM host=%pM base=%pM\n",
+	bes_devel("Calling wsm_join() ch%u band=%u vif=%pM host=%pM base=%pM\n",
 		join.channelNumber, join.band,
 		priv->vif->addr, hw_priv->mac_addr,
 		hw_priv->addresses[0].addr);
-	bes_info("Calling wsm_join() ch%u (%u MHz) band=%u BSSID %pM probe=%u ssid_len=%u flags=0x%x\n",
+	bes_devel("Calling wsm_join() ch%u (%u MHz) band=%u BSSID %pM probe=%u ssid_len=%u flags=0x%x\n",
 		 join.channelNumber, bss->channel->center_freq, join.band,
 		 join.bssid, join.probeForJoin, join.ssidLength, join.flags);
 	ret = wsm_join(hw_priv, &join, priv->if_id);
@@ -2627,7 +2632,7 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int ret;
 
-	bes_pin("P01 join_finish_success enter pending=0x%x bufs=%d\n",
+	bes_devel("P01 join_finish_success enter pending=0x%x bufs=%d\n",
 		hw_priv->pending_frame_id, hw_priv->hw_bufs_used);
 #ifdef CONFIG_BES2600_TESTMODE
 	ret = bes2600_queue_requeue(hw_priv,
@@ -2638,18 +2643,19 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 		&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
 		hw_priv->pending_frame_id, true);
 #endif
-	bes_pin("P02 after requeue ret=%d\n", ret);
+	bes_devel("P02 after requeue ret=%d\n", ret);
 	if (ret) {
 		bes_err("%s: auth requeue FAILED ret=%d pending=0x%x queueId=%u\n",
 			__func__, ret, hw_priv->pending_frame_id,
 			bes2600_queue_get_queue_id(hw_priv->pending_frame_id));
 		return ret;
 	}
-	bes_info("%s: auth frame requeued (pending=0x%x)\n",
+	bes_devel("%s: auth frame requeued (pending=0x%x)\n",
 		 __func__, hw_priv->pending_frame_id);
 
-	bes_pin("P03 set join_status=STA\n");
+	bes_devel("P03 set join_status=STA\n");
 	priv->join_status = BES2600_JOIN_STATUS_STA;
+	priv->data_acked = false;
 	/*
 	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
 	 * never sends 0x0010, so that cache is a lie — the next set_pm
@@ -2664,14 +2670,14 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	 */
 	priv->disable_beacon_filter = true;
 
-	bes_pin("P06 queue join_timeout 5s\n");
+	bes_devel("P06 queue join_timeout 5s\n");
 	cancel_delayed_work(&priv->join_timeout);
 	if (!queue_delayed_work(hw_priv->workqueue, &priv->join_timeout, 5 * HZ))
 		bes_warn("%s: could not queue auth/assoc watchdog\n", __func__);
 	else
-		bes_info("%s: auth/assoc watchdog 5s\n", __func__);
+		bes_devel("%s: auth/assoc watchdog 5s\n", __func__);
 
-	bes_pin("P07 join_finish_success return 0\n");
+	bes_devel("P07 join_finish_success return 0\n");
 	return 0;
 }
 
@@ -2836,19 +2842,20 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->delayed_unjoin = false;
 
 		/*
-		 * After join, a silent 5s (no auth confirm, or RF miss then
-		 * idle) is not a reason to poke SDIO.  wsm_reset on that
-		 * pipe waited 7s, then mark_stale+abort locked the tablet.
-		 * Host-only unless the bus has actually been RX'ing.
+		 * bus_quiet (no 802.11 RX for 2s) is normal after failed
+		 * auth — the AP never answered.  TX confirms still prove
+		 * the SDIO is alive.  Skipping wsm_reset here left LMAC
+		 * joined; the next 0x0007 came back status 13 and STARLINK
+		 * disappeared from scan.  Host-only only if the bus is
+		 * marked stale (that path hard-locked on reset -110).
 		 */
-		if (hw_priv->bus_stale || bes2600_bh_bus_quiet(hw_priv)) {
-			bes_err("%s: host-only unjoin (stale=%d no WSM)\n",
-				__func__, hw_priv->bus_stale);
-			/* Clear TX before unlock_tx wakes BH */
+		if (hw_priv->bus_stale) {
+			bes_err("%s: host-only unjoin (stale=1 no WSM)\n",
+				__func__);
 			bes2600_bh_tx_fail_work(&hw_priv->tx_fail_work);
 		} else {
-			bes_err("%s: wsm_reset after join (bus live)\n",
-				__func__);
+			bes_info("%s: wsm_reset after join (bus live)\n",
+				 __func__);
 			if (wsm_reset(hw_priv, &reset, priv->if_id))
 				bes_warn("%s: wsm_reset failed\n", __func__);
 		}
@@ -2857,6 +2864,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->cipherType = 0;
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
+		priv->data_acked = false;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -2982,29 +2990,30 @@ int bes2600_set_uapsd_param(struct bes2600_vif *priv,
 	return ret;
 }
 
+void bes2600_enable_ba_policy(struct bes2600_common *hw_priv, int if_id)
+{
+	int ret;
+
+	if (hw_priv->ba_ena)
+		return;
+
+	ret = wsm_set_block_ack_policy(hw_priv,
+				       hw_priv->ba_tid_mask,
+				       hw_priv->ba_tid_mask,
+				       if_id);
+	if (!ret)
+		hw_priv->ba_ena = true;
+	else
+		bes_warn("%s: BA policy %d\n", __func__, ret);
+}
+
 void bes2600_ba_work(struct work_struct *work)
 {
 	struct bes2600_common *hw_priv =
 		container_of(work, struct bes2600_common, ba_work);
-	u8 tx_ba_tid_mask;
-
-	/* TODO:COMBO: reenable this part of code */
-/*	if (priv->join_status != BES2600_JOIN_STATUS_STA)
-		return;
-	if (!priv->setbssparams_done)
-		return;*/
-
-	bes_devel("BA work****\n");
-	spin_lock_bh(&hw_priv->ba_lock);
-//	tx_ba_tid_mask = hw_priv->ba_ena ? hw_priv->ba_tid_mask : 0;
-	tx_ba_tid_mask = hw_priv->ba_tid_mask;
-	spin_unlock_bh(&hw_priv->ba_lock);
 
 	wsm_lock_tx(hw_priv);
-
-	WARN_ON(wsm_set_block_ack_policy(hw_priv,
-		tx_ba_tid_mask, hw_priv->ba_tid_mask, -1)); /*TODO:COMBO*/
-
+	bes2600_enable_ba_policy(hw_priv, 0);
 	wsm_unlock_tx(hw_priv);
 }
 
@@ -3135,6 +3144,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		priv->cipherType = 0;
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
+		priv->data_acked = false;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 

@@ -133,7 +133,7 @@ static int wsm_generic_confirm(struct bes2600_common *hw_priv,
 {
 	u32 status = WSM_GET32(buf);
 	if (status != WSM_STATUS_SUCCESS) {
-		bes_warn("wsm_generic_confirm ret %u (cmd in flight)\n",
+		bes_warn("wsm_generic_confirm ret %u (FW rejected)\n",
 			 status);
 		return -EINVAL;
 	}
@@ -620,21 +620,34 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 		tx_confirm.if_id = 0;
 	}
 
-	if (tx_confirm.status)
-		bes_pin("P40 tx_confirm pkt=0x%x status=%d bufs=%d\n",
-			tx_confirm.packetID, tx_confirm.status,
-			hw_priv->hw_bufs_used);
 	wsm_release_vif_tx_buffer(hw_priv, tx_confirm.if_id, 1);
 
-	if (tx_confirm.status)
-		bes_info("wsm_tx_confirm: pkt=0x%x status=%d%s flags=0x%x bufs=%d\n",
-			 tx_confirm.packetID, tx_confirm.status,
-			 tx_confirm.status == WSM_STATUS_RETRY_EXCEEDED ?
-				 " (RETRY_EXCEEDED, no ACK)" : "",
-			 tx_confirm.flags, hw_priv->hw_bufs_used);
-	else
+	if (tx_confirm.status) {
+		static unsigned logged, suppressed;
+		static unsigned long last;
+
+		if (logged < 3 || time_after(jiffies, last + 30 * HZ)) {
+			if (suppressed) {
+				bes_info("wsm_tx_confirm: %u more failures\n",
+					 suppressed);
+				suppressed = 0;
+			}
+			logged++;
+			last = jiffies;
+			bes_info("wsm_tx_confirm: pkt=0x%x status=%d%s "
+				 "flags=0x%x bufs=%d txedRate=%u acks_fail=%u\n",
+				 tx_confirm.packetID, tx_confirm.status,
+				 tx_confirm.status == WSM_STATUS_RETRY_EXCEEDED ?
+					 " (RETRY_EXCEEDED, no ACK)" : "",
+				 tx_confirm.flags, hw_priv->hw_bufs_used,
+				 tx_confirm.txedRate, tx_confirm.ackFailures);
+		} else {
+			suppressed++;
+		}
+	} else {
 		bes_devel("wsm_tx_confirm: pkt=0x%x OK bufs=%d\n",
 			  tx_confirm.packetID, hw_priv->hw_bufs_used);
+	}
 
 	if (hw_priv->wsm_cbc.tx_confirm)
 		hw_priv->wsm_cbc.tx_confirm(hw_priv, &tx_confirm);
@@ -691,11 +704,11 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 {
 	u32 status = WSM_GET32(buf);
 
-	bes_pin("P39 join confirm status=%u bufs=%d\n",
+	bes_devel("P39 join confirm status=%u bufs=%d\n",
 		status, hw_priv->hw_bufs_used);
-	bes_info("%s: 0x040B status=%u%s\n", __func__, status,
-		 status == WSM_STATUS_SUCCESS ? " (OK)" :
-		 status == WSM_STATUS_FAILURE ? " (FAILURE)" : "");
+	bes_devel("%s: 0x040B status=%u%s\n", __func__, status,
+		  status == WSM_STATUS_SUCCESS ? " (OK)" :
+		  status == WSM_STATUS_FAILURE ? " (FAILURE)" : "");
 
 	if (status != WSM_STATUS_SUCCESS) {
 		bes_warn("wsm_join_confirm FW rejected join status=%u\n",
@@ -1942,7 +1955,7 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 				break;
 			}
 			if (!ret && cmd == 0x000B && !hw_priv->wsm_cmd.done)
-				bes_pin("join still pending bufs=%d t=%ld\n",
+				bes_devel("join still pending bufs=%d t=%ld\n",
 					hw_priv->hw_bufs_used,
 					wsm_cmd_runtime);
 			rx_timestamp = jiffies - hw_priv->rx_timestamp;
@@ -2696,7 +2709,7 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			handled = true;
 			break;
 		}
-		bes_pin("doJoin if_id=%d packet=0x%x join_status=%d tx_lock=%d\n",
+		bes_devel("doJoin if_id=%d packet=0x%x join_status=%d tx_lock=%d\n",
 			priv->if_id, pid, priv->join_status,
 			atomic_read(&hw_priv->tx_lock));
 		wsm_lock_tx_async(hw_priv);
@@ -2705,7 +2718,7 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			bes_err("[WSM] join_work already queued/running\n");
 			wsm_unlock_tx(hw_priv);
 		} else {
-			bes_pin("doJoin queued join_work tx_lock=%d\n",
+			bes_devel("doJoin queued join_work tx_lock=%d\n",
 				atomic_read(&hw_priv->tx_lock));
 		}
 		handled = true;

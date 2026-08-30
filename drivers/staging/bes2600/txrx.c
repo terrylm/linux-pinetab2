@@ -767,6 +767,26 @@ bes2600_tx_h_rate_policy(struct bes2600_common *hw_priv,
 	struct bes2600_vif *priv =
 				cw12xx_get_vif_from_ieee80211(t->tx_info->control.vif);
 
+	/*
+	 * Auth/assoc get through at 1 Mbps; minstrel then starts data at
+	 * HT MCS and the AP never ACKs (RETRY_EXCEEDED, no DHCP).  Stay
+	 * on 1/6 Mbps DSSS/OFDM until one unicast data frame is ACKed.
+	 * Broadcast/multicast stay on the basic rate always.
+	 */
+	if (priv &&
+	    priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    ieee80211_is_data(t->hdr->frame_control) &&
+	    (!priv->data_acked || is_multicast_ether_addr(t->da))) {
+		struct ieee80211_tx_rate *rates = t->tx_info->control.rates;
+		int i;
+
+		rates[0].idx = 0;
+		rates[0].count = 7;
+		rates[0].flags = 0;
+		for (i = 1; i < IEEE80211_TX_MAX_RATES; i++)
+			rates[i].idx = -1;
+	}
+
 	t->txpriv.rate_id = tx_policy_get(hw_priv,
 		t->tx_info->control.rates, IEEE80211_TX_MAX_RATES,
 		&tx_policy_renew);
@@ -1004,7 +1024,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 
 	/* Before any power/SDIO: prove we got the first auth from mac80211 */
 	if (ieee80211_is_auth(frame->frame_control))
-		bes_pin("TX auth enter join_status=%d tx_lock=%d sa=%pM vif=%pM host=%pM\n",
+		bes_devel("TX auth enter join_status=%d tx_lock=%d sa=%pM vif=%pM host=%pM\n",
 			priv->join_status, atomic_read(&hw_priv->tx_lock),
 			frame->addr2, priv->vif->addr, hw_priv->mac_addr);
 
@@ -1070,8 +1090,8 @@ void bes2600_tx(struct ieee80211_hw *dev,
 			ethertype = get_unaligned_be16(skb->data + t.hdrlen + 6);
 		if (first_data_tx < 1) {
 			first_data_tx++;
-			bes_info("[TX] first data eth=0x%04x len=%d\n",
-				 ethertype, skb->len);
+			bes_devel("[TX] first data eth=0x%04x len=%d\n",
+				  ethertype, skb->len);
 		}
 	}
 
@@ -1301,6 +1321,9 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			ht_flags |= IEEE80211_TX_RC_GREEN_FIELD;
 
 		if (likely(!arg->status)) {
+			struct ieee80211_hdr *hdr =
+				(struct ieee80211_hdr *)(skb->data + txpriv->offset);
+
 			tx->flags |= IEEE80211_TX_STAT_ACK;
 			priv->cqm_tx_failure_count = 0;
 			++tx_count;
@@ -1310,6 +1333,22 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 				 * it confuses minstrel a lot. */
 				/* tx->flags |= IEEE80211_TX_STAT_AMPDU; */
 				bes2600_debug_txed_agg(priv);
+			}
+			if (!priv->data_acked &&
+			    ieee80211_is_data(hdr->frame_control) &&
+			    !is_multicast_ether_addr(ieee80211_get_DA(hdr))) {
+				priv->data_acked = true;
+				bes_info("%s: first unicast data ACK "
+					 "txedRate=%u\n",
+					 __func__, arg->txedRate);
+				/*
+				 * Open BSS never hits set_key.  Turn BA on
+				 * now that DHCP is no longer the first TX.
+				 */
+				if (!priv->ap_privacy && priv->htcap &&
+				    !hw_priv->ba_ena)
+					queue_work(hw_priv->workqueue,
+						   &hw_priv->ba_work);
 			}
 		} else {
 			spin_lock(&priv->bss_loss_lock);
@@ -1762,8 +1801,8 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 		 * DHCP TX (RETRY_EXCEEDED).
 		 */
 		if (priv->disable_beacon_filter) {
-			bes_info("%s: first join-bssid beacon (DTIM path)\n",
-				 __func__);
+			bes_devel("%s: first join-bssid beacon (DTIM path)\n",
+				  __func__);
 			if (!bes2600_waiting_for_key(priv)) {
 				priv->disable_beacon_filter = false;
 				queue_work(hw_priv->workqueue,
@@ -1791,8 +1830,8 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 
 				if (!tim_pin_first) {
 					tim_pin_first = 1;
-					bes_info("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
-						 "v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
+					bes_devel("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
+						  "v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
 						 tim->dtim_count, tim->dtim_period,
 						 tim->bitmap_ctrl, v0, v1,
 						 priv->bss_params.aid, our, mcast);

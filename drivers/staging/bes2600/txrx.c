@@ -26,6 +26,27 @@
 #include "bes_log.h"
 
 #define BES2600_INVALID_RATE_ID (0xFF)
+/* HW rate table: 0–13 legacy, 14+ MCS.  AMPDU cannot fall back to 1 Mbps. */
+#define BES2600_HT_HW_VALUE	14
+#define BES2600_MCS_FAIL_RECLAMP	8
+
+static bool bes2600_frame_is_eapol(const struct sk_buff *skb, u8 offset)
+{
+	const struct ieee80211_hdr *hdr;
+	int hdrlen;
+	u16 eth;
+
+	if (skb->len < offset + 24 + 8)
+		return false;
+	hdr = (const struct ieee80211_hdr *)(skb->data + offset);
+	if (!ieee80211_is_data(hdr->frame_control))
+		return false;
+	hdrlen = ieee80211_hdrlen(hdr->frame_control);
+	if (skb->len < offset + hdrlen + 8)
+		return false;
+	eth = get_unaligned_be16(skb->data + offset + hdrlen + 6);
+	return eth == ETH_P_PAE;
+}
 
 #ifdef CONFIG_BES2600_TESTMODE
 #include "bes_nl80211_testmode_msg.h"
@@ -770,7 +791,7 @@ bes2600_tx_h_rate_policy(struct bes2600_common *hw_priv,
 	/*
 	 * Auth/assoc get through at 1 Mbps; minstrel then starts data at
 	 * HT MCS and the AP never ACKs (RETRY_EXCEEDED, no DHCP).  Stay
-	 * on 1/6 Mbps DSSS/OFDM until one unicast data frame is ACKed.
+	 * on 1/6 Mbps until one unicast *IP* frame is ACKed — not EAPOL.
 	 * Broadcast/multicast stay on the basic rate always.
 	 */
 	if (priv &&
@@ -1334,19 +1355,25 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 				/* tx->flags |= IEEE80211_TX_STAT_AMPDU; */
 				bes2600_debug_txed_agg(priv);
 			}
-			if (!priv->data_acked &&
-			    ieee80211_is_data(hdr->frame_control) &&
-			    !is_multicast_ether_addr(ieee80211_get_DA(hdr))) {
-				priv->data_acked = true;
-				bes_info("%s: first unicast data ACK "
-					 "txedRate=%u\n",
-					 __func__, arg->txedRate);
+			if (ieee80211_is_data(hdr->frame_control) &&
+			    !ieee80211_is_nullfunc(hdr->frame_control) &&
+			    !is_multicast_ether_addr(ieee80211_get_DA(hdr)) &&
+			    !bes2600_frame_is_eapol(skb, txpriv->offset)) {
+				if (!priv->data_acked) {
+					priv->data_acked = true;
+					bes_info("%s: first unicast data ACK "
+						 "txedRate=%u\n",
+						 __func__, arg->txedRate);
+				}
+				priv->mcs_fail_streak = 0;
 				/*
-				 * Open BSS never hits set_key.  Turn BA on
-				 * now that DHCP is no longer the first TX.
+				 * Do not enable BA on a 1 Mbps ACK.  AMPDU
+				 * cannot fall back to DSSS (log: txedRate=14
+				 * flags=0x1 acks_fail=15).  Wait until HT
+				 * actually ACKs.
 				 */
-				if (!priv->ap_privacy && priv->htcap &&
-				    !hw_priv->ba_ena)
+				if (priv->htcap && !hw_priv->ba_ena &&
+				    arg->txedRate >= BES2600_HT_HW_VALUE)
 					queue_work(hw_priv->workqueue,
 						   &hw_priv->ba_work);
 			}
@@ -1373,6 +1400,24 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			}
 			if (tx_count)
 				++tx_count;
+			/*
+			 * After the clamp lifts, minstrel probes MCS.
+			 * AMPDU retries do not step down to 1 Mbps, so a
+			 * weak link stays at txedRate=14 until timeout.
+			 * Re-clamp after a short MCS fail streak.
+			 */
+			if (priv->data_acked &&
+			    arg->status == WSM_STATUS_RETRY_EXCEEDED &&
+			    arg->txedRate >= BES2600_HT_HW_VALUE) {
+				if (++priv->mcs_fail_streak >=
+				    BES2600_MCS_FAIL_RECLAMP) {
+					priv->data_acked = false;
+					priv->mcs_fail_streak = 0;
+					bes_info("%s: re-clamp 1 Mbps "
+						 "(MCS txedRate=%u)\n",
+						 __func__, arg->txedRate);
+				}
+			}
 		}
 
 		for (i = 0; i < IEEE80211_TX_MAX_RATES; ++i) {

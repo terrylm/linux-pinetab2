@@ -585,6 +585,7 @@ struct bes2600_vif {
 	 * RETRY_EXCEEDED on a link that just authenticated at 1 Mbps.
 	 */
 	bool				data_acked;
+	u8				mcs_fail_streak;
 
 
 	/* AP powersave */

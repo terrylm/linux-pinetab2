@@ -1205,13 +1205,12 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				queue_work(hw_priv->workqueue,
 					   &priv->update_filtering_work);
 				/*
-				 * BA was held off during 4-way.  Enable now
-				 * or the AP aggregates data we cannot ACK
-				 * (1/33 pings after P57).
+				 * Do not enable BA here.  Pairwise set_key
+				 * races DHCP: BA on + minstrel HT made
+				 * NETGEAR DNS/ping RETRY_EXCEEDED after P57
+				 * while the GUI already showed connected.
+				 * BA is armed on the first non-EAPOL data ACK.
 				 */
-				if (priv->htcap)
-					bes2600_enable_ba_policy(hw_priv,
-								 priv->if_id);
 			}
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
 			if(wsm_key->type == WSM_KEY_TYPE_WAPI_PAIRWISE)
@@ -2656,6 +2655,7 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	bes_devel("P03 set join_status=STA\n");
 	priv->join_status = BES2600_JOIN_STATUS_STA;
 	priv->data_acked = false;
+	priv->mcs_fail_streak = 0;
 	/*
 	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
 	 * never sends 0x0010, so that cache is a lie — the next set_pm
@@ -2865,6 +2865,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
+		priv->mcs_fail_streak = 0;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -3019,7 +3020,6 @@ void bes2600_ba_work(struct work_struct *work)
 
 void bes2600_ba_timer(struct timer_list *t)
 {
-	bool ba_ena;
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, ba_timer);
 
 	spin_lock_bh(&hw_priv->ba_lock);
@@ -3034,27 +3034,15 @@ void bes2600_ba_timer(struct timer_list *t)
 		goto skip_statistic_update;
 	}
 
-	if (hw_priv->ba_cnt >= BES2600_BLOCK_ACK_CNT &&
-		(hw_priv->ba_acc / hw_priv->ba_cnt >= BES2600_BLOCK_ACK_THLD ||
-		(hw_priv->ba_cnt_rx >= BES2600_BLOCK_ACK_CNT &&
-		hw_priv->ba_acc_rx / hw_priv->ba_cnt_rx >=
-			BES2600_BLOCK_ACK_THLD)))
-		ba_ena = true;
-	else
-		ba_ena = false;
-
+	/*
+	 * Stats only.  Do not toggle ba_ena here: that raced
+	 * enable_ba_policy, cleared the flag on a weak link, and
+	 * re-sent BLOCK_ACK_POLICY every few seconds (ping jitter).
+	 */
 	hw_priv->ba_cnt = 0;
 	hw_priv->ba_acc = 0;
 	hw_priv->ba_cnt_rx = 0;
 	hw_priv->ba_acc_rx = 0;
-
-	if (ba_ena != hw_priv->ba_ena) {
-		if (ba_ena || ++hw_priv->ba_hist >= BES2600_BLOCK_ACK_HIST) {
-			hw_priv->ba_ena = ba_ena;
-			hw_priv->ba_hist = 0;
-		}
-	} else if (hw_priv->ba_hist)
-		--hw_priv->ba_hist;
 
 skip_statistic_update:
 	spin_unlock_bh(&hw_priv->ba_lock);
@@ -3145,6 +3133,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
+		priv->mcs_fail_streak = 0;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 

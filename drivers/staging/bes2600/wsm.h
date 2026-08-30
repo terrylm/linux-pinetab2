@@ -1686,16 +1686,11 @@ static inline int wsm_set_block_ack_policy(struct bes2600_common *hw_priv,
 		.blockAckRxTidPolicy = blockAckRxTidPolicy,
 	};
 
-	printk(KERN_INFO "Calling wsm_write_mib for BLOCK_ACK_POLICY (tx=%d, rx=%d, if_id=%d)\n",
-		blockAckTxTidPolicy, blockAckRxTidPolicy, if_id);
-
 	int ret = wsm_write_mib(hw_priv, WSM_MIB_ID_BLOCK_ACK_POLICY, &val,
 	     sizeof(val), if_id);
 
 	if (ret)
 		printk(KERN_ERR "wsm_write_mib BLOCK_ACK_POLICY FAILED with %d\n", ret);
-//	else
-//		printk(KERN_INFO "wsm_write_mib BLOCK_ACK_POLICY succeeded\n");
 
 	return ret;
 }

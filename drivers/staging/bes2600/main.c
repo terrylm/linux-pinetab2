@@ -975,8 +975,8 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 
 	if (hw_priv->sbus_ops->sbus_active &&
-	    WARN_ON((ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv,
-							  SUBSYSTEM_WIFI))))
+	    (ret = bes_fail(hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv,
+							  SUBSYSTEM_WIFI), "hw_priv")))
 		goto out;
 
 	if (wait_event_interruptible_timeout(hw_priv->wsm_startup_done,
@@ -989,8 +989,8 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		for (if_id = 0; if_id < 2; if_id++) {
-			if (WARN_ON((ret = wsm_use_multi_tx_conf(hw_priv, true,
-								 if_id))))
+			if ((ret = bes_fail(wsm_use_multi_tx_conf(hw_priv, true,
+								 if_id), "wsm_use_multi_tx_conf")))
 				goto out;
 		}
 
@@ -1031,7 +1031,9 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 	bes2600_pwr_stop(hw_priv);
 
 	if (hw_priv->sbus_ops->sbus_deactive &&
-		WARN_ON(ret = hw_priv->sbus_ops->sbus_deactive(hw_priv->sbus_priv, SUBSYSTEM_WIFI))) {
+	    (ret = bes_fail(hw_priv->sbus_ops->sbus_deactive(
+			hw_priv->sbus_priv, SUBSYSTEM_WIFI),
+			    "sbus_deactive"))) {
 		goto err;
 	}
 

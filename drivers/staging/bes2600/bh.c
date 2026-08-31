@@ -24,7 +24,6 @@
 #include "bes_chardev.h"
 #include "txrx_opt.h"
 #include "sta.h"
-#include "bes_log.h"
 
 static int bes2600_bh(struct bes2600_common *hw_priv);
 
@@ -391,7 +390,7 @@ int bes2600_bh_resume(struct bes2600_common *hw_priv)
 			continue;
 		if (priv->join_status == BES2600_JOIN_STATUS_AP && priv->multicast_filter.enable) {
 			u8 count = 0;
-			WARN_ON(wsm_request_buffer_request(priv, &count));
+			bes_fail(wsm_request_buffer_request(priv, &count), "wsm_request_buffer_request");
 			bes_devel("[BH] BH resume. Reclaim Buff %d\n", count);
 			break;
 		}
@@ -467,13 +466,17 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 
 			/* Add sequence number */
 			wsm = (struct wsm_hdr *)buf->begin;
-			BUG_ON(buf_len < sizeof(*wsm));
+			if (buf_len < sizeof(*wsm)) {
+				bes_err("%s: release buf too small %zu\n",
+					__func__, buf_len);
+				break;
+			}
 
 			wsm->id &= __cpu_to_le32(~WSM_TX_SEQ(WSM_TX_SEQ_MAX));
 			wsm->id |= cpu_to_le32(WSM_TX_SEQ(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]));
 
 			bes_devel("REL %d\n", hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]);
-			if (WARN_ON(bes2600_data_write(hw_priv, buf->begin, buf_len)))
+			if (bes_fail(bes2600_data_write(hw_priv, buf->begin, buf_len), "bes2600_data_write"))
 				break;
 
 			hw_priv->buf_released = 1;
@@ -489,7 +492,7 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 	/* Should not be here */
 	bes_devel("[BH] Less HW buf %d,%d.\n", hw_priv->hw_bufs_used,
 			hw_priv->wsm_caps.numInpChBufs);
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 
 	return -1;
 }
@@ -618,8 +621,8 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 	if (!read_len)
 		return 0; /* No more work */
 
-	if (WARN_ON((read_len < sizeof(struct wsm_hdr)) ||
-			(read_len > EFFECTIVE_BUF_SIZE))) {
+	if (bes_fail((read_len < sizeof(struct wsm_hdr)) ||
+			(read_len > EFFECTIVE_BUF_SIZE), "check")) {
 		bes_err("Invalid read len: %zu (%04x)\n", read_len, ctrl_reg);
 		goto err;
 	}
@@ -636,7 +639,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 		priv->sbus_priv, read_len);
 
 	/* Check if not exceeding BES2600 capabilities */
-	if (WARN_ON_ONCE(alloc_len > EFFECTIVE_BUF_SIZE))
+	if (bes_fail(alloc_len > EFFECTIVE_BUF_SIZE, "alloc_len"))
 		bes_devel("Read aligned len: %zu\n", alloc_len);
 
 	skb = dev_alloc_skb(alloc_len);
@@ -649,7 +652,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 	if (WARN_ON(!data))
 		goto err;
 
-	if (WARN_ON(bes2600_data_read(priv, data, alloc_len))) {
+	if (bes_fail(bes2600_data_read(priv, data, alloc_len), "bes2600_data_read")) {
 		bes_err("rx blew up, len %zu\n", alloc_len);
 		goto err;
 	}
@@ -673,7 +676,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 
 	wsm = (struct wsm_hdr *)skb->data;
 	wsm_len = __le16_to_cpu(wsm->len);
-	if (WARN_ON(wsm_len > skb->len)) {
+	if (bes_fail(wsm_len > skb->len, "wsm_len")) {
 		bes_err("wsm_len err %d %d\n", (int)wsm_len, (int)skb->len);
 		goto err;
 	}
@@ -719,7 +722,7 @@ static int bes2600_bh_rx_helper(struct bes2600_common *priv, int *tx)
 	}
 
 	/* bes2600_wsm_rx takes care on SKB livetime */
-	//if (WARN_ON(wsm_handle_rx(priv, wsm_id, wsm, &skb)))
+	//if (bes_fail(wsm_handle_rx(priv, wsm_id, wsm, &skb), "wsm_handle_rx"))
 	if ((wsm_handle_rx(priv, wsm_id, wsm, &skb))) {
 		bes_err("wsm_handle_rx fail\n");
 		goto err;
@@ -754,7 +757,7 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	ret = wsm_get_tx(hw_priv, &data, &tx_len, tx_burst, &vif_selected);
 	if (ret <= 0) {
 		wsm_release_tx_buffer(hw_priv, 1);
-		if (WARN_ON(ret < 0)) {
+		if (bes_fail(ret < 0, "ret")) {
 			bes_err("bh get tx failed.\n");
 			return ret; /* Error */
 		}
@@ -762,8 +765,13 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	}
 
 	wsm = (struct wsm_hdr *)data;
-	BUG_ON(tx_len < sizeof(*wsm));
-	BUG_ON(__le16_to_cpu(wsm->len) != tx_len);
+	if (tx_len < sizeof(*wsm) ||
+	    __le16_to_cpu(wsm->len) != tx_len) {
+		bes_err("%s: bad TX WSM len %zu (hdr %u)\n", __func__,
+			tx_len, wsm ? __le16_to_cpu(wsm->len) : 0);
+		wsm_release_tx_buffer(hw_priv, 1);
+		return -EINVAL;
+	}
 	tx_len += 4;
 
 	atomic_add(1, &hw_priv->bh_tx);
@@ -772,7 +780,7 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 		hw_priv->sbus_priv, tx_len);
 
 	/* Check if not exceeding BES2600 capabilities */
-	if (WARN_ON_ONCE(tx_len > EFFECTIVE_BUF_SIZE))
+	if (bes_fail(tx_len > EFFECTIVE_BUF_SIZE, "tx_len"))
 		bes_err("Write aligned len: %zu\n", tx_len);
 
 	wsm->id &= __cpu_to_le16(0xffff ^ WSM_TX_SEQ(WSM_TX_SEQ_MAX));
@@ -781,9 +789,9 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	bes_devel("%s id:0x%04x seq:%d\n", __func__, wsm->id, hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]);
 
 #ifndef CONFIG_BES_SDIO_TX_MULTIPLE_ENABLE
-	if (WARN_ON(bes2600_data_write(data, tx_len))) {
+	if (bes_fail(bes2600_data_write(data, tx_len), "bes2600_data_write")) {
 #else
-	if (WARN_ON(hw_priv->sbus_ops->pipe_send(hw_priv->sbus_priv, 1, tx_len, data))) {
+	if (bes_fail(hw_priv->sbus_ops->pipe_send(hw_priv->sbus_priv, 1, tx_len, data), "hw_priv")) {
 #endif
 		bes_err("tx blew up, len %zu\n", tx_len);
 		wsm_release_tx_buffer(hw_priv, 1);
@@ -1187,8 +1195,8 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 #endif
 	tx:
 		if (1) {
-			if (WARN_ON(hw_priv->hw_bufs_used >
-				    hw_priv->wsm_caps.numInpChBufs)) {
+			if (bes_fail(hw_priv->hw_bufs_used >
+				    hw_priv->wsm_caps.numInpChBufs, "hw_priv")) {
 				/* Stale accounting must not BUG the tablet */
 				hw_priv->hw_bufs_used =
 					hw_priv->wsm_caps.numInpChBufs;

@@ -9,7 +9,6 @@
  * published by the Free Software Foundation.
  */
 #include "bes_fw_common.h"
-#include "bes_log.h"
 
 //#define BES_CRC32_DOUBLE_CHECK
 #ifdef BES_CRC32_DOUBLE_CHECK

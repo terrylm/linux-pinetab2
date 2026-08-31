@@ -27,15 +27,14 @@ Do not regress those without a replacement that has been tested on hardware.
 
 WARN_ON / BUG_ON
 ----------------
-* ~190 WARN_ON and ~50 BUG_ON remain.  Vendor code uses WARN_ON as the
-  error path for WSM commands (ret = WARN_ON(wsm_foo(...))).
-* WARN_ON dumps a stack and taints the kernel.  Firmware NAK, command
-  timeout, and "AP did not ACK" are expected, not "the driver is insane."
-* BUG_ON on bus/firmware errors can panic the tablet.  Never BUG_ON on
-  SDIO -EBUSY, WSM -ETIMEDOUT, or unjoin/scan races.
-* Keep WARN_ON only for true invariants (NULL deref about to happen,
-  queue id out of range that would corrupt memory).  Everything else:
-  dev_err / return -Exxx.
+* Done for firmware/bus errors: WSM command failures, parse underflow,
+  SDIO I/O, and "unexpected path" now use bes_fail()/bes_err() and return
+  -Exxx.  BUG_ON is gone from .c files.
+* Remaining WARN_ON are programmer invariants (NULL about to be
+  dereferenced, queue id out of range, if_id == GENERIC, empty free
+  pool).  Those still dump a stack on violation; that is intended.
+* Re-audit if any leftover WARN_ON fires on a healthy associated STA
+  session (it should not).
 
 Logging
 -------

@@ -31,7 +31,6 @@
 #include "epta_coex.h"
 #include "epta_request.h"
 #include "bes_pwr.h"
-#include "bes_log.h"
 
 #define WSM_CMD_TIMEOUT		(6 * HZ) /* With respect to interrupt loss */
 #define WSM_CMD_JOIN_TIMEOUT	(7 * HZ) /* Join timeout is 5 sec. in FW   */
@@ -140,7 +139,7 @@ static int wsm_generic_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -186,7 +185,7 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 	int status;
 
 	status = WSM_GET32(buf);
-	if (WARN_ON(status != WSM_STATUS_SUCCESS))
+	if (bes_fail(status != WSM_STATUS_SUCCESS, "status"))
 		return -EINVAL;
 
 	if (bes2600_chrdev_is_signal_mode()) {
@@ -205,7 +204,7 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -365,7 +364,7 @@ static int wsm_sleep_ctrl(struct bes2600_common *hw_priv, u32 disable, int if_id
 	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
 
 	if (if_id != 0) {
-		WARN_ON(1);
+		bes_err("%s: unexpected path\n", __func__);
 		return -EBUSY;
 	}
 
@@ -434,10 +433,10 @@ static int wsm_read_mib_confirm(struct bes2600_common *hw_priv,
 				struct wsm_buf *buf)
 {
 	u16 size;
-	if (WARN_ON(WSM_GET32(buf) != WSM_STATUS_SUCCESS))
+	if (bes_fail(WSM_GET32(buf) != WSM_STATUS_SUCCESS, "WSM_GET32"))
 		return -EINVAL;
 
-	if (WARN_ON(WSM_GET16(buf) != arg->mibId))
+	if (bes_fail(WSM_GET16(buf) != arg->mibId, "WSM_GET16"))
 		return -EINVAL;
 
 	size = WSM_GET16(buf);
@@ -449,7 +448,7 @@ static int wsm_read_mib_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -654,7 +653,7 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -667,7 +666,7 @@ static int wsm_multi_tx_confirm(struct bes2600_common *hw_priv,
 	int i;
 
 	count = WSM_GET32(buf);
-	if (WARN_ON(count <= 0))
+	if (bes_fail(count <= 0, "count"))
 		return -EINVAL;
 	else if (count > 1) {
 		ret = wsm_release_tx_buffer(hw_priv, count - 1);
@@ -692,7 +691,7 @@ static int wsm_multi_tx_confirm(struct bes2600_common *hw_priv,
 	return ret;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -723,7 +722,7 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 
 underflow:
 	bes_err("%s: underflow parsing 0x040B\n", __func__);
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -1351,7 +1350,7 @@ static int wsm_request_buffer_confirm(struct bes2600_vif *priv,
 				} else {
 					ret = ieee80211_sta_ps_transition_ni(sta, (sta_asleep_mask & mask) ? true: false);
 					bes_devel("PS State NOTIFIED %d\n", ret);
-					WARN_ON(ret);
+					bes_fail(ret, "ret");
 				}
 				rcu_read_unlock();
 			}
@@ -1365,12 +1364,12 @@ static int wsm_request_buffer_confirm(struct bes2600_vif *priv,
 	bes_devel("[WSM] WRBC - HW Buf count %d SleepMask %d\n",
 					hw_priv->hw_bufs_used, sta_asleep_mask);
 	hw_priv->buf_released = 0;
-	WARN_ON(count != (hw_priv->wsm_caps.numInpChBufs - 1));
+	bes_fail(count != (hw_priv->wsm_caps.numInpChBufs - 1), "count");
 
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -1444,10 +1443,10 @@ static int wsm_startup_indication(struct bes2600_common *hw_priv,
 	WSM_GET(buf, &fw_label[0], sizeof(fw_label) - 1);
 	fw_label[sizeof(fw_label) - 1] = 0; /* Do not trust FW too much. */
 
-	if (WARN_ON(status))
+	if (bes_fail(status, "status"))
 		return -EINVAL;
 
-	if (WARN_ON(hw_priv->wsm_caps.firmwareType > 4))
+	if (bes_fail(hw_priv->wsm_caps.firmwareType > 4, "hw_priv"))
 		return -EINVAL;
 
 	bes_devel("BES2600 WSM init done.\n"
@@ -1473,7 +1472,7 @@ static int wsm_startup_indication(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 	return -EINVAL;
 }
 
@@ -1696,7 +1695,7 @@ static int wsm_channel_switch_indication(struct bes2600_common *hw_priv,
 						struct wsm_buf *buf)
 {
 	wsm_unlock_tx(hw_priv); /* Re-enable datapath */
-	WARN_ON(WSM_GET32(buf));
+	bes_fail(WSM_GET32(buf), "WSM_GET32");
 
 	hw_priv->channel_switch_in_progress = 0;
 	wake_up(&hw_priv->channel_switch_done);
@@ -1903,7 +1902,12 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		*(u32 *)buf->data = (u32)jiffies_to_msecs(jiffies);
 
 	spin_lock(&hw_priv->wsm_cmd.lock);
-	BUG_ON(hw_priv->wsm_cmd.ptr);
+	if (hw_priv->wsm_cmd.ptr) {
+		spin_unlock(&hw_priv->wsm_cmd.lock);
+		bes_err("%s: cmd 0x%04x while 0x%04x still in flight\n",
+			__func__, cmd, hw_priv->wsm_cmd.cmd);
+		return -EBUSY;
+	}
 	hw_priv->wsm_cmd.done = 0;
 	hw_priv->wsm_cmd.ptr = buf->begin;
 	hw_priv->wsm_cmd.len = buf_len;
@@ -2008,10 +2012,10 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 			/* If wsm_handle_rx got stuck in _confirm we will hang
 			 * system there. It's better than silently currupt
 			 * stack or heap, isn't it? */
-			BUG_ON(wait_event_timeout(
+			bes_fail(wait_event_timeout(
 					hw_priv->wsm_cmd_wq,
 					hw_priv->wsm_cmd.done,
-					WSM_CMD_LAST_CHANCE_TIMEOUT) <= 0);
+					WSM_CMD_LAST_CHANCE_TIMEOUT) <= 0, "wait_event_timeout");
 		}
 
 		/* Kill BH thread to report the error to the top layer. */
@@ -2022,7 +2026,7 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		spin_lock(&hw_priv->wsm_cmd.lock);
 		hw_priv->wsm_cmd.arg = NULL;
 		hw_priv->wsm_cmd.ptr = NULL;
-		BUG_ON(!hw_priv->wsm_cmd.done);
+		bes_fail(!hw_priv->wsm_cmd.done, "check");
 		ret = hw_priv->wsm_cmd.ret;
 		spin_unlock(&hw_priv->wsm_cmd.lock);
 	}
@@ -2072,7 +2076,7 @@ bool wsm_flush_tx(struct bes2600_common *hw_priv)
 	int i;
 
 	/* Flush must be called with TX lock held. */
-	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	WARN_ON(!atomic_read(&hw_priv->tx_lock));
 
 	/* First check if we really need to do something.
 	 * It is safe to use unprotected access, as hw_bufs_used
@@ -2143,7 +2147,7 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 
 
 	/* Flush must be called with TX lock held. */
-	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	WARN_ON(!atomic_read(&hw_priv->tx_lock));
 
 	/* First check if we really need to do something.
 	 * It is safe to use unprotected access, as hw_bufs_used
@@ -2429,7 +2433,7 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		case 0x041B: /* update_ie */
 		case 0x041C: /* map_link */
 		case 0x0429: /* epta */
-			WARN_ON(wsm_arg != NULL);
+			bes_fail(wsm_arg != NULL, "wsm_arg");
 			ret = wsm_generic_confirm(hw_priv, wsm_arg, &wsm_buf);
 			if (ret)
 				wiphy_warn(hw_priv->hw->wiphy,
@@ -2448,7 +2452,7 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		case 0x0424: /* wifi sleep disable */
 			break;
 		default:
-			BUG_ON(1);
+			bes_err("%s: unexpected path\n", __func__);
 		}
 
 		spin_lock(&hw_priv->wsm_cmd.lock);
@@ -2511,7 +2515,7 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 			break;
 		}
 	} else {
-		WARN_ON(1);
+		bes_err("%s: unexpected path\n", __func__);
 		ret = -EINVAL;
 	}
 out:
@@ -2677,11 +2681,11 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 		 * We are dropping everything except AUTH in non-joined mode. */
 		bes_err("[WSM] Drop frame (0x%.4X).\n", fctl);
 #ifdef CONFIG_BES2600_TESTMODE
-		BUG_ON(bes2600_queue_remove(hw_priv, queue,
-			__le32_to_cpu(wsm->packetID)));
+		bes_fail(bes2600_queue_remove(hw_priv, queue,
+			__le32_to_cpu(wsm->packetID)), "bes2600_queue_remove");
 #else
-		BUG_ON(bes2600_queue_remove(queue,
-			__le32_to_cpu(wsm->packetID)));
+		bes_fail(bes2600_queue_remove(queue,
+			__le32_to_cpu(wsm->packetID)), "bes2600_queue_remove");
 #endif /*CONFIG_BES2600_TESTMODE*/
 		handled = true;
 	}
@@ -2883,7 +2887,10 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 	if (hw_priv->wsm_cmd.ptr) {
 		++count;
 		spin_lock(&hw_priv->wsm_cmd.lock);
-		BUG_ON(!hw_priv->wsm_cmd.ptr);
+		if (!hw_priv->wsm_cmd.ptr) {
+			spin_unlock(&hw_priv->wsm_cmd.lock);
+			return 0;
+		}
 		*data = hw_priv->wsm_cmd.ptr;
 		*tx_len = hw_priv->wsm_cmd.len;
 		*burst = 1;
@@ -3125,7 +3132,7 @@ void wsm_txed(struct bes2600_common *hw_priv, u8 *data)
 
 void wsm_buf_init(struct wsm_buf *buf)
 {
-	BUG_ON(buf->begin);
+	WARN_ON(buf->begin);
 	buf->begin = kmalloc(SDIO_BLOCK_SIZE, GFP_KERNEL | GFP_DMA);
 	buf->end = buf->begin ? &buf->begin[SDIO_BLOCK_SIZE] : buf->begin;
 	wsm_buf_reset(buf);

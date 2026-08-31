@@ -18,7 +18,6 @@
 #include <linux/version.h>
 #include "bes2600_factory.h"
 #include "bes_chardev.h"
-#include "bes_log.h"
 
 #define LE_CPU_TRANS(val, cvt)		(val = cvt(val))
 

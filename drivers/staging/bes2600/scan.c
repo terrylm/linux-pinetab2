@@ -289,7 +289,14 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 
 	wsm_vif_lock_tx(priv);
 
-	BUG_ON(hw_priv->scan.req);
+	if (hw_priv->scan.req) {
+		bes_err("%s: scan already in progress\n", __func__);
+		wsm_unlock_tx(hw_priv);
+		up(&hw_priv->conf_lock);
+		up(&hw_priv->scan.lock);
+		dev_kfree_skb(frame.skb);
+		return -EBUSY;
+	}
 	hw_priv->scan.req = req;
 	hw_priv->scan.n_ssids = 0;
 	hw_priv->scan.status = 0;
@@ -305,7 +312,11 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	for (i = 0; i < req->n_ssids; ++i) {
 		struct wsm_ssid *dst =
 			&hw_priv->scan.ssids[hw_priv->scan.n_ssids];
-		BUG_ON(req->ssids[i].ssid_len > sizeof(dst->ssid));
+		if (req->ssids[i].ssid_len > sizeof(dst->ssid)) {
+			bes_err("%s: SSID too long (%u)\n", __func__,
+				req->ssids[i].ssid_len);
+			continue;
+		}
 		memcpy(&dst->ssid[0], req->ssids[i].ssid,
 			sizeof(dst->ssid));
 		dst->length = req->ssids[i].ssid_len;
@@ -725,7 +736,7 @@ static void bes2600_scan_restart_delayed(struct bes2600_vif *priv)
 	/* FW bug: driver has to restart p2p-dev mode after scan. */
 	if (priv->join_status == BES2600_JOIN_STATUS_MONITOR) {
 		/*bes2600_enable_listening(priv);*/
-		// WARN_ON(1);
+		// bes_err("%s: unexpected path\n", __func__);
 		bes_devel("scan complete join_status is monitor");
 		bes2600_update_filtering(priv);
 	}
@@ -947,8 +958,8 @@ void bes2600_probe_work(struct work_struct *work)
 	int i;
 	wiphy_info(hw_priv->hw->wiphy, "[SCAN] Direct probe work.\n");
 
-	BUG_ON(queueId >= 4);
-	BUG_ON(!hw_priv->channel);
+	if (WARN_ON(queueId >= 4) || WARN_ON(!hw_priv->channel))
+		return;
 
 	down(&hw_priv->conf_lock);
 	if (unlikely(down_trylock(&hw_priv->scan.lock))) {
@@ -1023,17 +1034,17 @@ void bes2600_probe_work(struct work_struct *work)
 
 	/* FW bug: driver has to restart p2p-dev mode after scan */
 	if (priv->join_status == BES2600_JOIN_STATUS_MONITOR) {
-		WARN_ON(1);
+		bes_err("%s: unexpected path\n", __func__);
 		/*bes2600_disable_listening(priv);*/
 	}
-	ret = WARN_ON(wsm_set_template_frame(hw_priv, &frame,
-				priv->if_id));
+	ret = bes_fail(wsm_set_template_frame(hw_priv, &frame,
+				priv->if_id), "wsm_set_template_frame");
 
 	hw_priv->scan.direct_probe = 1;
 	hw_priv->scan.if_id = priv->if_id;
 	if (!ret) {
 		wsm_flush_tx(hw_priv);
-		ret = WARN_ON(bes2600_scan_start(priv, &scan));
+		ret = bes_fail(bes2600_scan_start(priv, &scan), "bes2600_scan_start");
 	}
 	up(&hw_priv->conf_lock);
 
@@ -1041,10 +1052,10 @@ void bes2600_probe_work(struct work_struct *work)
 	if (!ret)
 		IEEE80211_SKB_CB(frame.skb)->flags |= IEEE80211_TX_STAT_ACK;
 #ifdef CONFIG_BES2600_TESTMODE
-	BUG_ON(bes2600_queue_remove(hw_priv, queue,
-			hw_priv->pending_frame_id));
+	bes_fail(bes2600_queue_remove(hw_priv, queue,
+			hw_priv->pending_frame_id), "bes2600_queue_remove");
 #else
-	BUG_ON(bes2600_queue_remove(queue, hw_priv->pending_frame_id));
+	bes_fail(bes2600_queue_remove(queue, hw_priv->pending_frame_id), "bes2600_queue_remove");
 #endif
 
 	if (ret) {

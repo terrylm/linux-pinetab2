@@ -11,7 +11,6 @@
 #include "bes2600.h"
 #include "wsm.h"
 #include "queue.h"
-#include "bes_log.h"
 
 struct tx_loop_table
 {
@@ -86,7 +85,7 @@ void bes2600_tx_loop_set_enable(struct bes2600_common *hw_priv, bool need_warn)
 	if (hw_priv->tx_loop.enabled)
 		return;
 
-	WARN_ON(need_warn);
+	bes_fail(need_warn, "need_warn");
 
 	hw_priv->tx_loop.enabled = true;
 	hw_priv->tx_loop.start_lmac_seq = hw_priv->wsm_rx_seq[0];

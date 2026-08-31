@@ -138,11 +138,11 @@ static int bes2600_set_txrx_opt_param(struct bes2600_common *hw_priv,
 {
 
 	int ret = 0;
-	ret = WARN_ON(wsm_write_mib(hw_priv,
+	ret = bes_fail(wsm_write_mib(hw_priv,
 					WSM_MIB_ID_EXT_TXRX_OPT_PARAM,
 					(u8 *)para,
 					sizeof(MIB_TXRX_OPT_PARAM),
-					priv->if_id));
+					priv->if_id), "wsm_write_mib");
 	return ret;
 }
 
@@ -157,11 +157,11 @@ static int bes2600_enable_tx_shortgi(struct bes2600_common *hw_priv,
 
 	if (en != onoff) {
 		en = onoff;
-		ret = WARN_ON(wsm_write_mib(hw_priv,
+		ret = bes_fail(wsm_write_mib(hw_priv,
 						WSM_MIB_ID_EXT_TX_SHORT_GI_ENABLED,
 						(u8 *)&onoff,
 						sizeof(onoff),
-						priv->if_id));
+						priv->if_id), "wsm_write_mib");
 	}
 	return ret;
 }

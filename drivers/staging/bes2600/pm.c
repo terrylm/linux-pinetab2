@@ -18,7 +18,6 @@
 #include "bh.h"
 #include "sbus.h"
 #include "bes_chardev.h"
-#include "bes_log.h"
 
 #define BES2600_BEACON_SKIPPING_MULTIPLIER 3
 
@@ -419,7 +418,7 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 	wsm_set_ipv6_filter(hw_priv, &bes2600_ipv6_filter_on.hdr, priv->if_id);
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_keepalive_filter(priv, true));
+		bes_fail(wsm_set_keepalive_filter(priv, true), "wsm_set_keepalive_filter");
 
 	/* Set Multicast Address Filter */
 	if (priv->multicast_filter.numOfAddresses) {
@@ -429,8 +428,8 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
-				&fwdoffload, priv->if_id));
+		bes_fail(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+				&fwdoffload, priv->if_id), "wsm_set_forwarding_offlad");
 #endif
 
 	/* Allocate state */
@@ -468,7 +467,7 @@ int bes2600_wow_resume(struct ieee80211_hw *hw)
 	up(&hw_priv->scan.lock);
 
 	/* Resume BH thread */
-	WARN_ON(bes2600_bh_resume(hw_priv));
+	bes_fail(bes2600_bh_resume(hw_priv), "bes2600_bh_resume");
 
 	/* mark resume start to avoid device to exit ps mode when setting device */
 	bes2600_pwr_resume_start(hw_priv);
@@ -512,7 +511,7 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 		return 0;
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_keepalive_filter(priv, false));
+		bes_fail(wsm_set_keepalive_filter(priv, false), "wsm_set_keepalive_filter");
 
 	/* Set Multicast Address Filter */
 	if (priv->multicast_filter.numOfAddresses) {
@@ -522,8 +521,8 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
-				&fwdoffload, priv->if_id));
+		bes_fail(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+				&fwdoffload, priv->if_id), "wsm_set_forwarding_offlad");
 #endif
 
 	/* Resume delayed work */

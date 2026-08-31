@@ -14,7 +14,6 @@
 
 #include "epta_coex.h"
 #include "epta_request.h"
-#include "bes_log.h"
 
 #define EPTA_PERIOD_TIME					102400
 

@@ -740,8 +740,8 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	}
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
-	if (WARN_ON(!debugfs_create_file("hang", S_IWUSR, d->debugfs_phy,
-			priv, &fops_hang)))
+	if (bes_fail(!debugfs_create_file("hang", S_IWUSR, d->debugfs_phy,
+			priv, &fops_hang), "debugfs_create_file"))
 		goto err;
 #endif
 

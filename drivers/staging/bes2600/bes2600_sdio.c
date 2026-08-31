@@ -33,7 +33,6 @@
 #include "bes2600_plat.h"
 #include "hwio.h"
 #include "bes_chardev.h"
-#include "bes_log.h"
 
 void sdio_work_debug(struct sbus_priv *self);
 static void bes2600_sdio_power_down(struct sbus_priv *self);
@@ -170,7 +169,10 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 
 #ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self = sdio_get_drvdata(func);
-	BUG_ON(!self);
+	if (WARN_ON(!self)) {
+		ret = -ENODEV;
+		goto out;
+	}
 #endif
 
 	if (func->card->cccr.multi_block && size > sdio_max_byte_size(func) ) {
@@ -400,7 +402,8 @@ static u32 bes2600_gpio_irq_handler(void *dev_id)
 	struct sbus_priv *self = (struct sbus_priv *)dev_id;
 
 	bes_devel("\n %s called \n", __func__);
-	BUG_ON(!self);
+	if (WARN_ON(!self))
+		return 0;
 	if (self->irq_handler)
 		self->irq_handler(self->irq_priv);
 	return 0;
@@ -420,7 +423,7 @@ static int bes2600_request_irq(struct sbus_priv *self,
 	self->func->num = 0;
 
 	cccr = sdio_readb(self->func, SDIO_CCCR_IENx, &ret);
-	if (WARN_ON(ret))
+	if (bes_fail(ret, "ret"))
 		goto set_func;
 
 	/* Master interrupt enable ... */
@@ -430,7 +433,7 @@ static int bes2600_request_irq(struct sbus_priv *self,
 	cccr |= BIT(func_num);
 
 	sdio_writeb(self->func, cccr, SDIO_CCCR_IENx, &ret);
-	if (WARN_ON(ret))
+	if (bes_fail(ret, "ret"))
 		goto set_func;
 
 	/* Restore the WLAN function number */
@@ -819,7 +822,7 @@ static void sdio_rx_work(struct work_struct *work)
 failed:
 	bes2600_gpio_allow_mcu_sleep(self);
 	bes2600_chrdev_wifi_force_close(self->core, false);
-	WARN_ON(1);
+	bes_err("%s: unexpected path\n", __func__);
 }
 
 static void *bes2600_sdio_pipe_read(struct sbus_priv *self)
@@ -1043,7 +1046,7 @@ static void sdio_tx_work(struct work_struct *work)
 		}
 flush_previous:
 		if (likely(scatters)) {
-			if (WARN_ON(total_len & 0x3))
+			if (bes_fail(total_len & 0x3, "total_len"))
 				break;
 			else
 				total_len |= (cur_blk - 1);
@@ -1868,7 +1871,8 @@ err:
 int bes2600_register_net_dev(struct sbus_priv *bus_priv)
 {
 	int status = 0;
-	BUG_ON(!bus_priv);
+	if (WARN_ON(!bus_priv))
+		return -EINVAL;
 	status = bes2600_core_probe(&bes2600_sdio_sbus_ops,
 			      bus_priv, bus_priv->dev, &bus_priv->core);
 	if(!status)
@@ -1879,7 +1883,8 @@ int bes2600_register_net_dev(struct sbus_priv *bus_priv)
 
 int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 {
-	BUG_ON(!bus_priv);
+	if (WARN_ON(!bus_priv))
+		return -EINVAL;
 	if (bus_priv->core && !bus_priv->unregister_in_process) {
 		bus_priv->unregister_in_process = true;
 		bes2600_core_release(bus_priv->core);
@@ -1920,7 +1925,8 @@ int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 
 bool bes2600_is_net_dev_created(struct sbus_priv *bus_priv)
 {
-	BUG_ON(!bus_priv);
+	if (WARN_ON(!bus_priv))
+		return false;
 	return (bus_priv->core != NULL);
 }
 

@@ -14,7 +14,6 @@
 #include "bes2600.h"
 #include "hwio.h"
 #include "sbus.h"
-#include "bes_log.h"
 
  /* Sdio addr is 4*spi_addr */
 #define SPI_REG_ADDR_TO_SDIO(spi_reg_addr) ((spi_reg_addr) << 2)
@@ -35,7 +34,7 @@ static int __bes2600_reg_read(u16 addr, void *buf, size_t buf_len, int buf_id)
 	u32 sdio_reg_addr_17bit ;
 
 	/* Check if buffer is aligned to 4 byte boundary */
-	if (WARN_ON(((unsigned long)buf & 3) && (buf_len > 4))) {
+	if (bes_fail(((unsigned long)buf & 3) && (buf_len > 4), "check")) {
 		bes_err("%s: buffer is not aligned.\n", __func__);
 		return -EINVAL;
 	}
@@ -44,7 +43,8 @@ static int __bes2600_reg_read(u16 addr, void *buf, size_t buf_len, int buf_id)
 	addr_sdio = SPI_REG_ADDR_TO_SDIO(addr);
 	sdio_reg_addr_17bit = SDIO_ADDR17BIT(buf_id, 0, 0, addr_sdio);
 
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	return bes2600_subs_ops->sbus_memcpy_fromio(bes2600_sbus_priv,
 					sdio_reg_addr_17bit,
 					buf, buf_len);
@@ -59,7 +59,8 @@ static int __bes2600_reg_write(u16 addr, const void *buf, size_t buf_len, int bu
 	addr_sdio = SPI_REG_ADDR_TO_SDIO(addr);
 	sdio_reg_addr_17bit = SDIO_ADDR17BIT(buf_id, 0, 0, addr_sdio);
 
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	return bes2600_subs_ops->sbus_memcpy_toio(bes2600_sbus_priv,
 					sdio_reg_addr_17bit,
 					buf, buf_len);
@@ -89,7 +90,8 @@ void bes2600_reg_set_object(struct sbus_ops *ops, struct sbus_priv *priv)
 int bes2600_reg_read(u32 addr, void *buf, size_t buf_len)
 {
 	int ret;
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 	ret = bes2600_subs_ops->sbus_reg_read(bes2600_sbus_priv, addr, buf, buf_len);
 	bes2600_subs_ops->unlock(bes2600_sbus_priv);
@@ -99,7 +101,8 @@ int bes2600_reg_read(u32 addr, void *buf, size_t buf_len)
 int bes2600_reg_write(u32 addr, const void *buf, size_t buf_len)
 {
 	int ret;
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 	ret = bes2600_subs_ops->sbus_reg_write(bes2600_sbus_priv, addr, buf, buf_len);
 	bes2600_subs_ops->unlock(bes2600_sbus_priv);
@@ -109,7 +112,8 @@ int bes2600_reg_write(u32 addr, const void *buf, size_t buf_len)
 int bes2600_data_read(void *buf, size_t buf_len)
 {
 	int ret, retry = 1;
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 #ifndef CONFIG_BES2600_WLAN_BES
 	{
@@ -159,7 +163,8 @@ int bes2600_data_write(const void *buf, size_t buf_len)
 	int ret, retry = 1;
 	u32 addr = 0;
 
-	BUG_ON(!bes2600_subs_ops);
+	if (WARN_ON(!bes2600_subs_ops))
+		return -ENODEV;
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
 #ifndef CONFIG_BES2600_WLAN_BES
 	{
@@ -210,9 +215,7 @@ int bes2600_indirect_read(u32 addr, void *buf, size_t buf_len, u32 prefetch, u16
 
 	if ((buf_len / 2) >= 0x1000) {
 		bes_err("%s: Can't read more than 0xfff words.\n", __func__);
-		WARN_ON(1);
 		return -EINVAL;
-		goto out;
 	}
 
 	bes2600_subs_ops->lock(bes2600_sbus_priv);
@@ -273,7 +276,6 @@ int bes2600_apb_write(u32 addr, const void *buf, size_t buf_len)
 
 	if ((buf_len / 2) >= 0x1000) {
 		bes_err("%s: Can't wrire more than 0xfff words.\n", __func__);
-		WARN_ON(1);
 		return -EINVAL;
 	}
 
@@ -307,7 +309,7 @@ int bes2600_ahb_write(u32 addr, const void *buf, size_t buf_len)
 		bes2600_dbg(BES2600_DBG_SBUS,
 				"%s: Can't wrire more than 0xfff words.\n",
 				__func__);
-		WARN_ON(1);
+		bes_err("%s: unexpected path\n", __func__);
 		bes2600_info(BES2600_DBG_SBUS, "%s:EXIT (1) \n",__func__);
 		return -EINVAL;
 	}

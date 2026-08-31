@@ -27,7 +27,6 @@
 #include "fwio.h"
 #include "bes_chardev.h"
 #include "tx_loop.h"
-#include "bes_log.h"
 
 enum wait_state {
 	BES2600_BOOT_WAIT_NONE = 0,
@@ -167,7 +166,7 @@ static int bes2600_switch_wifi(bool on)
 			/* wait probe done event */
 			status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 					bes2600_bootup_end(), HZ * 8);
-			WARN_ON(status <= 0);
+			bes_fail(status <= 0, "status");
 			ret = (status <= 0 || bes2600_chrdev_is_bus_error()) ? -1 : 0;
 		} else {
 			/* bes2600 is already powered up, we just need to create net device */
@@ -224,7 +223,7 @@ static int bes2600_switch_bt(bool on)
 			/* wait bootup process end */
 			status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 				bes2600_bootup_end(), HZ * 8);
-			WARN_ON(status <= 0);
+			bes_fail(status <= 0, "status");
 
 			/* check if there is a error when bootup */
 			ret = (status <= 0 || bes2600_chrdev_is_bus_error()) ? -1 : 0;
@@ -355,7 +354,7 @@ static int bes2600_op_wifi_bt_on_off(const char *str)
 		status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 					(bes2600_cdev.bus_probe > BES2600_BUS_PROBE_START),
 					HZ);
-		WARN_ON(status <= 0);
+		bes_fail(status <= 0, "status");
 	}
 
 	/* must wait previous operation end in critical section */
@@ -364,7 +363,7 @@ static int bes2600_op_wifi_bt_on_off(const char *str)
 		status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 					(bes2600_cdev.wait_state == BES2600_BOOT_WAIT_NONE),
 					HZ * 8);
-		WARN_ON(status <= 0);
+		bes_fail(status <= 0, "status");
 	}
 
 	/* if dpd calibration is doing, modify wifi and bt state directly */
@@ -389,7 +388,7 @@ static int bes2600_op_wifi_bt_on_off(const char *str)
 		/* wait probe done event */
 		status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 				bes2600_bootup_end(), HZ * 8);
-		WARN_ON(status <= 0);
+		bes_fail(status <= 0, "status");
 
 		return (status <= 0 || bes2600_chrdev_is_bus_error()) ? -EFAULT : 0;
 	}
@@ -477,7 +476,7 @@ static int bes2600_op_change_fw_type(const char *str)
 
 	/* wait disconnect event */
 	status = wait_event_timeout(bes2600_cdev.probe_done_wq, (bes2600_cdev.sbus_priv == NULL), HZ * 10);
-	WARN_ON(status <= 0);
+	bes_fail(status <= 0, "status");
 
 	if (bes2600_cdev.dpd_calied
 	   && bes2600_chrdev_check_system_close()) {
@@ -493,7 +492,7 @@ static int bes2600_op_change_fw_type(const char *str)
 	/* wait probe done event */
 	status = wait_event_timeout(bes2600_cdev.probe_done_wq,
 			bes2600_bootup_end(), HZ * 10);
-	WARN_ON(status <= 0);
+	bes_fail(status <= 0, "status");
 
 	ret = (status <= 0 || bes2600_chrdev_is_bus_error()) ? -1 : 0;
 
@@ -629,7 +628,7 @@ static ssize_t bes2600_chrdev_read(struct file *file, char __user *user_buf,
 		if (bes2600_chrdev_wakeup_by_event_get() > WAKEUP_EVENT_NONE) {
 			status = wait_event_timeout(bes2600_cdev.wakeup_reason_wq,
 				bes2600_chrdev_wakeup_by_event_get() ==  WAKEUP_EVENT_NONE, HZ * 2);
-			WARN_ON(status <= 0);
+			bes_fail(status <= 0, "status");
 		}
 		len = sprintf(buf, "wakeup_reason: %u, src_port: %u\n",
 					  bes2600_cdev.wakeup_state, bes2600_cdev.src_port);
@@ -1037,7 +1036,7 @@ int bes2600_chrdev_do_system_close(const struct sbus_ops *sbus_ops, struct sbus_
 
 	/* wait disconnect event */
 	status = wait_event_timeout(bes2600_cdev.probe_done_wq, (bes2600_cdev.sbus_priv == NULL), HZ * 3);
-	WARN_ON(status <= 0);
+	bes_fail(status <= 0, "status");
 
 	return ret;
 }

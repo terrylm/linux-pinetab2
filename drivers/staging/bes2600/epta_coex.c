@@ -14,7 +14,6 @@
 #include "bes2600.h"
 #include "epta_coex.h"
 #include "epta_request.h"
-#include "bes_log.h"
 
 static bool coex_ps_en;
 static bool coex_fdd_mode;	/* fdd or fdd hybrid */

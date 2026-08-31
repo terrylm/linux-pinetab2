@@ -95,10 +95,10 @@ int bes2600_sta_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 	hw_priv->connected_sta_cnt++;
 	if(hw_priv->connected_sta_cnt>1) {
 			wsm_lock_tx(hw_priv);
-			WARN_ON(wsm_set_block_ack_policy(hw_priv,
+			bes_fail(wsm_set_block_ack_policy(hw_priv,
 					BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
 					BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
-					priv->if_id));
+					priv->if_id), "wsm_set_block_ack_policy");
 			wsm_unlock_tx(hw_priv);
 	}
 	/* End HW limitations fix. */
@@ -141,10 +141,10 @@ int bes2600_sta_remove(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		if ((priv->if_id != 1) ||
 			((priv->if_id == 1) && hw_priv->is_go_thru_go_neg)) {
 			wsm_lock_tx(hw_priv);
-			WARN_ON(wsm_set_block_ack_policy(hw_priv,
+			bes_fail(wsm_set_block_ack_policy(hw_priv,
 						BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
 						BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
-						priv->if_id));
+						priv->if_id), "wsm_set_block_ack_policy");
 			wsm_unlock_tx(hw_priv);
 		}
 	}
@@ -163,7 +163,7 @@ static void __bes2600_sta_notify(struct bes2600_vif *priv,
 	/* Zero link id means "for all link IDs" */
 	if (link_id)
 		bit = BIT(link_id);
-	else if (WARN_ON_ONCE(notify_cmd != STA_NOTIFY_AWAKE))
+	else if (bes_fail(notify_cmd != STA_NOTIFY_AWAKE, "notify_cmd"))
 		bit = 0;
 	else
 		bit = priv->link_id_map;
@@ -258,7 +258,7 @@ static int bes2600_set_tim_impl(struct bes2600_vif *priv, bool aid0_bit_set)
 
 	update_ie.ies = &skb->data[tim_offset];
 	update_ie.length = tim_length;
-	WARN_ON(wsm_update_ie(hw_priv, &update_ie, priv->if_id));
+	bes_fail(wsm_update_ie(hw_priv, &update_ie, priv->if_id), "wsm_update_ie");
 
 	dev_kfree_skb(skb);
 
@@ -313,12 +313,12 @@ void bes2600_set_cts_work(struct work_struct *work)
 
 	/* TODO:COMBO: If 2 interfaces are on the same channel they share
 	the same ERP values */
-	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_NON_ERP_PROTECTION,
+	bes_fail(wsm_write_mib(hw_priv, WSM_MIB_ID_NON_ERP_PROTECTION,
 				&use_cts_prot, sizeof(use_cts_prot),
-				priv->if_id));
+				priv->if_id), "wsm_write_mib");
 	/* If STA Mode update_ie is not required */
 	if (priv->mode != NL80211_IFTYPE_STATION) {
-		WARN_ON(wsm_update_ie(hw_priv, &update_ie, priv->if_id));
+		bes_fail(wsm_update_ie(hw_priv, &update_ie, priv->if_id), "wsm_update_ie");
 	}
 
 	return;
@@ -331,8 +331,8 @@ static int __maybe_unused bes2600_set_btcoexinfo(struct bes2600_vif *priv)
 
 	if (priv->mode == NL80211_IFTYPE_STATION) {
 		/* Plumb PSPOLL and NULL template */
-		WARN_ON(bes2600_upload_pspoll(priv));
-		WARN_ON(bes2600_upload_null(priv));
+		bes_fail(bes2600_upload_pspoll(priv), "bes2600_upload_pspoll");
+		bes_fail(bes2600_upload_null(priv), "bes2600_upload_null");
 	} else {
 		return 0;
 	}
@@ -368,9 +368,9 @@ static int __maybe_unused bes2600_set_btcoexinfo(struct bes2600_vif *priv)
 		arg.internalTxRate,
 		arg.nonErpInternalTxRate);
 
-	ret = WARN_ON(wsm_write_mib(cw12xx_vifpriv_to_hwpriv(priv),
+	ret = bes_fail(wsm_write_mib(cw12xx_vifpriv_to_hwpriv(priv),
 		WSM_MIB_ID_OVERRIDE_INTERNAL_TX_RATE,
-		&arg, sizeof(arg), priv->if_id));
+		&arg, sizeof(arg), priv->if_id), "wsm_write_mib");
 
 	return ret;
 }
@@ -500,8 +500,8 @@ static void bes2600_bss_info_changed_beacon(struct bes2600_vif *priv,
 	else
 			bes_devel("priv->join_status=%d\n",priv->join_status);
 #endif
-	WARN_ON(bes2600_upload_beacon(priv));
-	WARN_ON(bes2600_update_beaconing(priv));
+	bes_fail(bes2600_upload_beacon(priv), "bes2600_upload_beacon");
+	bes_fail(bes2600_update_beaconing(priv), "bes2600_update_beaconing");
 }
 
 static void bes2600_bss_info_changed_beacon_enabled(struct bes2600_vif *priv,
@@ -517,7 +517,7 @@ static void bes2600_bss_info_changed_beacon_int(struct bes2600_vif *priv,
 	bes_devel("BSS_CHANGED_BEACON_INT: %d\n", info->beacon_int);
 	/* Restart AP only when connected */
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-			WARN_ON(bes2600_update_beaconing(priv));
+			bes_fail(bes2600_update_beaconing(priv), "bes2600_update_beaconing");
 }
 
 static void bes2600_bss_info_changed_assoc(struct bes2600_vif *priv,
@@ -584,7 +584,7 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 					/* TODO:COMBO:Change this once
 					 * mac80211 changes are available */
 					enum nl80211_channel_type ch_type;
-					BUG_ON(!hw_priv->channel);
+					WARN_ON(!hw_priv->channel);
 					hw_priv->ht_info.ht_cap = sta->deflink.ht_cap;
 					priv->bss_params.operationalRateSet =
 							__cpu_to_le32(
@@ -658,9 +658,9 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							/* Non Green field capable STA */
 							val = __cpu_to_le32(BIT(1));
 					}
-					WARN_ON(wsm_write_mib(hw_priv,
+					bes_fail(wsm_write_mib(hw_priv,
 											WSM_MID_ID_SET_HT_PROTECTION,
-											&val, sizeof(val), priv->if_id));
+											&val, sizeof(val), priv->if_id), "wsm_write_mib");
 			}
 
 			priv->association_mode.greenfieldMode =
@@ -711,8 +711,8 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							priv->bss_params.aid,
 							priv->bss_params.operationalRateSet,
 							priv->association_mode.basicRateSet);
-			WARN_ON(wsm_set_association_mode(hw_priv,
-									&priv->association_mode, priv->if_id));
+			bes_fail(wsm_set_association_mode(hw_priv,
+									&priv->association_mode, priv->if_id), "wsm_set_association_mode");
 			/*
 			 * USE_HT_MODE above re-enables FW default BA even
 			 * after join sent policy 0.  Host then skipped a
@@ -724,16 +724,16 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 				bes2600_set_ba_policy(hw_priv, priv->if_id,
 						      false);
 			}
-			WARN_ON(wsm_keep_alive_period(hw_priv,
+			bes_fail(wsm_keep_alive_period(hw_priv,
 									BES2600_KEEP_ALIVE_PERIOD /* sec */,
-									priv->if_id));
-			WARN_ON(wsm_set_bss_params(hw_priv, &priv->bss_params,
-									priv->if_id));
+									priv->if_id), "wsm_keep_alive_period");
+			bes_fail(wsm_set_bss_params(hw_priv, &priv->bss_params,
+									priv->if_id), "wsm_set_bss_params");
 			priv->setbssparams_done = true;
-			WARN_ON(wsm_set_beacon_wakeup_period(hw_priv,
+			bes_fail(wsm_set_beacon_wakeup_period(hw_priv,
 									priv->beacon_int * priv->join_dtim_period >
 									MAX_BEACON_SKIP_TIME_MS ? 1 :
-									priv->join_dtim_period, 0, priv->if_id));
+									priv->join_dtim_period, 0, priv->if_id), "wsm_set_beacon_wakeup_period");
 			/*
 			 * Tell LMAC ACTIVE now.  Host already forces
 			 * powersave_mode=ACTIVE until set_key, but
@@ -772,8 +772,8 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 					bes_devel(
 									"[STA] Setting p2p powersave "
 									"configuration.\n");
-					WARN_ON(wsm_set_p2p_ps_modeinfo(hw_priv,
-											&priv->p2p_ps_modeinfo, priv->if_id));
+					bes_fail(wsm_set_p2p_ps_modeinfo(hw_priv,
+											&priv->p2p_ps_modeinfo, priv->if_id), "wsm_set_p2p_ps_modeinfo");
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 					bes2600_notify_noa(priv, BES2600_NOA_NOTIFICATION_DELAY);
 #endif
@@ -847,8 +847,8 @@ static void bes2600_bss_info_changed_assoc_and_erp(struct bes2600_vif *priv,
 
 	bes_devel("%s: slot_time=%u us\n", __func__, __le32_to_cpu(slot_time));
 
-	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_SLOT_TIME,
-		&slot_time, sizeof(slot_time), priv->if_id));
+	bes_fail(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_SLOT_TIME,
+		&slot_time, sizeof(slot_time), priv->if_id), "wsm_write_mib");
 	bes_devel("%s: slot_time done\n", __func__);
 }
 
@@ -902,8 +902,8 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 			WSM_RCPI_RSSI_DONT_USE_UPPER |
 			WSM_RCPI_RSSI_DONT_USE_LOWER;
 	}
-	WARN_ON(wsm_set_rcpi_rssi_threshold(hw_priv, &threshold,
-							priv->if_id));
+	bes_fail(wsm_set_rcpi_rssi_threshold(hw_priv, &threshold,
+							priv->if_id), "wsm_set_rcpi_rssi_threshold");
 	bes_devel("%s: rcpi threshold done\n", __func__);
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
@@ -919,7 +919,7 @@ static void bes2600_bss_info_changed_assoc_and_cqm(struct bes2600_vif *priv,
 		/* Make sure we are associated before sending
 		 * set_bss_params to firmware */
 		if (priv->bss_params.aid) {
-			WARN_ON(wsm_set_bss_params(hw_priv, &priv->bss_params, priv->if_id));
+			bes_fail(wsm_set_bss_params(hw_priv, &priv->bss_params, priv->if_id), "wsm_set_bss_params");
 			priv->setbssparams_done = true;
 		}
 	}
@@ -1090,7 +1090,7 @@ static void bes2600_bss_info_changed_p2p_ps(struct bes2600_vif *priv,
 	if (priv->join_status == BES2600_JOIN_STATUS_STA ||
 		priv->join_status == BES2600_JOIN_STATUS_AP) {
 
-		WARN_ON(wsm_set_p2p_ps_modeinfo(hw_priv, modeinfo, priv->if_id));
+		bes_fail(wsm_set_p2p_ps_modeinfo(hw_priv, modeinfo, priv->if_id), "wsm_set_p2p_ps_modeinfo");
 	}
 
 	/* Temporary solution while firmware don't support NOA change
@@ -1424,7 +1424,7 @@ static int bes2600_upload_beacon(struct bes2600_vif *priv)
 		else {
 			ret = wsm_set_template_frame(hw_priv, &frame,
 					priv->if_id);
-			WARN_ON(wsm_set_probe_responder(priv, false));
+			bes_fail(wsm_set_probe_responder(priv, false), "wsm_set_probe_responder");
 		}
 	}
 	dev_kfree_skb(frame.skb);
@@ -1600,15 +1600,15 @@ static int bes2600_start_ap(struct bes2600_vif *priv)
 		start.beaconInterval, start.DTIMPeriod,
 		start.basicRateSet,
 		start.ssidLength, start.ssid);
-	ret = WARN_ON(wsm_start(hw_priv, &start, priv->if_id));
+	ret = bes_fail(wsm_start(hw_priv, &start, priv->if_id), "wsm_start");
 	if (!ret)
 		ret = wsm_switch_channel(hw_priv, &channel, priv->if_id);
 
 	if (!ret && priv->vif->p2p) {
 		bes_devel("[AP] Setting p2p powersave "
 			"configuration.\n");
-		WARN_ON(wsm_set_p2p_ps_modeinfo(hw_priv,
-			&priv->p2p_ps_modeinfo, priv->if_id));
+		bes_fail(wsm_set_p2p_ps_modeinfo(hw_priv,
+			&priv->p2p_ps_modeinfo, priv->if_id), "wsm_set_p2p_ps_modeinfo");
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
 		bes2600_notify_noa(priv, BES2600_NOA_NOTIFICATION_DELAY);
 #endif
@@ -1620,21 +1620,21 @@ static int bes2600_start_ap(struct bes2600_vif *priv)
 	}
 	if (!ret) {
 		/* If below HW fix were to not be needed, do this instead:
-		WARN_ON(wsm_set_block_ack_policy(hw_priv,
+		bes_fail(wsm_set_block_ack_policy(hw_priv,
 			BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
-			BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID, priv->if_id)); */
+			BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID, priv->if_id), "wsm_set_block_ack_policy"); */
 
 		/* Start HW limitations fix. */
 		if ((priv->if_id ==2) && !hw_priv->is_go_thru_go_neg)
-			WARN_ON(wsm_set_block_ack_policy(hw_priv,
+			bes_fail(wsm_set_block_ack_policy(hw_priv,
 				BES2600_TX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
 				BES2600_RX_BLOCK_ACK_DISABLED_FOR_ALL_TID,
-				priv->if_id));
+				priv->if_id), "wsm_set_block_ack_policy");
 		else
-			WARN_ON(wsm_set_block_ack_policy(hw_priv,
+			bes_fail(wsm_set_block_ack_policy(hw_priv,
 				BES2600_TX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
 				BES2600_RX_BLOCK_ACK_ENABLED_FOR_ALL_TID,
-				priv->if_id));
+				priv->if_id), "wsm_set_block_ack_policy");
 		/* End HW limitations fix. */
 
 		priv->join_status = BES2600_JOIN_STATUS_AP;
@@ -1663,10 +1663,10 @@ static int bes2600_update_beaconing(struct bes2600_vif *priv)
 			bes_devel("ap restarting\n");
 			wsm_lock_tx(hw_priv);
 			if (priv->join_status != BES2600_JOIN_STATUS_PASSIVE)
-				WARN_ON(wsm_reset(hw_priv, &reset,
-						  priv->if_id));
+				bes_fail(wsm_reset(hw_priv, &reset,
+						  priv->if_id), "wsm_reset");
 			priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
-			WARN_ON(bes2600_start_ap(priv));
+			bes_fail(bes2600_start_ap(priv), "bes2600_start_ap");
 			wsm_unlock_tx(hw_priv);
 		} else
 			bes_devel("ap started join_status: %d\n",
@@ -1784,10 +1784,10 @@ void bes2600_link_id_gc_work(struct work_struct *work)
 					ETH_ALEN);
 			spin_unlock_bh(&priv->ps_state_lock);
 			if (need_reset) {
-				WARN_ON(cw12xx_unmap_link(priv, i + 1));
+				bes_fail(cw12xx_unmap_link(priv, i + 1), "cw12xx_unmap_link");
 			}
 			map_link.link_id = i + 1;
-			WARN_ON(wsm_map_link(hw_priv, &map_link, priv->if_id));
+			bes_fail(wsm_map_link(hw_priv, &map_link, priv->if_id), "wsm_map_link");
 			next_gc = min(next_gc, BES2600_LINK_ID_GC_TIMEOUT);
 			spin_lock_bh(&priv->ps_state_lock);
 		} else if (priv->link_id_db[i].status == BES2600_LINK_SOFT) {
@@ -1801,7 +1801,7 @@ void bes2600_link_id_gc_work(struct work_struct *work)
 				priv->pspoll_mask &= ~mask;
 				memset(map_link.mac_addr, 0, ETH_ALEN);
 				spin_unlock_bh(&priv->ps_state_lock);
-				WARN_ON(cw12xx_unmap_link(priv, i + 1));
+				bes_fail(cw12xx_unmap_link(priv, i + 1), "cw12xx_unmap_link");
 				spin_lock_bh(&priv->ps_state_lock);
 			} else {
 				next_gc = min_t(unsigned long, next_gc, ttl);
@@ -1814,14 +1814,14 @@ void bes2600_link_id_gc_work(struct work_struct *work)
 			priv->link_id_db[i].status = BES2600_LINK_OFF;
 			priv->link_id_db[i].timestamp = now;
 			spin_unlock_bh(&priv->ps_state_lock);
-			WARN_ON(cw12xx_unmap_link(priv, i + 1));
+			bes_fail(cw12xx_unmap_link(priv, i + 1), "cw12xx_unmap_link");
 			if (status == BES2600_LINK_RESET_REMAP) {
 				memcpy(map_link.mac_addr,
 						priv->link_id_db[i].mac,
 						ETH_ALEN);
 				map_link.link_id = i + 1;
-				WARN_ON(wsm_map_link(hw_priv, &map_link,
-						     priv->if_id));
+				bes_fail(wsm_map_link(hw_priv, &map_link,
+						     priv->if_id), "wsm_map_link");
 				next_gc = min(next_gc,
 					      BES2600_LINK_ID_GC_TIMEOUT);
 				priv->link_id_db[i].status =
@@ -1861,7 +1861,7 @@ void bes2600_notify_noa(struct bes2600_vif *priv, int delay)
 		msleep(delay);
 	}
 
-	if (!WARN_ON(wsm_get_p2p_ps_modeinfo(hw_priv, modeinfo))) {
+	if (!bes_fail(wsm_get_p2p_ps_modeinfo(hw_priv, modeinfo), "wsm_get_p2p_ps_modeinfo")) {
 		print_hex_dump_bytes("[AP] p2p_get_ps_modeinfo: ",
 				     DUMP_PREFIX_NONE,
 				     (u8 *)modeinfo,
@@ -1933,7 +1933,7 @@ void bes2600_ht_info_update_work(struct work_struct *work)
         update_ie.ies = ht_info;
         update_ie.length = HT_INFO_IE_LEN;
 
-        WARN_ON(wsm_update_ie(hw_priv, &update_ie, priv->if_id));
+        bes_fail(wsm_update_ie(hw_priv, &update_ie, priv->if_id), "wsm_update_ie");
 
 
         }

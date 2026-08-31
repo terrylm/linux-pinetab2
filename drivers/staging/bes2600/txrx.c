@@ -23,7 +23,6 @@
 #include "sta.h"
 #include "sbus.h"
 #include "txrx_opt.h"
-#include "bes_log.h"
 
 #define BES2600_INVALID_RATE_ID (0xFF)
 /* HW rate table: 0–13 legacy, 14+ MCS.  AMPDU cannot fall back to 1 Mbps. */
@@ -154,7 +153,8 @@ static void tx_policy_build(const struct bes2600_common *hw_priv,
 	unsigned total = 0;
 	static int tx_rate_idx;
 
-	BUG_ON(rates[0].idx < 0);
+	if (rates[0].idx < 0)
+		bes_err("%s: no valid TX rate in policy\n", __func__);
 	memset(policy, 0, sizeof(*policy));
 
 	/*
@@ -511,7 +511,7 @@ void tx_policy_upload_work(struct work_struct *work)
 		container_of(work, struct bes2600_common, tx_policy_upload_work);
 
 	bes_devel("[TX] TX policy upload.\n");
-	WARN_ON(tx_policy_upload(hw_priv));
+	bes_fail(tx_policy_upload(hw_priv), "tx_policy_upload");
 
 	wsm_unlock_tx(hw_priv);
 	bes2600_tx_queues_unlock(hw_priv);
@@ -950,7 +950,7 @@ bes2600_tx_h_skb_pad(struct bes2600_common *priv,
 	size_t len = __le16_to_cpu(wsm->hdr.len);
 	size_t padded_len = priv->sbus_ops->align_size(priv->sbus_priv, len);
 
-	if (WARN_ON(skb_padto(skb, padded_len) != 0)) {
+	if (bes_fail(skb_padto(skb, padded_len) != 0, "skb_padto")) {
 		return -EINVAL;
 	}
 	return 0;
@@ -1074,7 +1074,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
 
 	if (!skb || !skb->data)
-		BUG_ON(1);
+		goto drop;
 
 	if (!(t.tx_info->control.vif)) {
 			goto drop;
@@ -1203,8 +1203,8 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	spin_lock_bh(&priv->ps_state_lock);
 	{
 		tid_update = bes2600_tx_h_pm_state(priv, &t);
-		BUG_ON(bes2600_queue_put(&hw_priv->tx_queue[t.queue],
-				t.skb, &t.txpriv));
+		bes_fail(bes2600_queue_put(&hw_priv->tx_queue[t.queue],
+				t.skb, &t.txpriv), "bes2600_queue_put");
 
 		if (skb->sk)
 			sk_pacing_shift_update(skb->sk, 7);
@@ -1358,11 +1358,11 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			bes2600_queue_get_generation(arg->packetID) + 1,
 			priv->sta_asleep_mask);
 #ifdef CONFIG_BES2600_TESTMODE
-		WARN_ON(bes2600_queue_requeue(hw_priv, queue,
-				arg->packetID, true));
+		bes_fail(bes2600_queue_requeue(hw_priv, queue,
+				arg->packetID, true), "bes2600_queue_requeue");
 #else
-		WARN_ON(bes2600_queue_requeue(queue,
-				arg->packetID, true));
+		bes_fail(bes2600_queue_requeue(queue,
+				arg->packetID, true), "bes2600_queue_requeue");
 #endif
 		spin_lock_bh(&priv->ps_state_lock);
 		if (!arg->link_id) {
@@ -1764,7 +1764,7 @@ static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *a
 		bes_devel("[RX] Going to MAP&RESET link ID\n");
 
 		if (work_pending(&priv->linkid_reset_work))
-			WARN_ON(1);
+			bes_err("%s: unexpected path\n", __func__);
 
 		memcpy(&priv->action_frame_sa[0],
 				ieee80211_get_SA(frame), ETH_ALEN);
@@ -1779,7 +1779,7 @@ static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *a
 		/* Link ID already exists for the ACTION frame.
 		 * Reset and Remap */
 		if (work_pending(&priv->linkid_reset_work))
-			WARN_ON(1);
+			bes_err("%s: unexpected path\n", __func__);
 		memcpy(&priv->action_frame_sa[0],
 				ieee80211_get_SA(frame), ETH_ALEN);
 		priv->action_linkid = arg->link_id;
@@ -1890,7 +1890,7 @@ static bool bes2600_rx_handle_decryption(struct bes2600_vif *priv, struct ieee80
 			hdr->flag |= RX_FLAG_IV_STRIPPED;
 			break;
 		default:
-			WARN_ON("Unknown encryption type");
+			bes_err("%s: unexpected path\n", __func__);
 			return true;
 		}
 
@@ -2251,7 +2251,7 @@ int bes2600_alloc_key(struct bes2600_common *hw_priv)
 
 void bes2600_free_key(struct bes2600_common *hw_priv, int idx)
 {
-	BUG_ON(!(hw_priv->key_map & BIT(idx)));
+	WARN_ON(!(hw_priv->key_map & BIT(idx)));
 	memset(&hw_priv->keys[idx], 0, sizeof(hw_priv->keys[idx]));
 	hw_priv->key_map &= ~BIT(idx);
 }

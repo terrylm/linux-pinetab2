@@ -15,7 +15,6 @@
 #include "bes_pwr.h"
 #include "sta.h"
 #include "bes_chardev.h"
-#include "bes_log.h"
 
 static int bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 event, u32 timeout);
 static int bes2600_add_async_timeout_power_delay_event(struct bes2600_pwr_t *bes_pwr,

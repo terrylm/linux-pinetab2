@@ -1,0 +1,173 @@
+TODO list (incomplete)
+
+This is a Bestechnic BES2600 / BEST2002 SDIO mac80211 driver (CW1200-family
+WSM firmware protocol).  On PineTab2 v2.0 (RK3566, mmc2) STA Wi-Fi currently
+works: firmware load, scan (idle and while associated), open and WPA2
+associate, DHCP, ping, clean shutdown.  Bluetooth has never worked.
+
+The driver was previously removed from staging for quality.  Do not send it
+upstream until the items below are addressed enough that timeouts and RF
+misses cannot oops the machine or flood WARN stacks.
+
+Proven working (STA, PineTab2 v2.0, firmware Dec 2023)
+-----------------------------------------------------
+* Probe, boot + main firmware, phy registration.
+* STA + P2P_DEVICE vifs (P2P is host-only; see below).
+* Idle scan: 2.4 GHz then 5 GHz, firmware scan-complete status 0.
+* Associated background scan (WSM_SCAN_TYPE_BACKGROUND +
+  WSM_SCAN_FLAG_FORCE_BACKGROUND).  Do not restore FAST_PS after scan.
+* Open (STARLINK) and WPA2-CCMP (NETGEAR) association, 4-way, DHCP, ping.
+* BlockAck left off on the host; firmware owns BA.  Auto-enabling BA after
+  HT ACKs produced "connected" with 0% ping (RX AMPDU).
+* ICMP / DNS / DHCP / ARP pinned at 1 Mbps even after the first IP ACK.
+* Do not force_close the SDIO bus on -EBUSY (hard-locks the SoC).
+* Join with leftover hw_bufs_used=1: soft-clear, do not poke RX.
+
+Do not regress those without a replacement that has been tested on hardware.
+
+WARN_ON / BUG_ON
+----------------
+* ~190 WARN_ON and ~50 BUG_ON remain.  Vendor code uses WARN_ON as the
+  error path for WSM commands (ret = WARN_ON(wsm_foo(...))).
+* WARN_ON dumps a stack and taints the kernel.  Firmware NAK, command
+  timeout, and "AP did not ACK" are expected, not "the driver is insane."
+* BUG_ON on bus/firmware errors can panic the tablet.  Never BUG_ON on
+  SDIO -EBUSY, WSM -ETIMEDOUT, or unjoin/scan races.
+* Keep WARN_ON only for true invariants (NULL deref about to happen,
+  queue id out of range that would corrupt memory).  Everything else:
+  dev_err / return -Exxx.
+
+Logging
+-------
+* bes_pin() is printk(KERN_ERR ...) so it always hits the console.  Remove
+  P51/P57/P59/P60 and other freeze-debug traces before any public patch.
+* Hot-path bes_info() (scan start/complete, first TX/RX frames, set_pm)
+  must become bes_devel() or go away.  Keep bes_err for real failures.
+* global_dev in bes_log.h makes firmware-load lines print
+  "(NULL device *)".  Bind logs to the SDIO function device.
+* Firmware load still prints version/CRC at info level; fine for staging,
+  too chatty for wireless.git later.
+
+Power save / WSM 0x0010
+-----------------------
+* Firmware stays WSM_PSM_ACTIVE after join.  mac80211's desired mode is
+  often FAST_PS (0x81).  Sending 0x0010 FAST_PS after associated scan
+  blocked the RX path waiting for confirm: host scan timeout, ping still
+  worked, shutdown stalled WPA on the same 0x0010 timeout.
+* Do not wsm_set_pm() from BH/RX (scan_complete_cb).  Do not apply
+  deferred FAST_PS in enter_lp_mode until it is proven on this firmware.
+* Unjoin must drop join_status before releasing BES_PWR_LOCK_ON_PS_ACTIVE
+  so teardown cannot fire 0x0010 while still STA.
+* Only update firmware_ps_mode after 0x0010 confirms.
+
+Scan
+----
+* Associated scans must use BACKGROUND + FORCE_BACKGROUND, never
+  foreground 0x0007 while joined.
+* Never wsm_reset() on 0x0007 failure while associated (drops the join).
+* Never empty-scan reset while STA.
+* Do not skip associated scans (that was a workaround for the 0x0010 hang).
+
+Association / rates / aggregation
+---------------------------------
+* 5 GHz STARLINK BSS association at 6 Mbps often fails.  Diagnose; do not
+  paper over with a second join hack without logs.
+* Bulk TCP still uses MCS on a weak link while ICMP/DNS/DHCP are clamped
+  to 1 Mbps.  Decide whether that clamp should apply more widely or go
+  away once BA/rate control is trustworthy.
+* Do not treat EAPOL ACK as data_acked (released the 1 Mbps clamp too
+  early; DHCP/DNS went HT AMPDU).
+* Firmware owns BlockAck.  Host ADDBA-Resp is dropped (tx_h_action).
+  USE_HT_MODE at assoc re-arms FW BA; send BA policy off again after
+  wsm_set_association_mode.  Do not auto-enable BA after HT ACKs.
+* hw_bufs_used=1 before join still appears; soft-clear is enough for join
+  to succeed.  Find the leaked buffer instead of only clearing the count.
+
+MAC / interfaces
+----------------
+* Early MAC from addresses[0] is a dummy; stable MAC is derived from the
+  SoC serial (02:00:00:3d:05:3c locally).  Dummy vs serial mismatch is
+  confusing in dmesg; pick one story.
+* P2P_DEVICE (nl80211 type 10) is advertised for printers / rare Direct.
+  It is host-only: if_id=2 via addresses[1], no setup_mac_pvif, no extra
+  0x0006 RCPI.  Do not update hw_priv->mac_addr except for if_id==0.
+  DanctNIX 6.15 disabled P2P_DEVICE; keep or drop explicitly, do not
+  leave a half-working vif that sends WSM on the STA if_id.
+* hw_priv->mac_addr vs vif addresses vs LMAC station ID: keep them
+  consistent on if_id=0; extra if_id=1 cfg is for combo firmware.
+
+Bluetooth
+---------
+* Never worked on any kernel tried here.  CONFIG_BES2600_BT is off.
+* Makefile still lists bes2600_btusb.o; that file is not in the tree.
+* /dev/bes2600 (bes_chardev) is leftover vendor userspace control
+  (echo ifname:bt cmd:BT_ON).  Either implement a real HCI path or
+  document that BT is out of scope until then.
+* UART hciattach on ttyS1 is the distro workaround; it is not this
+  driver's job until the chip is actually taken out of Wi-Fi-only reset.
+
+Hardware / firmware limits (not "just code")
+--------------------------------------------
+* PineTab2 does not wire BES2600 reset/power GPIOs the way the vendor
+  EVB does.  Hard reset of a wedged chip needs a board power cycle.
+  Do not assume gpio reset/powerup in platform_data.
+* Firmware is proprietary (bes2600/best2002_fw_boot_sdio.bin +
+  best2002_fw_sdio.bin, Dec 2023).  linux-firmware submission is a
+  separate process; the driver must fail cleanly if blobs are missing.
+* Factory calibration comes from bes2600_factory.txt.
+
+Kconfig / build
+---------------
+* Drop unused platform variants if PineTab2 is the only in-tree user
+  (Allwinner, Xiaomi R329, Sicun QM215, STE extensions, WAPI), or
+  isolate them so the default PineTab2 config is obvious.
+* GET_MAC_ADDR_METHOD as int 1-4 is not kernel style; use a proper
+  choice or DT.
+* Android-style default paths (/data/applog/, /data/cfg/) do not belong
+  in a generic driver.
+* Makefile still has out-of-tree bits: KERN_DIR, "all: modules",
+  ccflags -Werror, hardcoded -DCHIP_WIFI_ROM_VER.  Staging build must
+  be Kbuild-only.
+* Mixed tabs/spaces (especially scan.c after later splits).  Run
+  checkpatch.pl; many remaining hits will need real refactors, not
+  line wraps.
+
+Dead / leftover code
+--------------------
+* TODO:COMBO, HACK!!!, commented dump_stack(), #if 0, testmode / ITP /
+  Xiaomi keepalive unless someone uses them.
+* EPTA 0x0029 was a lockup source when piled on a sick bus after scan;
+  do not send it from join-unlock without a proven need.
+* SDIO TX bounce (tx_pad): do not DMA padded length from the skb.
+  Keep that; document why.
+
+Lockups already hit (do not reintroduce)
+----------------------------------------
+* force_close on SDIO CTRL/CMD53 -EBUSY (hard lock CPU / kworker).
+* Nested 0x0006 operational-mode while MCU wake failed.
+* Scan WARN-loop of 0x0006 / 0x0007 / 0x0029 after a sick bus; abort
+  the scan instead.
+* Host-only unjoin after failed auth skipped wsm_reset because RX was
+  quiet; LMAC stayed joined; next 0x0007 returned status 13.
+* BA timer used to clear ba_ena on low traffic and re-send
+  BLOCK_ACK_POLICY every few seconds (ping jitter).  Timer is
+  stats-only now.
+* P2P add sending RCPI 0x0006 on if_id 0 racing CTRL -EBUSY.
+
+Not this driver
+---------------
+* rockchip-drm swiotlb buffer full.
+* QSampleCache wireless-extensions warning.
+* systemd-journald "Time jumped backwards".
+* typec-extcon / husb311 (megous / DanctNIX board patches, separate).
+
+Contact / trees
+---------------
+* In-tree development: this directory on vendor-integration, based on
+  a replay of v6.14.7-danctnix1 plus local STA fixes.
+* Distro: DanctNIX linux-pinetab2 is now on Codeberg
+  (https://codeberg.org/DanctNIX/linux-pinetab2), not the stale GitHub
+  master.  Offer the STA delta against their current kernel; do not
+  expect their tree to be the path into Linus.
+* Mainline: linux-staging / wireless, patches against linux-next, with
+  this file kept honest as items close.

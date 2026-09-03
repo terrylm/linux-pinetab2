@@ -1,5 +1,3 @@
-KERN_DIR = /lib/modules/$(shell uname -r)/build
-
 # compilation macros setting
 ccflags-y += -Werror
 ccflags-y += -DBES2600_DRV_VERSION=\"bes2600_0.3.5_2024.0116\"
@@ -33,16 +31,11 @@ bes2600-y := \
 	epta_request.o
 
 # compilation files select
-bes2600-$(CONFIG_BES2600_DEBUGFS)       += debug.o
-bes2600-$(CONFIG_BES2600_ITP)           += itp.o
-bes2600-$(CONFIG_PM)                    += pm.o
-bes2600-$(CONFIG_BES2600_BT)            += bes2600_btusb.o
-bes2600-$(CONFIG_BES2600_TESTMODE)      += wifi_testmode_cmd.o
-bes2600-$(CONFIG_BES2600_WOWLAN)        += bes_pwr.o
+bes2600-$(CONFIG_BES2600_DEBUGFS)	+= debug.o
+bes2600-$(CONFIG_BES2600_ITP)		+= itp.o
+bes2600-$(CONFIG_PM)			+= pm.o
+bes2600-$(CONFIG_BES2600_BT)		+= bes2600_btusb.o
+bes2600-$(CONFIG_BES2600_TESTMODE)	+= wifi_testmode_cmd.o
+bes2600-$(CONFIG_BES2600_WOWLAN)	+= bes_pwr.o
 
 obj-$(CONFIG_BES2600) += bes2600.o
-
-all: modules
-
-modules clean:
-	$(MAKE) -C $(KERN_DIR) M=$(shell pwd) $@

@@ -1,0 +1,140 @@
+TODO list (incomplete)
+
+This is a Bestechnic BES2600 / BEST2002 SDIO mac80211 driver (CW1200-family
+WSM firmware protocol).  On PineTab2 v2.0 (RK3566, mmc2) STA Wi-Fi works at
+fdf13926e22c: firmware load, idle scan, open and WPA2 associate, DHCP, ping,
+and switching between APs (STARLINK open, NETGEAR15 WPA2).  Bluetooth has
+never worked.
+
+The driver was previously removed from staging for quality.  Do not send it
+upstream until the items below are addressed enough that timeouts and RF
+misses cannot oops the machine or flood WARN stacks.
+
+Test both APs, both directions, after every change.  First association after
+boot is not enough.
+
+Proven working (STA, PineTab2 v2.0, firmware Dec 2023, fdf13926e22c)
+-------------------------------------------------------------------
+* Probe, boot + main firmware, phy registration.
+* STA + P2P_DEVICE vifs (P2P is host-only; see below).
+* Idle scan: 2.4 GHz then 5 GHz, firmware scan-complete status 0.
+* Open (STARLINK) and WPA2-CCMP (NETGEAR15) association, 4-way, DHCP, ping.
+* Switching STARLINK ↔ NETGEAR15 after a working session.
+* Do not force_close the SDIO bus on -EBUSY (hard-locks the SoC).
+
+Do not regress those without a replacement that has been tested on hardware.
+
+Broken commits (wifi-broken, do not replay as a lump)
+-----------------------------------------------------
+* 0d7099dbf846 rate-limit / weak-signal: NETGEAR15 still worked, STARLINK
+  always failed.  The 1 Mbps clamp and related TX policy belong here.
+* 26ee084ec255 same STARLINK-fail / NETGEAR-ok pattern.
+* c426582bf6ff associated-scan work: broken.
+* d6c2ab442ff4 mainline-prep: broken.
+* 147ad3eaca60 WARN_ON/BUG_ON: first connect after boot worked; later
+  connects failed.  Do not re-apply that conversion blindly.
+
+WARN_ON / BUG_ON
+----------------
+* Firmware NAK, SDIO timeout, and "AP did not ACK" must not WARN_ON
+  (stack + TAINT_WARN) or BUG_ON (panic).  The 147ad3e conversion of
+  those to bes_fail()/bes_err() broke reconnect; redo it in small
+  tested hunks.
+* Keep WARN_ON only for programmer invariants (NULL about to be
+  dereferenced, queue id out of range).
+
+Logging
+-------
+* Hot-path bes_info (scan, per-frame TX/RX) is too loud for staging.
+  Use bes_devel / dyndbg; keep bes_err for real failures.
+* Firmware load still prints version/CRC at info; fine for now.
+* Bind device logs to the SDIO function, not a NULL global_dev.
+
+Power save / WSM 0x0010
+-----------------------
+* Firmware stays WSM_PSM_ACTIVE after join.  mac80211 often wants
+  FAST_PS (0x81).  0x0010 FAST_PS after associated scan has blocked RX
+  waiting for confirm.
+* Do not wsm_set_pm() from BH/RX.  Do not restore FAST_PS after scan
+  until it is proven on this firmware.
+
+Scan
+----
+* Associated (background) scan is not proven on this baseline.  Bring
+  it back only with BACKGROUND + FORCE_BACKGROUND, never foreground
+  0x0007 while joined, and never wsm_reset() on scan failure while STA.
+
+Association / rates / aggregation
+---------------------------------
+* 5 GHz STARLINK BSSIDs (ch36 / ch149) often fail auth at 6 Mbps.
+  2.4 GHz STARLINK (ch1) is the path that worked at fdf139.
+* Do not clamp ICMP/DNS/DHCP to 1 Mbps the way 0d7099 did until that
+  change is re-proven against STARLINK.
+* Firmware owns BlockAck.  Host ADDBA-Resp is dropped.  Do not
+  auto-enable BA after HT ACKs ("connected" with 0% ping).
+* Join with leftover hw_bufs_used=1: find the leak; do not poke RX.
+
+MAC / interfaces
+----------------
+* Stable MAC is derived from the SoC serial (02:00:00:3d:05:3c locally).
+  Early dummy vs serial mismatch is confusing in dmesg; pick one story.
+* P2P_DEVICE (nl80211 type 10) is host-only.  Do not send WSM on the
+  STA if_id for it.  DanctNIX 6.15 disabled P2P_DEVICE; keep or drop
+  explicitly.
+
+Bluetooth
+---------
+* Never worked.  CONFIG_BES2600_BT is off.
+* Makefile still lists bes2600_btusb.o; that file is not in the tree.
+* /dev/bes2600 (bes_chardev) is leftover vendor userspace control.
+  UART hciattach on ttyS1 is the distro workaround.
+
+Hardware / firmware limits (not "just code")
+--------------------------------------------
+* PineTab2 does not wire BES2600 reset/power GPIOs the way the vendor
+  EVB does.  A wedged chip needs a board power cycle.
+* Firmware is proprietary (bes2600/best2002_fw_boot_sdio.bin +
+  best2002_fw_sdio.bin, Dec 2023).  Fail cleanly if blobs are missing.
+* Factory calibration comes from bes2600_factory.txt.
+
+Kconfig / build
+---------------
+* Makefile is Kbuild-only (KERN_DIR / all: modules dropped).  Still has
+  ccflags -Werror and hardcoded -DCHIP_WIFI_ROM_VER.
+* Drop unused platform variants if PineTab2 is the only in-tree user,
+  or isolate them.
+* GET_MAC_ADDR_METHOD as int 1-4 is not kernel style.
+* Android-style default paths (/data/applog/, /data/cfg/) do not belong
+  in a generic driver.
+
+Dead / leftover code
+--------------------
+* TODO:COMBO, HACK!!!, commented dump_stack(), #if 0, testmode / ITP.
+* EPTA 0x0029 was a lockup source on a sick bus; do not pile it on
+  join/unjoin without a proven need.  BT is unused.
+* SDIO TX bounce (tx_pad): do not DMA padded length from the skb.
+
+Lockups already hit (do not reintroduce)
+----------------------------------------
+* force_close on SDIO CTRL/CMD53 -EBUSY (hard lock CPU / kworker).
+* Nested 0x0006 operational-mode while MCU wake failed.
+* Scan WARN-loop of 0x0006 / 0x0007 / 0x0029 after a sick bus.
+* Host-only unjoin after failed auth skipped wsm_reset; LMAC stayed
+  joined; next 0x0007 returned status 13.
+
+Not this driver
+---------------
+* rockchip-drm swiotlb buffer full.
+* QSampleCache wireless-extensions warning.
+* systemd-journald "Time jumped backwards".
+* typec-extcon / husb311 (board patches, separate).
+
+Contact / trees
+---------------
+* Current development: branch wifi-good from fdf13926e22c.
+  Tag wifi-good-fdf139 marks that snapshot.  Branch wifi-broken is the
+  old tip (147ad3e) for reading diffs only.
+* Distro: DanctNIX linux-pinetab2 on Codeberg
+  (https://codeberg.org/DanctNIX/linux-pinetab2).
+* Mainline: linux-staging / wireless, patches against linux-next, with
+  this file kept honest as items close.

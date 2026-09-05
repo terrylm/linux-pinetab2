@@ -2858,6 +2858,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 				 __func__);
 			if (wsm_reset(hw_priv, &reset, priv->if_id))
 				bes_warn("%s: wsm_reset failed\n", __func__);
+			tx_policy_clean(hw_priv);
 		}
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
 		priv->join_dtim_period = 0;

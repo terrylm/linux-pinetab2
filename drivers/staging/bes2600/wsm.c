@@ -645,8 +645,29 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 			suppressed++;
 		}
 	} else {
-		bes_devel("wsm_tx_confirm: pkt=0x%x OK bufs=%d\n",
-			  tx_confirm.packetID, hw_priv->hw_bufs_used);
+		static unsigned ok_logged, agg_logged;
+
+		if (tx_confirm.flags & WSM_TX_STATUS_AGGREGATION) {
+			if (agg_logged < 8) {
+				agg_logged++;
+				bes_info("wsm_tx_confirm: OK AMPDU "
+					 "flags=0x%x rate=%u pkt=0x%x "
+					 "(%u/8)\n",
+					 tx_confirm.flags,
+					 tx_confirm.txedRate,
+					 tx_confirm.packetID, agg_logged);
+			}
+		} else if (ok_logged < 4) {
+			ok_logged++;
+			bes_info("wsm_tx_confirm: OK flags=0x%x rate=%u "
+				 "pkt=0x%x (%u/4)\n",
+				 tx_confirm.flags, tx_confirm.txedRate,
+				 tx_confirm.packetID, ok_logged);
+		} else {
+			bes_devel("wsm_tx_confirm: pkt=0x%x OK bufs=%d\n",
+				  tx_confirm.packetID,
+				  hw_priv->hw_bufs_used);
+		}
 	}
 
 	if (hw_priv->wsm_cbc.tx_confirm)

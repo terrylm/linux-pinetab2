@@ -73,6 +73,8 @@ Association / rates / aggregation
 * Firmware owns BlockAck.  Host ADDBA-Resp is dropped.  Do not
   auto-enable BA after HT ACKs ("connected" with 0% ping).
 * Join with leftover hw_bufs_used=1: find the leak; do not poke RX.
+* wsm_reset drops the firmware TX rate-policy table.  Host cache must
+  clear uploaded so MCS policies are sent again on the next BSS.
 
 MAC / interfaces
 ----------------

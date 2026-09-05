@@ -711,6 +711,19 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 							priv->bss_params.aid,
 							priv->bss_params.operationalRateSet,
 							priv->association_mode.basicRateSet);
+			bes_info("assoc_mode flags=0x%x HT=%d aid=%d "
+				 "privacy=%d ba_ena=%d ch=%u %s\n",
+				 priv->association_mode.flags,
+				 !!(priv->association_mode.flags &
+				    WSM_ASSOCIATION_MODE_USE_HT_MODE),
+				 priv->bss_params.aid, priv->ap_privacy,
+				 hw_priv->ba_ena,
+				 hw_priv->channel ?
+					hw_priv->channel->hw_value : 0,
+				 (hw_priv->channel &&
+				  hw_priv->channel->band ==
+					NL80211_BAND_5GHZ) ?
+					"5 GHz" : "2.4 GHz");
 			WARN_ON(wsm_set_association_mode(hw_priv,
 									&priv->association_mode, priv->if_id));
 			WARN_ON(wsm_keep_alive_period(hw_priv,

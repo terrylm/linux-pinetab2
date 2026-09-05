@@ -321,6 +321,17 @@ void tx_policy_init(struct bes2600_common *hw_priv)
 		list_add(&cache->cache[i].link, &cache->free);
 }
 
+void tx_policy_clean(struct bes2600_common *hw_priv)
+{
+	struct tx_policy_cache *cache = &hw_priv->tx_policy_cache;
+	int i;
+
+	spin_lock_bh(&cache->lock);
+	for (i = 0; i < TX_POLICY_CACHE_SIZE; ++i)
+		cache->cache[i].policy.uploaded = 0;
+	spin_unlock_bh(&cache->lock);
+}
+
 static int tx_policy_get(struct bes2600_common *hw_priv,
 		  struct ieee80211_tx_rate *rates,
 		  size_t count, bool *renew)
@@ -342,7 +353,7 @@ static int tx_policy_get(struct bes2600_common *hw_priv,
 	idx = tx_policy_find(cache, &wanted);
 	if (idx >= 0) {
 		bes_devel("[TX policy] Used TX policy: %d\n", idx);
-		*renew = false;
+		*renew = !cache->cache[idx].policy.uploaded;
 	} else {
 		struct tx_policy_cache_entry *entry;
 		*renew = true;
@@ -1339,8 +1350,12 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			    !is_multicast_ether_addr(ieee80211_get_DA(hdr))) {
 				priv->data_acked = true;
 				bes_info("%s: first unicast data ACK "
-					 "txedRate=%u\n",
-					 __func__, arg->txedRate);
+					 "txedRate=%u flags=0x%x agg=%d "
+					 "ba_ena=%d privacy=%d\n",
+					 __func__, arg->txedRate, arg->flags,
+					 !!(arg->flags &
+					    WSM_TX_STATUS_AGGREGATION),
+					 hw_priv->ba_ena, priv->ap_privacy);
 				/*
 				 * Open BSS never hits set_key.  Turn BA on
 				 * now that DHCP is no longer the first TX.
@@ -1978,6 +1993,40 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_set_rx_fields(hdr, arg);
 	bes2600_rx_log_probe_resp(priv, frame, arg, hdr);
 	hdrlen = ieee80211_hdrlen(frame->frame_control);
+
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    ieee80211_is_data(frame->frame_control) &&
+	    (arg->flags & WSM_RX_STATUS_AGGREGATE)) {
+		static unsigned rx_agg;
+
+		if (rx_agg < 8) {
+			rx_agg++;
+			bes_info("RX AMPDU flags=0x%x enc=%u len=%d "
+				 "(%u/8) privacy=%d\n",
+				 arg->flags,
+				 WSM_RX_STATUS_ENCRYPTION(arg->flags),
+				 skb->len, rx_agg, priv->ap_privacy);
+		}
+	}
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    ieee80211_is_data(frame->frame_control) &&
+	    !ieee80211_is_nullfunc(frame->frame_control)) {
+		u16 eth = 0;
+		static unsigned rx_data;
+
+		if (hdrlen + 8 <= skb->len)
+			eth = get_unaligned_be16(skb->data + hdrlen + 6);
+		if (rx_data < 6 &&
+		    (eth == ETH_P_IP || eth == ETH_P_ARP || eth == ETH_P_PAE)) {
+			rx_data++;
+			bes_info("RX data eth=0x%04x len=%d agg=%d grp=%d "
+				 "(%u/6)\n",
+				 eth, skb->len,
+				 !!(arg->flags & WSM_RX_STATUS_AGGREGATE),
+				 !!(arg->flags & WSM_RX_STATUS_GROUP),
+				 rx_data);
+		}
+	}
 
 	/*
 	 * Pre-key: prove whether EAPOL M1 / other non-beacon RX reaches host.

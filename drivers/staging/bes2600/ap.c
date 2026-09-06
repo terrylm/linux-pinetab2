@@ -467,19 +467,13 @@ static void bes2600_bss_info_changed_arp_filter(struct ieee80211_hw *dev,
 							override_fpsm_timeout << 1;
 			}
 
-			if (priv->setbssparams_done) {
-					if (priv->user_power_set_true)
-							priv->powersave_mode.pmMode = priv->user_pm_mode;
-					else if (!priv->power_set_true)
-							priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
-			} else
-					priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 			priv->power_set_true = 0;
 			priv->user_power_set_true = 0;
-
-			if(!cfg->ps) {
-					bes2600_pwr_set_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
-			}
+			/* Do not default FAST_PS here.  Apply legacy PS
+			 * only after keys and first data ACK.
+			 */
+			if (priv->setbssparams_done)
+				bes2600_pm_apply(priv);
 	}
 
 	bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_GET_IP);
@@ -736,30 +730,17 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 									priv->beacon_int * priv->join_dtim_period >
 									MAX_BEACON_SKIP_TIME_MS ? 1 :
 									priv->join_dtim_period, 0, priv->if_id));
-			/*
-			 * Tell LMAC ACTIVE now.  Host already forces
-			 * powersave_mode=ACTIVE until set_key, but
-			 * bss_info_changed_ps returns without wsm_set_pm
-			 * while cipherType==0, and the PM cache matched
-			 * ACTIVE after unjoin so even a call would skip.
-			 * If LMAC is in PS, the AP buffers unicast EAPOL
-			 * until we leave PS (null with PM=0 / PS-Poll).
+			/* cw1200: 0x0010 with current powersave_mode after
+			 * AID / BSS params / beacon wakeup.
 			 */
 			if (changed & BSS_CHANGED_ASSOC) {
 				int pm_ret;
 
-				priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
-				bes2600_pwr_set_busy_event(hw_priv,
-							   BES_PWR_LOCK_ON_PS_ACTIVE);
 				pm_ret = bes2600_set_pm(priv,
 							&priv->powersave_mode);
-				bes_devel("P58 ASSOC set_pm ACTIVE ret=%d "
-					  "aid=%d fw_ps=%u\n",
-					pm_ret, priv->bss_params.aid,
-					priv->firmware_ps_mode.pmMode);
-				if (pm_ret)
-					bes_warn("%s: set_pm ACTIVE failed %d\n",
-						 __func__, pm_ret);
+				bes_info("%s: assoc set_pm mode=0x%x ret=%d\n",
+					 __func__,
+					 priv->powersave_mode.pmMode, pm_ret);
 			}
 			/*
 			 * Do not wsm_set_block_ack_policy here.  Enabling it
@@ -955,62 +936,10 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 	struct ieee80211_conf *conf,
 	struct ieee80211_vif_cfg *cfg)
 {
-	const u8 override_fpsm_timeout = CONFIG_BES2600_FASTPS_IDLE_TIME;
-
-	/*
-	 * Until pairwise keys exist, ignore mac80211 PS requests.  Logs showed
-	 * ps=1 immediately after associate with no EAPOL/set_key, then lockup.
-	 */
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    bes2600_waiting_for_key(priv)) {
-		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
-		bes2600_pwr_set_busy_event(priv->hw_priv,
-					   BES_PWR_LOCK_ON_PS_ACTIVE);
-		priv->power_set_true = 1;
-		bes2600_set_pm(priv, &priv->powersave_mode);
-		bes_info("%s: force ACTIVE during 4-way (mac80211 ps=%d)\n",
-			 __func__, cfg->ps);
-		return;
-	}
-
-	if (cfg->ps == false)
-		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
-	else if (conf->dynamic_ps_timeout <= 0)
-		priv->powersave_mode.pmMode = WSM_PSM_PS;
-	else
-		priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
-
-	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
-		if (!cfg->ps)
-			bes2600_pwr_set_busy_event(priv->hw_priv,
-						   BES_PWR_LOCK_ON_PS_ACTIVE);
-		else
-			bes2600_pwr_clear_busy_event(priv->hw_priv,
-						     BES_PWR_LOCK_ON_PS_ACTIVE);
-	}
-
-	bes_info("%s: ps=%d mode=%u aid=%d setbss=%d\n",
-		 __func__, cfg->ps, priv->powersave_mode.pmMode,
-		 priv->bss_params.aid, priv->setbssparams_done);
-
-	if (conf->dynamic_ps_timeout >= 0x80)
-		priv->powersave_mode.fastPsmIdlePeriod = 0xFF;
-	else
-		priv->powersave_mode.fastPsmIdlePeriod = conf->dynamic_ps_timeout << 1;
-
-	if (override_fpsm_timeout)
-		priv->powersave_mode.fastPsmIdlePeriod = override_fpsm_timeout << 1;
-
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    priv->bss_params.aid &&
-	    priv->setbssparams_done &&
-	    priv->cipherType != 0 &&
-	    priv->filter4.enable &&
-	    priv->powersave_mode.pmMode == WSM_PSM_ACTIVE) {
-		bes2600_set_pm(priv, &priv->powersave_mode);
-	} else {
-		priv->power_set_true = 1;
-	}
+	bes_info("%s: cfg.ps=%d dyn_to=%d aid=%d\n",
+		 __func__, cfg->ps, conf->dynamic_ps_timeout,
+		 priv->bss_params.aid);
+	bes2600_pm_apply(priv);
 }
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)

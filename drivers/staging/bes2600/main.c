@@ -457,24 +457,18 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	hw_priv->hw->max_rate_tries = hw_priv->short_frame_max_tx_count;
 
 	ieee80211_hw_set(hw, SIGNAL_DBM);
-	/*
-	 * Do not advertise SUPPORTS_PS / SUPPORTS_DYNAMIC_PS yet.
-	 * After associate mac80211 immediately set ps=1 (see logs); with an
-	 * incomplete set_pm path that buffers/stalls EAPOL so set_key never
-	 * runs, then hard-locks a CPU (ifconfig/NetworkManager hang waiting
-	 * on IPIs).  Keep the radio fully awake until 4-way is proven.
-	 */
-	/* ieee80211_hw_set(hw, SUPPORTS_PS); */
-	/* ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS); */
+	/* cw1200: both flags.  Idle associated is FAST_PS (0x81). */
+	ieee80211_hw_set(hw, SUPPORTS_PS);
+	ieee80211_hw_set(hw, SUPPORTS_DYNAMIC_PS);
 	ieee80211_hw_set(hw, REPORTS_TX_ACK_STATUS);
 	/*
 	 * Do not set NEED_DTIM_BEFORE_ASSOC.  That flag stalls mac80211 on
 	 * "waiting for beacon" after authenticate until a beacon is RX'd.
 	 * With FW beacon filtering on (or RX quiet), we never leave that
 	 * state and later hard-lock.  Join already programs DTIM from scan
-	 * BSS TIM; PS is not advertised yet, so host DTIM-before-assoc is
-	 * not required.  We still disable the FW beacon filter post-join
-	 * so beacons reach the stack when available.
+	 * BSS TIM; PS wakeup is wsm_set_beacon_wakeup_period at assoc.
+	 * We still disable the FW beacon filter post-join so beacons
+	 * reach the stack.
 	 */
 	/* ieee80211_hw_set(hw, NEED_DTIM_BEFORE_ASSOC); */
 	ieee80211_hw_set(hw, TX_AMPDU_SETUP_IN_HW);
@@ -601,6 +595,7 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	init_waitqueue_head(&hw_priv->channel_switch_done);
 	init_waitqueue_head(&hw_priv->wsm_cmd_wq);
 	init_waitqueue_head(&hw_priv->wsm_startup_done);
+	init_waitqueue_head(&hw_priv->pm_ind_wq);
 	init_waitqueue_head(&hw_priv->offchannel_wq);
 	hw_priv->offchannel_done = 0;
 	wsm_buf_init(&hw_priv->wsm_cmd_buf);
@@ -1020,10 +1015,14 @@ out:
 
 int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 {
-	int ret;
+	int ret = 0;
 	unsigned long status = 0;
+	bool bus_dead = hw_priv->bus_stale || bes2600_chrdev_is_bus_error();
 
-	status = wait_event_timeout(hw_priv->bh_evt_wq, (!hw_priv->hw_bufs_used), 3 * HZ);
+	status = wait_event_timeout(hw_priv->bh_evt_wq,
+				    !hw_priv->hw_bufs_used ||
+				    hw_priv->bus_stale,
+				    bus_dead ? HZ / 2 : 3 * HZ);
 	if (!status)
 		bes_err("communication exception!\n");
 
@@ -1032,14 +1031,19 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 
 	bes2600_pwr_stop(hw_priv);
 
-	if (hw_priv->sbus_ops->sbus_deactive &&
-		WARN_ON(ret = hw_priv->sbus_ops->sbus_deactive(hw_priv->sbus_priv, SUBSYSTEM_WIFI))) {
-		goto err;
+	/*
+	 * SDIO -EBUSY here is a dead chip, not a programmer error.
+	 * WARN_ON blocked NetworkManager through poweroff.
+	 */
+	if (hw_priv->sbus_ops->sbus_deactive && !bus_dead) {
+		ret = hw_priv->sbus_ops->sbus_deactive(hw_priv->sbus_priv,
+						       SUBSYSTEM_WIFI);
+		if (ret)
+			bes_err("%s: deactive failed %d\n", __func__, ret);
 	}
 
-	if(hw_priv->sbus_ops->gpio_sleep) {
+	if (hw_priv->sbus_ops->gpio_sleep)
 		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
-	}
 
 	memset(&hw_priv->wsm_caps, 0, sizeof(hw_priv->wsm_caps));
 	hw_priv->wsm_rx_seq[0] = 0;
@@ -1051,13 +1055,6 @@ int bes2600_wifi_stop(struct bes2600_common *hw_priv)
 	timer_delete_sync(&hw_priv->mcu_mon_timer);
 	timer_delete_sync(&hw_priv->lmac_mon_timer);
 	hw_priv->sdd = NULL;
-	return ret;
-
-err:
-	if(hw_priv->sbus_ops->gpio_sleep) {
-		hw_priv->sbus_ops->gpio_sleep(hw_priv->sbus_priv);
-	}
-
 	return ret;
 }
 

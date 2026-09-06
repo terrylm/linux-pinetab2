@@ -456,9 +456,12 @@ void tx_policy_upload_work(struct work_struct *work)
 {
 	struct bes2600_common *hw_priv =
 		container_of(work, struct bes2600_common, tx_policy_upload_work);
+	int ret;
 
 	bes_devel("[TX] TX policy upload.\n");
-	WARN_ON(tx_policy_upload(hw_priv));
+	ret = tx_policy_upload(hw_priv);
+	if (ret)
+		bes_err("%s: upload failed %d\n", __func__, ret);
 
 	wsm_unlock_tx(hw_priv);
 	bes2600_tx_queues_unlock(hw_priv);
@@ -1229,6 +1232,25 @@ done:
 
 /* ******************************************************************** */
 
+static bool bes2600_skb_is_eapol(const struct sk_buff *skb, u16 hdr_off)
+{
+	const struct ieee80211_hdr *hdr;
+	unsigned int llc;
+
+	if (skb->len < hdr_off + sizeof(*hdr))
+		return false;
+	hdr = (const struct ieee80211_hdr *)(skb->data + hdr_off);
+	if (!ieee80211_is_data(hdr->frame_control) ||
+	    ieee80211_is_nullfunc(hdr->frame_control))
+		return false;
+	llc = hdr_off + ieee80211_hdrlen(hdr->frame_control);
+	if (ieee80211_has_protected(hdr->frame_control))
+		llc += 8;
+	if (skb->len < llc + 8)
+		return false;
+	return get_unaligned_be16(skb->data + llc + 6) == ETH_P_PAE;
+}
+
 void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			  struct wsm_tx_confirm *arg)
 {
@@ -1347,7 +1369,9 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			}
 			if (!priv->data_acked &&
 			    ieee80211_is_data(hdr->frame_control) &&
-			    !is_multicast_ether_addr(ieee80211_get_DA(hdr))) {
+			    !ieee80211_is_nullfunc(hdr->frame_control) &&
+			    !is_multicast_ether_addr(ieee80211_get_DA(hdr)) &&
+			    !bes2600_skb_is_eapol(skb, txpriv->offset)) {
 				priv->data_acked = true;
 				bes_info("%s: first unicast data ACK "
 					 "txedRate=%u flags=0x%x agg=%d "
@@ -1357,11 +1381,11 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 					    WSM_TX_STATUS_AGGREGATION),
 					 hw_priv->ba_ena, priv->ap_privacy);
 				/*
-				 * Open BSS never hits set_key.  Turn BA on
-				 * now that DHCP is no longer the first TX.
+				 * EAPOL ACKs are not this.  Open and WPA2
+				 * both wait until DHCP/data so minstrel
+				 * does not jump to HT before the AP ACKs it.
 				 */
-				if (!priv->ap_privacy && priv->htcap &&
-				    !hw_priv->ba_ena)
+				if (priv->htcap && !hw_priv->ba_ena)
 					queue_work(hw_priv->workqueue,
 						   &hw_priv->ba_work);
 			}

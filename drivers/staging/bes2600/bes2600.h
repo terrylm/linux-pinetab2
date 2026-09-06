@@ -388,6 +388,9 @@ struct bes2600_common {
 	struct wsm_cmd			wsm_cmd;
 	wait_queue_head_t		wsm_cmd_wq;
 	wait_queue_head_t		wsm_startup_done;
+	wait_queue_head_t		pm_ind_wq;
+	u8				pm_ind_psm;
+	int				pm_ind_pending;
 	/* Must initialize wsm_cbc before use to avoid null dereference. */
 	struct wsm_cbc			wsm_cbc;
 	atomic_t			tx_lock;
@@ -559,6 +562,8 @@ struct bes2600_vif {
 	u32				listen_interval;
 	u32				erp_info;
 	bool				powersave_enabled;
+	struct delayed_work		set_pm_work;
+	bool				pm_ind_failed;
 
 	/* WSM Join */
 	enum bes2600_join_status	join_status;

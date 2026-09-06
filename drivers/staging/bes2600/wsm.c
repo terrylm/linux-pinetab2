@@ -1738,10 +1738,16 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 	arg.status = WSM_GET32(buf);
 	arg.psm = WSM_GET8(buf);
 
-	if(arg.status == WSM_STATUS_SUCCESS) {
+	if (arg.status == WSM_STATUS_SUCCESS) {
+		bes_info("%s: PM ind psm=0x%x\n", __func__, arg.psm);
+		hw_priv->pm_ind_psm = arg.psm;
+		hw_priv->pm_ind_pending = 0;
+		wake_up(&hw_priv->pm_ind_wq);
 		bes2600_pwr_notify_ps_changed(hw_priv, arg.psm);
 	} else {
 		bes_err("[WSM] PM Ind status:%d psm:%d\n", arg.status, arg.psm);
+		hw_priv->pm_ind_pending = 0;
+		wake_up(&hw_priv->pm_ind_wq);
 	}
 
 	return 0;

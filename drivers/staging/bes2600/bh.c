@@ -989,23 +989,26 @@ void bes2600_bh_lmac_active_monitor(struct timer_list* t)
 {
 	struct bes2600_common *hw_priv = from_timer(hw_priv, t, lmac_mon_timer);
 
+	/*
+	 * Leftover AMPDU after associated scan (bufs=19 once the
+	 * host already cleared in_progress) is not a dead SDIO.
+	 * mark_stale here refused 0x0006 and skipped every later
+	 * scan.  In-flight WSM has its own timeout.
+	 */
+	if (atomic_read(&hw_priv->scan.in_progress) ||
+	    bes2600_bh_wsm_cmd_in_flight(hw_priv) ||
+	    hw_priv->hw_bufs_used > 0) {
+		if (hw_priv->wsm_tx_pending[0] || hw_priv->hw_bufs_used > 0)
+			mod_timer(&hw_priv->lmac_mon_timer, jiffies + 3 * HZ);
+		return;
+	}
+
 	bes_err("link break between lmac and host, hw_buf_used:%d pending:%d (soft) host=%pM base=%pM\n",
 		hw_priv->hw_bufs_used, hw_priv->wsm_tx_pending[0],
 		hw_priv->mac_addr, hw_priv->addresses[0].addr);
 	hw_priv->wsm_tx_pending[0] = 0;
-	/*
-	 * Join occupies hw_bufs_used=1 until 0x040B.  The old test marked
-	 * stale whenever bufs>0, which killed join at 3s (LMAC timer) —
-	 * log: 0x000B TX'd @71.281, link-break stale @74.343, -110.
-	 * Leave in-flight WSM to wsm_cmd_send's own timeout.
-	 */
-	if (hw_priv->bus_stale || bes2600_bh_wsm_cmd_in_flight(hw_priv) ||
-	    bes2600_bh_bus_quiet(hw_priv))
+	if (hw_priv->bus_stale || bes2600_bh_bus_quiet(hw_priv))
 		return;
-	if (hw_priv->hw_bufs_used > 0) {
-		bes2600_bh_mark_bus_stale(hw_priv);
-		return;
-	}
 	atomic_inc(&hw_priv->bh_rx);
 	wake_up(&hw_priv->bh_wq);
 }
@@ -1036,8 +1039,14 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 			bes2600_chrdev_is_signal_mode()) {
 			status = 5 * HZ;
 		} else if (hw_priv->hw_bufs_used > 0) {
-			/* Interrupt loss detection */
-			status = 5 * HZ;
+			/*
+			 * Associated scan holds a full TX window off-channel.
+			 * A 5s drop of that count desynced LMAC (SDIO -16).
+			 */
+			if (atomic_read(&hw_priv->scan.in_progress))
+				status = 15 * HZ;
+			else
+				status = 5 * HZ;
 		} else {
 			status = MAX_SCHEDULE_TIMEOUT;
 		}
@@ -1078,11 +1087,22 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 				unsigned long since_rx =
 					jiffies - hw_priv->rx_timestamp;
 
+				/*
+				 * Off-channel scan + AMPDU retries hold
+				 * bufs for seconds.  Dropping that count
+				 * (usedbuf:46) made the host TX into a
+				 * full LMAC queue → SDIO -16.
+				 */
+				if (atomic_read(&hw_priv->scan.in_progress))
+					continue;
+
 				if (bes2600_bh_wsm_cmd_in_flight(hw_priv)) {
 					/*
 					 * If the join waiter is on a locked
 					 * CPU, 7s never fires and this skip
 					 * loops forever.  Complete the cmd.
+					 * Do not drop the whole TX window — that
+					 * slot is wsm_cmd_send's to free.
 					 */
 					if (since_rx > 7 * HZ) {
 						bes_err("usedbuf:%u cmd stuck %u ms — wake waiter\n",
@@ -1095,10 +1115,6 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 						hw_priv->wsm_cmd.arg = NULL;
 						spin_unlock(&hw_priv->wsm_cmd.lock);
 						wake_up(&hw_priv->wsm_cmd_wq);
-						wsm_release_tx_buffer(hw_priv,
-								      hw_priv->hw_bufs_used);
-						if (hw_priv->hw_bufs_used < 0)
-							hw_priv->hw_bufs_used = 0;
 					} else {
 						bes_err("usedbuf:%u skip — cmd in flight since_rx=%u ms\n",
 							hw_priv->hw_bufs_used,
@@ -1108,10 +1124,11 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 				}
 				/*
 				 * Auth TX with no confirm: drop host count
-				 * only.  sdio_work_debug used to claim SDIO
-				 * here and never returned; mark_stale+abort
-				 * then locked the tablet.
+				 * only for a 1–2 frame window.  A full
+				 * AMPDU pipeline is still in firmware.
 				 */
+				if (hw_priv->hw_bufs_used > 2)
+					continue;
 				bes_err("usedbuf:%u drop host count since_rx=%u ms (no SDIO)\n",
 					hw_priv->hw_bufs_used,
 					jiffies_to_msecs(since_rx));

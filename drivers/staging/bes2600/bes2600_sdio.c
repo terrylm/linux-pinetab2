@@ -32,6 +32,7 @@
 #include "sbus.h"
 #include "bes2600_plat.h"
 #include "hwio.h"
+#include "bh.h"
 #include "bes_chardev.h"
 #include "bes_log.h"
 
@@ -99,6 +100,7 @@ struct sbus_priv {
 	u32 tx_data_cnt;
 	u32 tx_xfer_cnt;
 	u32 tx_proc_cnt;
+	u8 tx_ebusy_streak;
 	long unsigned int last_tx_data_timestamp;
 #endif
 	bool unregister_in_process;
@@ -749,6 +751,8 @@ static void sdio_rx_work(struct work_struct *work)
 			}
 			bes_err("%s ctrl read %d — skip force_close\n",
 				__func__, again);
+			if (self->core)
+				bes2600_bh_mark_bus_stale(self->core);
 			bes2600_gpio_allow_mcu_sleep(self);
 			return;
 		}
@@ -1063,21 +1067,33 @@ flush_previous:
 				}
 			} while (crc_retry <= 10);
 			sdio_release_host(self->func);
-			queue_work(self->sdio_wq, &self->rx_work);
 			if (ret) {
 				bes_err("%s,%d err=%d,%d,%d\n", __func__,
 					__LINE__, ret, scatters, cur_blk);
 				sdio_work_debug(self);
 				/*
-				 * CMD53 -EBUSY is the same class as CTRL
-				 * -EBUSY: MCU/MMC contention, not a dead
-				 * chip.  force_close from this worker
-				 * WARNed in tx_loop then hard-locked CPU1
-				 * (kworker bes_sdio).
+				 * Brief CMD53 -EBUSY is MCU/MMC contention.
+				 * Minutes of it (shutdown log) is a wedged
+				 * LMAC.  Re-queueing forever blocked NM
+				 * poweroff.  Do not force_close.
 				 */
 				if (ret == -EBUSY || ret == -ETIMEDOUT) {
-					bes_err("%s: TX %d — skip force_close\n",
-						__func__, ret);
+					if (self->tx_ebusy_streak < 3)
+						self->tx_ebusy_streak++;
+					bes_err("%s: TX %d — skip force_close (%u)\n",
+						__func__, ret,
+						self->tx_ebusy_streak);
+					if (self->tx_ebusy_streak >= 3) {
+						if (self->core)
+							bes2600_bh_mark_bus_stale(self->core);
+						list_for_each_entry_safe(tx_buffer, temp,
+									 &proc_list, node) {
+							list_del_init(&tx_buffer->node);
+							kmem_cache_free(self->tx_bufferlistpool,
+									tx_buffer);
+						}
+						goto tx_done;
+					}
 					spin_lock(&self->tx_bufferlock);
 					list_splice_tail_init(&proc_list,
 							      &self->tx_bufferlist);
@@ -1087,6 +1103,8 @@ flush_previous:
 				bes2600_chrdev_wifi_force_close(self->core,
 								false);
 			}
+			self->tx_ebusy_streak = 0;
+			queue_work(self->sdio_wq, &self->rx_work);
 			scatters = 0;
 			total_len = 0;
 			cur_blk = 0;
@@ -1102,7 +1120,8 @@ static int bes2600_sdio_pipe_send(struct sbus_priv *self, u8 pipe, u32 len, u8 *
 {
 	struct bes_sdio_tx_list_t * desc = NULL;
 
-	if (bes2600_chrdev_is_bus_error()) {
+	if (bes2600_chrdev_is_bus_error() ||
+	    (self->core && self->core->bus_stale)) {
 		bes2600_tx_loop_pipe_send(self->core, buf, len);
 		return 0;
 	}
@@ -1553,7 +1572,8 @@ static int bes2600_sdio_deactive(struct sbus_priv *self, int sub_system)
 	int ret;
 
 	/* don't read/write sdio when sdio error */
-	if (bes2600_chrdev_is_bus_error())
+	if (bes2600_chrdev_is_bus_error() ||
+	    (self->core && self->core->bus_stale))
 		return 0;
 
 	/* notify device deactive event */
@@ -1675,6 +1695,8 @@ err:
 	if (ret == -EBUSY || ret == -ETIMEDOUT) {
 		bes_err("bes2600_sdio_deactive: %d — skip force_close, subsys:%d\n",
 			ret, sub_system);
+		if (self->core)
+			bes2600_bh_mark_bus_stale(self->core);
 		return ret;
 	}
 	bes2600_chrdev_wifi_force_close(self->core, false);

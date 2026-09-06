@@ -29,7 +29,11 @@ Broken commits (wifi-broken, do not replay as a lump)
 * 0d7099dbf846 rate-limit / weak-signal: NETGEAR15 still worked, STARLINK
   always failed.  The 1 Mbps clamp and related TX policy belong here.
 * 26ee084ec255 same STARLINK-fail / NETGEAR-ok pattern.
-* c426582bf6ff associated-scan work: broken.
+* c426582bf6ff associated-scan: BACKGROUND + FORCE_BACKGROUND, no
+  wsm_reset while STA.  Required for mainline — do not skip with
+  -EBUSY.  Bare BACKGROUND of NM's 14+27 channels at 100 ms dwell
+  while staying ACTIVE killed AMPDU.  Do not toggle BA 0/177
+  around scan.
 * d6c2ab442ff4 mainline-prep: broken.
 * 147ad3eaca60 WARN_ON/BUG_ON: first connect after boot worked; later
   connects failed.  Do not re-apply that conversion blindly.
@@ -45,34 +49,71 @@ WARN_ON / BUG_ON
 
 Logging
 -------
-* Hot-path bes_info (scan, per-frame TX/RX) is too loud for staging.
-  Use bes_devel / dyndbg; keep bes_err for real failures.
+* Hot-path bes_info (per-channel scan, per-frame TX/RX) is too loud.
+  Per-channel assoc 0x0007 is bes_devel.  Keep one line per hw_scan
+  request and scan complete at info until PS/scan is settled.
 * Firmware load still prints version/CRC at info; fine for now.
 * Bind device logs to the SDIO function, not a NULL global_dev.
 
 Power save / WSM 0x0010
 -----------------------
-* Firmware stays WSM_PSM_ACTIVE after join.  mac80211 often wants
-  FAST_PS (0x81).  0x0010 FAST_PS after associated scan has blocked RX
-  waiting for confirm.
-* Do not wsm_set_pm() from BH/RX.  Do not restore FAST_PS after scan
-  until it is proven on this firmware.
+* SUPPORTS_PS + SUPPORTS_DYNAMIC_PS.  cfg.ps=1 → FAST_PS (0x81)
+  even when dyn_to=0 (this stack means "firmware owns idle", not
+  legacy PS).  Idle period from BES2600_FASTPS_IDLE_TIME if set,
+  else mac80211 timeout.  Cache then send 0x0010; do not wait for
+  0x0809.  Do not wsm_set_pm() from BH/RX.
+* STARLINK 2.4 GHz: 0x0010 0x81 got 0x0809 psm=0x1.  Assoc, DHCP,
+  AMPDU worked.  Legacy 0x01 as session idle never got 0x0809.
+
+Suspend / resume / shutdown
+---------------------------
+* Deep suspend removes the STA vif.  On resume, MCU wake fails
+  for tens of seconds: bes2600_sdio_active failed / 
+  pwr_device_exit_lp_mode, active mcu fail, then LMAC station-ID
+  and add_interface recover.  Screen blank / console dead until
+  power-button is this path, not DRM.  Fix bes_pwr / SDIO
+  resume so mmc2 comes back without that retry storm.
+* Poweroff after a dead SDIO (TX -16) hung NM/wpa 1–3 min:
+  scan.lock busy-loop in bes2600_stop, deactive WARN_ON,
+  sdio_tx_work re-queueing -EBUSY forever.  Stop must abort
+  the scan with a timeout, mark the bus stale after a short
+  -EBUSY streak, and not WARN_ON deactive failure.
 
 Scan
 ----
-* Associated (background) scan is not proven on this baseline.  Bring
-  it back only with BACKGROUND + FORCE_BACKGROUND, never foreground
-  0x0007 while joined, and never wsm_reset() on scan failure while STA.
+* Associated scan is required.  BACKGROUND + FORCE_BACKGROUND,
+  10/25 TU, one channel per 0x0007.  Keep TX locked for the
+  whole request.  If idle is ACTIVE, wrap with legacy 0x01
+  (cw1200); if already 0x01/0x81, skip the wrap.
+* Never foreground 0x0007 while joined, never wsm_reset() on scan
+  failure while STA.
+* Do not run join_timeout/unjoin from scan first_run while associated.
+* Drain once at start (do not drop the host count).  Skip 0x0008
+  on associated scan timeout.  After that timeout, in_progress
+  is 0 while AMPDU may still sit in firmware — the LMAC 3s
+  monitor must not mark_bus_stale for leftover bufs (that
+  refused 0x0006 and skipped every later scan).
+* Drain can still leave bufs=20–46 after 500 ms when AMPDU is
+  retrying (manual scan while ping/browser).  Info no longer
+  prints that; leftover is devel.  Starting 0x0007 with a full
+  window can still -110 — later item, not a dead bus.
+* AMPDU RETRY_EXCEEDED can still show on STARLINK.
 
 Association / rates / aggregation
 ---------------------------------
-* 5 GHz STARLINK BSSIDs (ch36 / ch149) often fail auth at 6 Mbps.
-  2.4 GHz STARLINK (ch1) is the path that worked at fdf139.
+* 5 GHz STARLINK BSSIDs (ch36 / ch149 / :47: / :37:) fail auth
+  at 6 Mbps.  2.4 GHz STARLINK (ch1, :27:) is the working BSS.
+* EAPOL must not set data_acked or enable BA.  After STARLINK →
+  NETGEAR, 4-way succeeded then minstrel/BA ran on the EAPOL ACK
+  and data RETRY_EXCEEDED.  Stay on 1/6 Mbps until a non-EAPOL
+  unicast data ACK, then BA (open and WPA2).
 * Do not clamp ICMP/DNS/DHCP to 1 Mbps the way 0d7099 did until that
   change is re-proven against STARLINK.
 * Firmware owns BlockAck.  Host ADDBA-Resp is dropped.  Do not
   auto-enable BA after HT ACKs ("connected" with 0% ping).
-* Join with leftover hw_bufs_used=1: find the leak; do not poke RX.
+* Join with leftover hw_bufs_used: find the leak; do not poke RX.
+  After wsm_reset on unjoin, drop the host count (firmware will not
+  confirm those frames).  Do not queue_clear on unjoin.
 * wsm_reset drops the firmware TX rate-policy table.  Host cache must
   clear uploaded so MCS policies are sent again on the next BSS.
 
@@ -130,6 +171,8 @@ Not this driver
 * QSampleCache wireless-extensions warning.
 * systemd-journald "Time jumped backwards".
 * typec-extcon / husb311 (board patches, separate).
+* Plasma/GNOME screen-blank policy; suspend itself is the driver
+  (see Suspend / resume above).
 
 Contact / trees
 ---------------

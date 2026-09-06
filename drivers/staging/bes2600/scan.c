@@ -9,6 +9,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/delay.h>
 #include <linux/sched.h>
 #include "bes2600.h"
 #include "scan.h"
@@ -23,6 +24,38 @@ static void bes2600_scan_restart_delayed(struct bes2600_vif *priv);
 static bool bes2600_scan_bus_unusable(struct bes2600_common *hw_priv)
 {
 	return hw_priv->bus_stale || bes2600_chrdev_is_bus_error();
+}
+
+static bool bes2600_vif_associated(const struct bes2600_vif *priv)
+{
+	return priv->join_status == BES2600_JOIN_STATUS_STA &&
+	       priv->vif && priv->vif->cfg.assoc;
+}
+
+/*
+ * NM associated scans are 14×2.4 then 27×5 GHz.  One channel
+ * per 0x0007 so BACKGROUND returns home.  Keep TX locked for
+ * the whole request — a 50 ms home-dwell unlock filled the
+ * firmware window (bufs≈45) and the next 0x0007 hung.
+ */
+#define BES2600_ASSOC_SCAN_CH_BURST	1
+#define BES2600_ASSOC_SCAN_DRAIN_MS	500
+
+static void bes2600_scan_drain_tx(struct bes2600_common *hw_priv)
+{
+	long left;
+
+	if (!hw_priv->hw_bufs_used || bes2600_scan_bus_unusable(hw_priv))
+		return;
+
+	left = wait_event_timeout(hw_priv->bh_evt_wq,
+				  !hw_priv->hw_bufs_used ||
+				  bes2600_scan_bus_unusable(hw_priv),
+				  msecs_to_jiffies(BES2600_ASSOC_SCAN_DRAIN_MS));
+	if (!left && hw_priv->hw_bufs_used)
+		bes_devel("%s: leftover bufs=%d after %d ms drain\n",
+			  __func__, hw_priv->hw_bufs_used,
+			  BES2600_ASSOC_SCAN_DRAIN_MS);
 }
 
 #ifdef CONFIG_BES2600_TESTMODE
@@ -150,21 +183,31 @@ static int bes2600_scan_start(struct bes2600_vif *priv, struct wsm_scan *scan)
 
 	ret = wsm_scan(hw_priv, scan, 0);
 	/*
-	 * FW status 13 = scan refused while LMAC still joined.
-	 * Recover with a reset and one retry (idle unjoin used to skip
-	 * 0x000A when RX was quiet after failed auth).
+	 * Idle: status 13 = scan refused while LMAC still joined.
+	 * Reset+retry recovers that.  Associated: never wsm_reset —
+	 * that drops the join.
 	 */
 	if (ret && !hw_priv->bus_stale) {
-		struct wsm_reset reset = {
-			.reset_statistics = true,
-		};
+		bool associated = bes2600_vif_associated(priv);
 
-		bes_warn("%s: scan 0x0007 failed %d — reset and retry\n",
-			 __func__, ret);
-		if (wsm_reset(hw_priv, &reset, priv->if_id))
-			bes_warn("%s: recovery reset failed\n", __func__);
-		else
-			ret = wsm_scan(hw_priv, scan, 0);
+		if (associated) {
+			bes_warn("%s: scan 0x0007 failed %d while associated "
+				 "(type=%u flags=0x%x) — no reset\n",
+				 __func__, ret, scan->scanType,
+				 scan->scanFlags);
+		} else {
+			struct wsm_reset reset = {
+				.reset_statistics = true,
+			};
+
+			bes_warn("%s: scan 0x0007 failed %d — reset and retry\n",
+				 __func__, ret);
+			if (wsm_reset(hw_priv, &reset, priv->if_id))
+				bes_warn("%s: recovery reset failed\n",
+					 __func__);
+			else
+				ret = wsm_scan(hw_priv, scan, 0);
+		}
 	}
 	if (unlikely(ret)) {
 		atomic_set(&hw_priv->scan.in_progress, 0);
@@ -215,21 +258,10 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
 		return -EOPNOTSUPP;
 
-	/*
-	 * Associated scans send 0x0007 then 0x0010 and time out (log:
-	 * "Timeout waiting for scan complete" every ~30s, then
-	 * RETRY_EXCEEDED).  Skip all STA scans while associated.
-	 */
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    priv->vif && priv->vif->cfg.assoc) {
-		static unsigned long last_msg;
-
-		if (!last_msg || time_after(jiffies, last_msg + 30 * HZ)) {
-			last_msg = jiffies;
-			bes_info("%s: skip scan (associated)\n", __func__);
-		}
-		return -EBUSY;
-	}
+	if (bes2600_vif_associated(priv))
+		bes_info("%s: associated n_ch=%d n_ssids=%u home=%u\n",
+			 __func__, req->n_channels, req->n_ssids,
+			 hw_priv->channel ? hw_priv->channel->hw_value : 0);
 
 	if (bes2600_scan_bus_unusable(hw_priv)) {
 		bes_warn("%s: skip scan (bus unusable)\n", __func__);
@@ -282,7 +314,14 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 		}
 	}
 
-	wsm_vif_lock_tx(priv);
+	/*
+	 * Associated: lock only.  vif_flush / wsm_lock_tx drop the
+	 * host buf count on timeout and that desyncs LMAC (SDIO -16).
+	 */
+	if (bes2600_vif_associated(priv))
+		wsm_lock_tx_async(hw_priv);
+	else
+		wsm_vif_lock_tx(priv);
 
 	BUG_ON(hw_priv->scan.req);
 	hw_priv->scan.req = req;
@@ -353,16 +392,15 @@ static bool bes2600_scan_setup(struct bes2600_common *hw_priv, struct bes2600_vi
 			      bool first_run)
 {
 	/*
-	 * Only toggle PS when we are a STA.  Idle/disconnect scans were
-	 * sending 0x0010, then unjoin raced ("cmd in flight" ret 13)
-	 * and scan timed out.
+	 * cw1200: if not already in PS (bit 0, true for 0x01 and
+	 * FAST_PS 0x81), enter legacy PS for BACKGROUND scan.
 	 */
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    priv->vif && priv->vif->cfg.assoc) {
-		hw_priv->scan.saved_ps = priv->powersave_mode;
+	if (first_run &&
+	    priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    !(priv->powersave_mode.pmMode & WSM_PSM_PS)) {
 		struct wsm_set_pm pm = priv->powersave_mode;
 
-		pm.pmMode = WSM_PSM_ACTIVE;
+		pm.pmMode = WSM_PSM_PS;
 		bes2600_set_pm(priv, &pm);
 	}
 
@@ -472,6 +510,16 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
     }
 
     hw_priv->scan.req = NULL;
+
+	if (bes2600_vif_associated(priv))
+		bes_info("%s: associated scan done status=%d\n",
+			 __func__, hw_priv->scan.status);
+
+	/* cw1200: restore the mode we had before the scan wrapper. */
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    !(priv->powersave_mode.pmMode & WSM_PSM_PS))
+		bes2600_set_pm(priv, &priv->powersave_mode);
+
     bes2600_scan_restart_delayed(priv);
 #ifdef CONFIG_BES2600_TESTMODE
     hw_priv->enable_advance_scan = false;
@@ -498,8 +546,14 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
     u32 minChannelTime;
 
     struct ieee80211_channel *first = *hw_priv->scan.curr;
+    int max_ch = WSM_SCAN_MAX_NUM_OF_CHANNELS;
+    bool associated = bes2600_vif_associated(priv);
+
+    if (associated)
+	max_ch = BES2600_ASSOC_SCAN_CH_BURST;
+
     for (it = hw_priv->scan.curr + 1, i = 1; it != hw_priv->scan.end &&
-	 i < WSM_SCAN_MAX_NUM_OF_CHANNELS; ++it, ++i) {
+	 i < max_ch; ++it, ++i) {
 	if ((*it)->band != first->band)
 	    break;
     }
@@ -530,6 +584,9 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
     if (priv->join_status == BES2600_JOIN_STATUS_STA) {
 	scan->scanType = WSM_SCAN_TYPE_BACKGROUND;
 	scan->scanFlags |= WSM_SCAN_FLAG_FORCE_BACKGROUND;
+	/* cw1200 drops SPLIT when joined.  One channel per 0x0007
+	 * is the host-side split; SPLIT_METHOD is unused.
+	 */
     }
 
     scan->ch = kzalloc((it - hw_priv->scan.curr) * sizeof(struct wsm_scan_ch), GFP_KERNEL);
@@ -542,12 +599,21 @@ static int bes2600_scan_configure_channels(struct bes2600_common *hw_priv, struc
 		     ChannelRemainTime;
     maxChannelTime = (maxChannelTime < 35) ? 35 : maxChannelTime;
 
-    if (scan->band == NL80211_BAND_2GHZ) {
+    if (associated) {
+	/* 50/100 TU on 5 GHz killed AMPDU.  10/25 survived on 2.4. */
+	minChannelTime = 10;
+	maxChannelTime = 25;
+    } else if (scan->band == NL80211_BAND_2GHZ) {
 	coex_calc_wifi_scan_time(&minChannelTime, &maxChannelTime);
     } else {
 	minChannelTime = 100;
 	maxChannelTime = 100;
     }
+
+	if (associated)
+		bes_devel("%s: assoc 0x0007 n_ch=%u flags=0x%x dwell=%u/%u\n",
+			  __func__, scan->numOfChannels, scan->scanFlags,
+			  minChannelTime, maxChannelTime);
 
     for (i = 0; i < scan->numOfChannels; ++i) {
 	scan->ch[i].number = hw_priv->scan.curr[i]->hw_value;
@@ -652,12 +718,17 @@ void bes2600_scan_work(struct work_struct *work)
     first_run = hw_priv->scan.begin == hw_priv->scan.curr &&
 		hw_priv->scan.begin != hw_priv->scan.end;
 
-    if (first_run) {
-	/* Problematic: Firmware sensitive to scan during unassociated STA state */
-		if (cancel_delayed_work_sync(&priv->join_timeout) > 0) {
-	    	bes2600_join_timeout(&priv->join_timeout.work);
-		}
+    if (first_run && !bes2600_vif_associated(priv)) {
+	/* Firmware is unhappy if 0x0007 is sent while joined but not
+	 * yet associated.  Do not run this while associated — that
+	 * would unjoin a live BSS.
+	 */
+	if (cancel_delayed_work_sync(&priv->join_timeout) > 0)
+		bes2600_join_timeout(&priv->join_timeout.work);
     }
+
+    if (first_run && bes2600_vif_associated(priv))
+	bes2600_scan_drain_tx(hw_priv);
 
     if (!bes2600_scan_setup(hw_priv, priv, first_run)) {
 		up(&hw_priv->conf_lock);
@@ -772,7 +843,11 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 
 	if (arg->status == 0 && arg->numChannels > 0)
 		empty_scans = 0;
-	else {
+	else if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+		bes_warn("%s: associated scan complete status=%d "
+			 "channels=%d (no reset)\n",
+			 __func__, arg->status, arg->numChannels);
+	} else {
 		empty_scans++;
 		if (empty_scans > 3) {
 			bes_warn("%s: Too many empty scans - soft reset\n", __func__);
@@ -785,8 +860,10 @@ void bes2600_scan_complete_cb(struct bes2600_common *hw_priv,
 
 	wake_up(&hw_priv->scan.wq);
 
-	if (priv->join_status == BES2600_JOIN_STATUS_STA)
-		bes2600_set_pm(priv, &hw_priv->scan.saved_ps);
+	/*
+	 * Never wsm_set_pm from BH/RX.  Restoring FAST_PS here blocked
+	 * on 0x0010 confirm so scan-complete work never ran.
+	 */
 
 	if (hw_priv->scan.status == -ETIMEDOUT)
 		wiphy_warn(hw_priv->hw->wiphy,
@@ -810,7 +887,14 @@ void bes2600_scan_timeout(struct work_struct *work)
 {
 	struct bes2600_common *hw_priv =
 		container_of(work, struct bes2600_common, scan.timeout.work);
+	struct bes2600_vif *priv;
+	bool associated = false;
+
 	if (likely(atomic_xchg(&hw_priv->scan.in_progress, 0))) {
+		priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, hw_priv->scan.if_id);
+		if (priv)
+			associated = bes2600_vif_associated(priv);
+
 		if (hw_priv->scan.status > 0)
 			hw_priv->scan.status = 0;
 		else if (!hw_priv->scan.status) {
@@ -819,9 +903,18 @@ void bes2600_scan_timeout(struct work_struct *work)
 				"complete notification.\n");
 			hw_priv->scan.status = -ETIMEDOUT;
 			hw_priv->scan.curr = hw_priv->scan.end;
-			if (!bes2600_scan_bus_unusable(hw_priv))
+			/*
+			 * 0x0008 while associated sat behind a hung
+			 * 0x0007 / full TX window and produced SDIO -16.
+			 * Host-abort is enough; firmware completes later.
+			 */
+			if (!associated &&
+			    !bes2600_scan_bus_unusable(hw_priv))
 				wsm_stop_scan(hw_priv,
 					      hw_priv->scan.if_id ? 1 : 0);
+			else if (associated)
+				bes_info("%s: skip 0x0008 while associated\n",
+					 __func__);
 		}
 		bes2600_scan_complete(hw_priv, hw_priv->scan.if_id);
 	}

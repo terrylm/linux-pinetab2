@@ -191,14 +191,30 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 
 	atomic_dec(&hw_priv->netdevice_start);
 
+	/*
+	 * A wedged SDIO (TX -16 for minutes) left 0x0007 holding
+	 * scan.lock.  schedule() until it dropped hung poweroff —
+	 * NM/wpa sat on the 1m32s stop job.  Abort waiters first.
+	 */
+	if (hw_priv->bus_stale || bes2600_chrdev_is_bus_error())
+		bes2600_bh_mark_bus_stale(hw_priv);
+
 	wsm_lock_tx(hw_priv);
 
-	while (down_trylock(&hw_priv->scan.lock)) {
-		/* Scan is in progress. Force it to stop. */
+	if (down_timeout(&hw_priv->scan.lock, 2 * HZ)) {
+		bes_err("%s: scan.lock timeout — abort in-flight scan\n",
+			__func__);
 		hw_priv->scan.req = NULL;
-		schedule();
+		hw_priv->scan.status = -ENODEV;
+		atomic_set(&hw_priv->scan.in_progress, 0);
+		bes2600_bh_mark_bus_stale(hw_priv);
+		if (down_timeout(&hw_priv->scan.lock, HZ))
+			bes_err("%s: scan.lock still held\n", __func__);
+		else
+			up(&hw_priv->scan.lock);
+	} else {
+		up(&hw_priv->scan.lock);
 	}
-	up(&hw_priv->scan.lock);
 
 	cancel_delayed_work_sync(&hw_priv->scan.probe_work);
 	cancel_delayed_work_sync(&hw_priv->scan.timeout);
@@ -622,6 +638,13 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 
 	}
 
+	if (changed & IEEE80211_CONF_CHANGE_PS) {
+		if (!priv)
+			priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, 0);
+		if (priv)
+			bes2600_pm_apply(priv);
+	}
+
 	if (changed & IEEE80211_CONF_CHANGE_RETRY_LIMITS) {
 		bes_devel("[STA] Retry limits: %d (long), %d (short).\n",
 			 conf->long_frame_max_tx_count,
@@ -1007,14 +1030,61 @@ int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg)
 	if (priv->uapsd_info.uapsdFlags != 0)
 		pm.pmMode &= ~WSM_PSM_FAST_PS_FLAG;
 
-	if (memcmp(&pm, &priv->firmware_ps_mode,
-			sizeof(struct wsm_set_pm))) {
-		priv->firmware_ps_mode = pm;
-		return wsm_set_pm(priv->hw_priv, &pm,
-				priv->if_id);
-	} else {
+	if (!memcmp(&pm, &priv->firmware_ps_mode, sizeof(pm)))
 		return 0;
-	}
+
+	bes_info("%s: 0x0010 pmMode=0x%x (was 0x%x) if_id=%d\n",
+		 __func__, pm.pmMode, priv->firmware_ps_mode.pmMode,
+		 priv->if_id);
+	/* cw1200: cache before send; do not wait for 0x0809. */
+	priv->firmware_ps_mode = pm;
+	return wsm_set_pm(priv->hw_priv, &pm, priv->if_id);
+}
+
+void bes2600_pm_apply(struct bes2600_vif *priv)
+{
+	struct ieee80211_conf *conf = &priv->hw_priv->hw->conf;
+	const u8 override = CONFIG_BES2600_FASTPS_IDLE_TIME;
+	bool ps = priv->vif && priv->vif->cfg.ps;
+
+	/*
+	 * cfg.ps=1 → FAST_PS (0x81).  This userspace sets dyn_to=0
+	 * when SUPPORTS_DYNAMIC_PS is on ("firmware owns idle").
+	 * Mapping that to legacy 0x01 never got 0x0809.
+	 */
+	if (!ps)
+		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
+	else
+		priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
+
+	if (override)
+		priv->powersave_mode.fastPsmIdlePeriod = override << 1;
+	else if (conf->dynamic_ps_timeout >= 0x80)
+		priv->powersave_mode.fastPsmIdlePeriod = 0xFF;
+	else
+		priv->powersave_mode.fastPsmIdlePeriod =
+			conf->dynamic_ps_timeout << 1;
+
+	bes_info("%s: ps=%d mode=0x%x dyn_to=%d idle=%u aid=%d\n",
+		 __func__, ps, priv->powersave_mode.pmMode,
+		 conf->dynamic_ps_timeout,
+		 priv->powersave_mode.fastPsmIdlePeriod,
+		 priv->bss_params.aid);
+
+	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    priv->bss_params.aid)
+		bes2600_set_pm(priv, &priv->powersave_mode);
+}
+
+void bes2600_set_pm_work(struct work_struct *work)
+{
+	struct bes2600_vif *priv =
+		container_of(work, struct bes2600_vif, set_pm_work.work);
+	struct bes2600_common *hw_priv = priv->hw_priv;
+
+	down(&hw_priv->conf_lock);
+	bes2600_pm_apply(priv);
+	up(&hw_priv->conf_lock);
 }
 
 int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
@@ -1205,13 +1275,13 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 				queue_work(hw_priv->workqueue,
 					   &priv->update_filtering_work);
 				/*
-				 * BA was held off during 4-way.  Enable now
-				 * or the AP aggregates data we cannot ACK
-				 * (1/33 pings after P57).
+				 * Do not enable BA here.  EAPOL ACK is not
+				 * a data path; minstrel+BA before DHCP on
+				 * NETGEAR after an AP switch got
+				 * RETRY_EXCEEDED.  First non-EAPOL data
+				 * ACK turns BA on (same as open BSS).
 				 */
-				if (priv->htcap)
-					bes2600_enable_ba_policy(hw_priv,
-								 priv->if_id);
+				bes2600_pm_apply(priv);
 			}
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
 			if(wsm_key->type == WSM_KEY_TYPE_WAPI_PAIRWISE)
@@ -2826,6 +2896,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 	if (priv->join_status) {
 		/* Non-sync cancels — we run on bes2600_wq */
 		cancel_work(&priv->update_filtering_work);
+		cancel_delayed_work(&priv->set_pm_work);
 		cancel_work(&priv->set_beacon_wakeup_period_work);
 		cancel_work(&hw_priv->event_handler);
 		cancel_delayed_work(&priv->connection_loss_work);
@@ -2859,6 +2930,17 @@ void bes2600_unjoin_work(struct work_struct *work)
 			if (wsm_reset(hw_priv, &reset, priv->if_id))
 				bes_warn("%s: wsm_reset failed\n", __func__);
 			tx_policy_clean(hw_priv);
+			/*
+			 * Reset drops in-flight frames; host confirms will
+			 * never arrive.  Leave the count stale and the next
+			 * join's wsm_get_tx skip (bufs>1, no RX) blocks auth.
+			 * Host-only, same as prepare_for_join — no RX poke.
+			 */
+			if (hw_priv->hw_bufs_used > 0) {
+				bes_info("%s: drop stale hw_bufs_used=%d after reset\n",
+					 __func__, hw_priv->hw_bufs_used);
+				hw_priv->hw_bufs_used = 0;
+			}
 		}
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_JOIN);
 		priv->join_dtim_period = 0;
@@ -2866,6 +2948,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
+		priv->pm_ind_failed = false;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
 		priv->setbssparams_done = false;
@@ -3090,6 +3173,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	INIT_WORK(&priv->linkid_reset_work, bes2600_link_id_reset);
 #endif
 	INIT_WORK(&priv->update_filtering_work, bes2600_update_filtering_work);
+	INIT_DELAYED_WORK(&priv->set_pm_work, bes2600_set_pm_work);
 	INIT_DELAYED_WORK(&priv->pending_offchanneltx_work,
 			bes2600_pending_offchanneltx_work);
 	INIT_WORK(&priv->set_beacon_wakeup_period_work,
@@ -3098,6 +3182,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	timer_setup(&priv->mcast_timeout, bes2600_mcast_timeout, 0);
 
 	priv->setbssparams_done = false;
+	priv->pm_ind_failed = false;
 	priv->power_set_true = 0;
 	priv->user_power_set_true = 0;
 	priv->user_pm_mode = 0;

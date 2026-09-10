@@ -21,6 +21,7 @@ static int bes2600_add_power_delay_event(struct bes2600_pwr_t *bes_pwr, u32 even
 static int bes2600_add_async_timeout_power_delay_event(struct bes2600_pwr_t *bes_pwr,
 						       u32 event, u32 timeout);
 static bool bes2600_pwr_needs_hw_wake(struct bes2600_pwr_t *bes_pwr);
+static bool bes2600_pwr_fw_in_ieee_ps(struct bes2600_common *hw_priv);
 
 int bes2600_pwr_set_busy_event(struct bes2600_common *hw_priv, u32 event);
 int bes2600_pwr_set_busy_event_async(struct bes2600_common *hw_priv, u32 event);
@@ -95,18 +96,6 @@ static void bes2600_dump_power_busy_event(struct bes2600_pwr_t *bes_pwr, char *l
 	}
 
 	kfree(dump_str);
-}
-
-static char *bes2600_get_ps_mode_str(u8 mode)
-{
-	char *ps_mode_str = NULL;
-
-	ps_mode_str = (mode == WSM_PSM_ACTIVE ? "WSM_PSM_ACTIVE" :
-		mode == WSM_PSM_PS ? "WSM_PSM_PS" :
-		mode == WSM_PSM_FAST_PS ? "WSM_PSM_FAST_PS" :
-		"UNKNOWN");
-
-	return ps_mode_str;
 }
 
 static char *bes2600_get_mac_str(char *buffer, u32 ip)
@@ -502,15 +491,45 @@ static void bes2600_pwr_device_enter_lp_mode(struct bes2600_common *hw_priv)
 	bes_devel("device enter sleep\n");
 }
 
+static bool bes2600_pwr_fw_in_ieee_ps(struct bes2600_common *hw_priv)
+{
+	struct bes2600_vif *priv;
+	int i;
+
+	bes2600_for_each_vif(hw_priv, priv, i) {
+		if (i == (CW12XX_MAX_VIFS - 1) || !priv)
+			continue;
+		if (priv->join_status == BES2600_JOIN_STATUS_STA &&
+		    (priv->firmware_ps_mode.pmMode & WSM_PSM_PS))
+			return true;
+	}
+	return false;
+}
+
 static int bes2600_pwr_enter_lp_mode(struct bes2600_common *hw_priv)
 {
 	int i = 0;
 	struct bes2600_vif *priv;
 	int ret = 0;
 	char ip_str[20];
-	unsigned long status = 0;
 
 	bes_devel("%s: enter\n", __func__);
+
+	/*
+	 * Quiescent 0x0006 after FAST_PS hung this LMAC (bufs=1,
+	 * then wake 0x0006 timed out).  802.11 PS is enough.
+	 */
+	if (bes2600_pwr_fw_in_ieee_ps(hw_priv)) {
+		bes_devel("%s: skip MCU sleep, firmware in 802.11 PS\n",
+			  __func__);
+		return 0;
+	}
+
+	if (hw_priv->bus_stale || hw_priv->hw_bufs_used > 0) {
+		bes_devel("%s: skip MCU sleep (stale=%d bufs=%d)\n",
+			  __func__, hw_priv->bus_stale, hw_priv->hw_bufs_used);
+		return 0;
+	}
 
 	/* set interface low power configuration */
 	bes2600_for_each_vif(hw_priv, priv, i) {
@@ -554,27 +573,7 @@ static int bes2600_pwr_enter_lp_mode(struct bes2600_common *hw_priv)
 			if (ret)
 				bes_err("%s, set bc filter failed\n", __func__);
 
-			/* enter low power mode */
-			if(!hw_priv->bes_power.ap_lp_bad) {
-				bes_devel("%s, psMode:%s, fastPsmIdlePeriod:%d apPsmChangePeriod:%d minAutoPsPollPeriod:%d\n",
-						__func__, bes2600_get_ps_mode_str(priv->powersave_mode.pmMode), priv->powersave_mode.fastPsmIdlePeriod,
-						priv->powersave_mode.apPsmChangePeriod, priv->powersave_mode.minAutoPsPollPeriod);
-				atomic_set(&hw_priv->bes_power.pm_set_in_process, 1);
-				ret = bes2600_set_pm(priv, &priv->powersave_mode);
-				if (ret) {
-					atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
-					bes_err("%s, set operation mode fail\n", __func__);
-				}
-
-				/* wait power save mode changed indication */
-				status = wait_for_completion_timeout(&hw_priv->bes_power.pm_enter_cmpl, 5 * HZ);
-				atomic_set(&hw_priv->bes_power.pm_set_in_process, 0);
-				reinit_completion(&hw_priv->bes_power.pm_enter_cmpl);
-				if (!status)
-					bes_err("%s, wait pm ind timeout\n", __func__);
-			} else {
-				bes_devel("skip enter lp mode\n");
-			}
+			/* 0x0010 is owned by sta.c, not MCU sleep. */
 		}
 	}
 
@@ -644,8 +643,13 @@ static int bes2600_pwr_exit_lp_mode(struct bes2600_common *hw_priv)
 	int i = 0, ret = 0;
 	struct bes2600_vif *priv;
 	struct wsm_arp_ipv4_filter filter;
-	struct wsm_set_pm pm;
 	char ip_str[20];
+
+	/* Never slept: do not send wake MIBs (0x0006 / ARP / filter). */
+	if (hw_priv->bes_power.hw_awake && !hw_priv->bes_power.mcu_slept) {
+		bes2600_pwr_call_exit_lp_cb(hw_priv);
+		return 0;
+	}
 
 	/* set device low power configuration */
 	bes2600_pwr_device_exit_lp_mode(hw_priv);
@@ -685,18 +689,7 @@ static int bes2600_pwr_exit_lp_mode(struct bes2600_common *hw_priv)
 			if (ret)
 				bes_err("%s, set bc filter failed\n", __func__);
 
-			/* exit low power mode */
-			if(!hw_priv->bes_power.ap_lp_bad) {
-				pm = priv->powersave_mode;
-				pm.pmMode = WSM_PSM_ACTIVE;
-				bes_devel("%s, psMode:%s, fastPsmIdlePeriod:%d apPsmChangePeriod:%d minAutoPsPollPeriod:%d\n",
-						__func__, bes2600_get_ps_mode_str(pm.pmMode), pm.fastPsmIdlePeriod, pm.apPsmChangePeriod, pm.minAutoPsPollPeriod);
-				ret = bes2600_set_pm(priv, &pm);
-				if (ret)
-					bes_err("%s, set operation mode fail\n", __func__);
-			} else {
-				bes_devel("skip exit lp mode\n");
-			}
+			/* 0x0010 is owned by sta.c, not MCU wake. */
 		}
 	}
 
@@ -721,6 +714,8 @@ static void bes2600_pwr_unlock_device(struct bes2600_common *hw_priv)
 
 	spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
 	if (hw_priv->bes_power.power_state == POWER_DOWN_STATE_LOCKED) {
+		bool slept;
+
 		hw_priv->bes_power.power_state = POWER_DOWN_STATE_UNLOCKING;
 		hw_priv->bes_power.power_down_task = current;
 		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
@@ -734,8 +729,10 @@ static void bes2600_pwr_unlock_device(struct bes2600_common *hw_priv)
 		if (!constant_event_exist && max_timeout == 0)
 			bes2600_pwr_enter_lp_mode(hw_priv);
 
+		slept = hw_priv->bes_power.mcu_slept;
+
 		spin_lock_irqsave(&hw_priv->bes_power.pwr_lock, flags);
-		if (constant_event_exist || max_timeout > 0) {
+		if (constant_event_exist || max_timeout > 0 || !slept) {
 			hw_priv->bes_power.power_state = POWER_DOWN_STATE_LOCKED;
 		} else {
 			hw_priv->bes_power.power_state = POWER_DOWN_STATE_UNLOCKED;
@@ -744,7 +741,7 @@ static void bes2600_pwr_unlock_device(struct bes2600_common *hw_priv)
 		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
 
 		/* Sleep aborted: release the TX lock taken above */
-		if (constant_event_exist || max_timeout > 0)
+		if (constant_event_exist || max_timeout > 0 || !slept)
 			bes2600_pwr_unlock_tx(hw_priv);
 	} else {
 		spin_unlock_irqrestore(&hw_priv->bes_power.pwr_lock, flags);
@@ -912,7 +909,8 @@ static void bes2600_power_mcu_down_work(struct work_struct *work)
 
 	if(!constant_event_exist &&
 	   max_timeout == 0 &&
-	   power_state == POWER_DOWN_STATE_UNLOCKED) {
+	   power_state == POWER_DOWN_STATE_UNLOCKED &&
+	   !bes2600_pwr_fw_in_ieee_ps(hw_priv)) {
 		bes_devel("mcu sleep directly");
 		mutex_lock(&hw_priv->bes_power.pwr_mutex);
 

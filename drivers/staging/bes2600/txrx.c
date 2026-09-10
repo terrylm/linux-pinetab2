@@ -14,6 +14,10 @@
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/unaligned.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/icmp.h>
+#include <linux/icmpv6.h>
 
 #include "bes2600.h"
 #include "wsm.h"
@@ -1251,6 +1255,110 @@ static bool bes2600_skb_is_eapol(const struct sk_buff *skb, u16 hdr_off)
 	return get_unaligned_be16(skb->data + llc + 6) == ETH_P_PAE;
 }
 
+/*
+ * True if the peer should send something back.  Used to arm the
+ * FAST_PS RX wait: one-way UDP would 802.11-ACK and then look
+ * like a PS-bad AP.
+ */
+static bool bes2600_l4_expects_reply(u8 proto, const u8 *l4, unsigned int len)
+{
+	switch (proto) {
+	case IPPROTO_ICMP:
+		return len >= 1 && l4[0] == ICMP_ECHO;
+	case IPPROTO_ICMPV6:
+		return len >= 1 &&
+		       (l4[0] == ICMPV6_ECHO_REQUEST ||
+			l4[0] == 135 /* NDISC NS */);
+	case IPPROTO_TCP: {
+		u8 flags, doff;
+		unsigned int hlen;
+
+		if (len < 14)
+			return false;
+		flags = l4[13];
+		if (flags & 0x04)
+			return false;
+		if (flags & (0x02 | 0x01))
+			return true;
+		doff = l4[12] >> 4;
+		hlen = doff * 4;
+		if (doff < 5 || len < hlen)
+			return false;
+		return len > hlen;
+	}
+	case IPPROTO_UDP: {
+		u16 sport, dport;
+
+		if (len < 4)
+			return false;
+		sport = get_unaligned_be16(l4);
+		dport = get_unaligned_be16(l4 + 2);
+		/* DNS only.  DHCP often finishes as FAST_PS starts
+		 * and is not proof that unicast IP still works.
+		 */
+		return sport == 53 || dport == 53;
+	}
+	default:
+		return false;
+	}
+}
+
+static bool bes2600_skb_expects_reply(const struct sk_buff *skb, u16 hdr_off)
+{
+	struct ieee80211_hdr *hdr;
+	unsigned int llc, l3, l4, ihl;
+	u16 eth, tot;
+
+	if (skb->len < hdr_off + sizeof(*hdr))
+		return false;
+	hdr = (struct ieee80211_hdr *)(skb->data + hdr_off);
+	if (!ieee80211_is_data(hdr->frame_control) ||
+	    ieee80211_is_nullfunc(hdr->frame_control) ||
+	    ieee80211_is_qos_nullfunc(hdr->frame_control))
+		return false;
+	if (is_multicast_ether_addr(ieee80211_get_DA(hdr)))
+		return false;
+
+	llc = hdr_off + ieee80211_hdrlen(hdr->frame_control);
+	if (ieee80211_has_protected(hdr->frame_control))
+		llc += 8;
+	if (skb->len < llc + 8)
+		return false;
+	eth = get_unaligned_be16(skb->data + llc + 6);
+	l3 = llc + 8;
+
+	switch (eth) {
+	case ETH_P_IP:
+		if (skb->len < l3 + sizeof(struct iphdr))
+			return false;
+		ihl = (skb->data[l3] & 0x0f) * 4;
+		tot = get_unaligned_be16(skb->data + l3 + 2);
+		if (ihl < sizeof(struct iphdr) || tot < ihl)
+			return false;
+		if (skb->len < l3 + ihl)
+			return false;
+		l4 = l3 + ihl;
+		tot -= ihl;
+		if (skb->len - l4 < tot)
+			tot = skb->len - l4;
+		return bes2600_l4_expects_reply(skb->data[l3 + 9],
+						skb->data + l4, tot);
+	case ETH_P_IPV6:
+		if (skb->len < l3 + sizeof(struct ipv6hdr))
+			return false;
+		tot = get_unaligned_be16(skb->data + l3 + 4);
+		l4 = l3 + sizeof(struct ipv6hdr);
+		if (skb->len < l4)
+			return false;
+		if (skb->len - l4 < tot)
+			tot = skb->len - l4;
+		return bes2600_l4_expects_reply(skb->data[l3 + 6],
+						skb->data + l4, tot);
+	default:
+		return false;
+	}
+}
+
 void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			  struct wsm_tx_confirm *arg)
 {
@@ -1367,12 +1475,19 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 				/* tx->flags |= IEEE80211_TX_STAT_AMPDU; */
 				bes2600_debug_txed_agg(priv);
 			}
+			if (bes2600_skb_expects_reply(skb, txpriv->offset) &&
+			    !atomic_read(&hw_priv->scan.in_progress) &&
+			    !hw_priv->scan.req &&
+			    time_after(jiffies, hw_priv->ps_probe_holdoff))
+				hw_priv->last_bss_tx_ack = jiffies;
+
 			if (!priv->data_acked &&
 			    ieee80211_is_data(hdr->frame_control) &&
 			    !ieee80211_is_nullfunc(hdr->frame_control) &&
 			    !is_multicast_ether_addr(ieee80211_get_DA(hdr)) &&
 			    !bes2600_skb_is_eapol(skb, txpriv->offset)) {
 				priv->data_acked = true;
+				priv->data_acked_jiffies = jiffies;
 				bes_info("%s: first unicast data ACK "
 					 "txedRate=%u flags=0x%x agg=%d "
 					 "ba_ena=%d privacy=%d\n",
@@ -1381,13 +1496,13 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 					    WSM_TX_STATUS_AGGREGATION),
 					 hw_priv->ba_ena, priv->ap_privacy);
 				/*
-				 * EAPOL ACKs are not this.  Open and WPA2
-				 * both wait until DHCP/data so minstrel
-				 * does not jump to HT before the AP ACKs it.
+				 * Do not enable BA here.  FAST_PS+BA at
+				 * DATA left AMPDU running when we later
+				 * forced ACTIVE; the next BSS then had
+				 * no ACK.
 				 */
-				if (priv->htcap && !hw_priv->ba_ena)
-					queue_work(hw_priv->workqueue,
-						   &hw_priv->ba_work);
+				queue_delayed_work(hw_priv->workqueue,
+						   &priv->set_pm_work, 0);
 			}
 		} else {
 			spin_lock(&priv->bss_loss_lock);
@@ -2017,6 +2132,29 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_set_rx_fields(hdr, arg);
 	bes2600_rx_log_probe_resp(priv, frame, arg, hdr);
 	hdrlen = ieee80211_hdrlen(frame->frame_control);
+
+	if (priv->join_status == BES2600_JOIN_STATUS_STA && priv->vif &&
+	    ieee80211_is_data(frame->frame_control) &&
+	    !ieee80211_is_nullfunc(frame->frame_control) &&
+	    !ieee80211_is_qos_nullfunc(frame->frame_control) &&
+	    !is_multicast_ether_addr(ieee80211_get_DA(frame))) {
+		const u8 *bssid = priv->vif->bss_conf.bssid;
+		u16 eth = 0;
+
+		if (!is_valid_ether_addr(bssid))
+			bssid = priv->join_bssid;
+		if (hdrlen + 8 <= skb->len)
+			eth = get_unaligned_be16(skb->data + hdrlen + 6);
+		/*
+		 * ARP can still work when FAST_PS has already
+		 * broken unicast IP (Netgear).  Only IP counts.
+		 */
+		if (is_valid_ether_addr(bssid) &&
+		    (eth == ETH_P_IP || eth == ETH_P_IPV6) &&
+		    (ether_addr_equal(frame->addr2, bssid) ||
+		     ether_addr_equal(frame->addr3, bssid)))
+			hw_priv->last_bss_rx = jiffies;
+	}
 
 	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
 	    ieee80211_is_data(frame->frame_control) &&

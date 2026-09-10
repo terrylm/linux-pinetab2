@@ -414,6 +414,9 @@ struct bes2600_common {
 
 	/* TX/RX */
 	unsigned long		rx_timestamp;
+	unsigned long		last_bss_rx;
+	unsigned long		last_bss_tx_ack;
+	unsigned long		ps_probe_holdoff;
 	/*
 	 * Set after join/WSM timeout with a silent bus.  Blocks further WSM
 	 * sleep and mon→BH SDIO thrash until a real RX clears it.
@@ -563,7 +566,16 @@ struct bes2600_vif {
 	u32				erp_info;
 	bool				powersave_enabled;
 	struct delayed_work		set_pm_work;
+	struct delayed_work		ps_watchdog_work;
 	bool				pm_ind_failed;
+	/*
+	 * This BSS cannot deliver unicast in FAST_PS (firmware
+	 * PS_MODE_ERROR, 0x0809 stayed ACTIVE, or no BSS RX
+	 * after FAST_PS).  Stay ACTIVE; no associated scan.
+	 */
+	bool				ap_ps_bad;
+	bool				ap_ps_checked;
+	unsigned long			fast_ps_since;
 
 	/* WSM Join */
 	enum bes2600_join_status	join_status;
@@ -590,6 +602,7 @@ struct bes2600_vif {
 	 * RETRY_EXCEEDED on a link that just authenticated at 1 Mbps.
 	 */
 	bool				data_acked;
+	unsigned long			data_acked_jiffies;
 
 
 	/* AP powersave */

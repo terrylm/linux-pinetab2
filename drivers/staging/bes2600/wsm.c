@@ -1743,6 +1743,35 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 		hw_priv->pm_ind_psm = arg.psm;
 		hw_priv->pm_ind_pending = 0;
 		wake_up(&hw_priv->pm_ind_wq);
+		/*
+		 * Asked for FAST_PS, firmware stayed ACTIVE.
+		 * Do not retry this BSS.  Do not send 0x0010 from BH.
+		 */
+		if (arg.psm == WSM_PSM_ACTIVE) {
+			struct bes2600_vif *priv;
+			int i;
+
+			bes2600_for_each_vif(hw_priv, priv, i) {
+				if (!priv)
+					continue;
+				if (priv->firmware_ps_mode.pmMode &
+				    WSM_PSM_PS) {
+					bes_info("%s: fw stayed ACTIVE, cache was 0x%x\n",
+						 __func__,
+						 priv->firmware_ps_mode.pmMode);
+					priv->firmware_ps_mode.pmMode =
+						WSM_PSM_ACTIVE;
+					if (!priv->ap_ps_bad) {
+						priv->ap_ps_bad = true;
+						priv->ap_ps_checked = true;
+						bes2600_pwr_mark_ap_lp_bad(hw_priv);
+						cancel_delayed_work(&priv->ps_watchdog_work);
+						bes_info("%s: AP PS unusable (0x0809 psm=0), stay ACTIVE, no assoc scan\n",
+							 __func__);
+					}
+				}
+			}
+		}
 		bes2600_pwr_notify_ps_changed(hw_priv, arg.psm);
 	} else {
 		bes_err("[WSM] PM Ind status:%d psm:%d\n", arg.status, arg.psm);

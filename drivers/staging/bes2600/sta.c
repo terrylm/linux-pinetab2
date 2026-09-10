@@ -262,6 +262,7 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 		cancel_delayed_work_sync(&priv->bss_loss_work);
 		cancel_delayed_work_sync(&priv->connection_loss_work);
 		cancel_delayed_work_sync(&priv->link_id_gc_work);
+		cancel_delayed_work(&priv->ps_watchdog_work);
 		timer_delete_sync(&priv->mcast_timeout);
 	}
 
@@ -486,6 +487,7 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 	cancel_delayed_work_sync(&priv->link_id_gc_work);
 	cancel_delayed_work_sync(&priv->join_timeout);
 	cancel_delayed_work_sync(&priv->set_cts_work);
+	cancel_delayed_work(&priv->ps_watchdog_work);
 	cancel_delayed_work_sync(&priv->pending_offchanneltx_work);
 
 	timer_delete_sync(&priv->mcast_timeout);
@@ -1036,9 +1038,177 @@ int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg)
 	bes_info("%s: 0x0010 pmMode=0x%x (was 0x%x) if_id=%d\n",
 		 __func__, pm.pmMode, priv->firmware_ps_mode.pmMode,
 		 priv->if_id);
+	if ((pm.pmMode & WSM_PSM_PS) &&
+	    !(priv->firmware_ps_mode.pmMode & WSM_PSM_PS))
+		priv->fast_ps_since = jiffies;
 	/* cw1200: cache before send; do not wait for 0x0809. */
 	priv->firmware_ps_mode = pm;
 	return wsm_set_pm(priv->hw_priv, &pm, priv->if_id);
+}
+
+static unsigned long bes2600_ps_silence_jiffies(const struct bes2600_vif *priv)
+{
+	u32 dtim = priv->join_dtim_period ? priv->join_dtim_period : 1;
+	u32 bi = priv->beacon_int ? priv->beacon_int : 100;
+	u32 tus = 10 * dtim * bi;
+
+	/* Beacon filter means idle RX can gap more than 2 DTIMs.
+	 * 200 ms flagged Starlink after an associated scan.
+	 */
+	if (tus < 2000)
+		tus = 2000;
+	if (tus > 4000)
+		tus = 4000;
+	return usecs_to_jiffies(tus * 1024);
+}
+
+void bes2600_ps_watchdog_disarm(struct bes2600_vif *priv)
+{
+	if (priv)
+		cancel_delayed_work(&priv->ps_watchdog_work);
+}
+
+void bes2600_ps_watchdog_arm(struct bes2600_vif *priv)
+{
+	if (!priv || priv->ap_ps_bad || priv->ap_ps_checked || !priv->data_acked)
+		return;
+	if (atomic_read(&priv->hw_priv->scan.in_progress) ||
+	    priv->hw_priv->scan.req)
+		return;
+	if (!(priv->firmware_ps_mode.pmMode & WSM_PSM_PS) &&
+	    !(priv->powersave_mode.pmMode & WSM_PSM_PS))
+		return;
+
+	queue_delayed_work(priv->hw_priv->workqueue, &priv->ps_watchdog_work,
+			   bes2600_ps_silence_jiffies(priv));
+}
+
+/*
+ * Caller holds conf_lock except from BH (then do not send 0x0010).
+ * Firmware already ACTIVE on a refused 0x0809; only send ACTIVE
+ * when we had entered FAST_PS.
+ */
+void bes2600_ap_ps_failed(struct bes2600_vif *priv, const char *why)
+{
+	struct bes2600_common *hw_priv;
+	struct wsm_set_pm pm;
+
+	if (!priv)
+		return;
+
+	hw_priv = priv->hw_priv;
+	if (!priv->ap_ps_bad) {
+		priv->ap_ps_bad = true;
+		priv->ap_ps_checked = true;
+		bes2600_pwr_mark_ap_lp_bad(hw_priv);
+		bes2600_ps_watchdog_disarm(priv);
+		bes_info("%s: AP PS unusable (%s), stay ACTIVE, no assoc scan\n",
+			 __func__, why);
+	}
+
+	if (atomic_read(&hw_priv->scan.in_progress))
+		return;
+
+	/*
+	 * Do not send 0x0010 ACTIVE with AMPDU in firmware.
+	 * BA itself is fine on a PS-bad AP once we are ACTIVE.
+	 */
+	if (hw_priv->ba_ena &&
+	    (priv->firmware_ps_mode.pmMode & WSM_PSM_PS)) {
+		wsm_set_block_ack_policy(hw_priv, 0, 0, priv->if_id);
+		spin_lock_bh(&hw_priv->ba_lock);
+		hw_priv->ba_ena = false;
+		spin_unlock_bh(&hw_priv->ba_lock);
+	}
+
+	if (priv->firmware_ps_mode.pmMode & WSM_PSM_PS) {
+		if (hw_priv->hw_bufs_used && !hw_priv->bus_stale)
+			wait_event_timeout(hw_priv->bh_evt_wq,
+					   !hw_priv->hw_bufs_used ||
+					   hw_priv->bus_stale,
+					   msecs_to_jiffies(200));
+		pm = priv->firmware_ps_mode;
+		pm.pmMode = WSM_PSM_ACTIVE;
+		bes2600_set_pm(priv, &pm);
+	}
+
+	/* Let ba_timer enable BA after ACTIVE traffic.  Doing it
+	 * here put AMPDU back on the FAST_PS→ACTIVE 0x0010.
+	 */
+}
+
+static void bes2600_ps_watchdog_work(struct work_struct *work)
+{
+	struct bes2600_vif *priv =
+		container_of(work, struct bes2600_vif, ps_watchdog_work.work);
+	struct bes2600_common *hw_priv = priv->hw_priv;
+	unsigned long silence;
+
+	down(&hw_priv->conf_lock);
+	if (priv->ap_ps_bad || priv->ap_ps_checked)
+		goto out;
+
+	if (atomic_read(&hw_priv->scan.in_progress) || hw_priv->scan.req) {
+		queue_delayed_work(hw_priv->workqueue, &priv->ps_watchdog_work,
+				   bes2600_ps_silence_jiffies(priv));
+		goto out;
+	}
+
+	silence = bes2600_ps_silence_jiffies(priv);
+
+	if (!(priv->firmware_ps_mode.pmMode & WSM_PSM_PS)) {
+		if (!priv->data_acked || !priv->vif || !priv->vif->cfg.ps)
+			goto out;
+		if (time_after(hw_priv->last_bss_rx,
+			       priv->data_acked_jiffies)) {
+			bes2600_pm_apply(priv);
+			goto out;
+		}
+		if (time_before(jiffies,
+				priv->data_acked_jiffies + silence)) {
+			queue_delayed_work(hw_priv->workqueue,
+					   &priv->ps_watchdog_work,
+					   priv->data_acked_jiffies +
+					   silence - jiffies);
+			goto out;
+		}
+		/* Still ACTIVE; do not treat a quiet link as PS-bad. */
+		goto out;
+	}
+
+	/*
+	 * One probe per BSS.  Ignore TX from the first second
+	 * after 0x0010 (in-flight DHCP/ARP still looks healthy).
+	 * After an 802.11 ACK of ping/TCP/DNS we need IP RX.
+	 */
+	{
+		unsigned long ready = priv->fast_ps_since + HZ;
+
+		if (time_after(hw_priv->ps_probe_holdoff, ready))
+			ready = hw_priv->ps_probe_holdoff;
+		if (!time_after(hw_priv->last_bss_tx_ack, ready)) {
+			queue_delayed_work(hw_priv->workqueue,
+					   &priv->ps_watchdog_work,
+					   silence);
+			goto out;
+		}
+	}
+	if (time_after(hw_priv->last_bss_rx, hw_priv->last_bss_tx_ack)) {
+		priv->ap_ps_checked = true;
+		bes_info("%s: FAST_PS ok, stop probe\n", __func__);
+		goto out;
+	}
+	if (time_before(jiffies,
+			hw_priv->last_bss_tx_ack + silence)) {
+		queue_delayed_work(hw_priv->workqueue, &priv->ps_watchdog_work,
+				   hw_priv->last_bss_tx_ack + silence -
+				   jiffies);
+		goto out;
+	}
+
+	bes2600_ap_ps_failed(priv, "TX ACK but no BSS RX in FAST_PS");
+out:
+	up(&hw_priv->conf_lock);
 }
 
 void bes2600_pm_apply(struct bes2600_vif *priv)
@@ -1051,8 +1221,9 @@ void bes2600_pm_apply(struct bes2600_vif *priv)
 	 * cfg.ps=1 → FAST_PS (0x81).  This userspace sets dyn_to=0
 	 * when SUPPORTS_DYNAMIC_PS is on ("firmware owns idle").
 	 * Mapping that to legacy 0x01 never got 0x0809.
+	 * A broken AP is forced ACTIVE for the rest of the BSS.
 	 */
-	if (!ps)
+	if (!ps || priv->ap_ps_bad)
 		priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
 	else
 		priv->powersave_mode.pmMode = WSM_PSM_FAST_PS;
@@ -1065,15 +1236,46 @@ void bes2600_pm_apply(struct bes2600_vif *priv)
 		priv->powersave_mode.fastPsmIdlePeriod =
 			conf->dynamic_ps_timeout << 1;
 
-	bes_info("%s: ps=%d mode=0x%x dyn_to=%d idle=%u aid=%d\n",
+	bes_info("%s: ps=%d mode=0x%x dyn_to=%d idle=%u aid=%d ap_ps_bad=%d\n",
 		 __func__, ps, priv->powersave_mode.pmMode,
 		 conf->dynamic_ps_timeout,
 		 priv->powersave_mode.fastPsmIdlePeriod,
-		 priv->bss_params.aid);
+		 priv->bss_params.aid, priv->ap_ps_bad);
 
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    priv->bss_params.aid)
-		bes2600_set_pm(priv, &priv->powersave_mode);
+	if (priv->join_status != BES2600_JOIN_STATUS_STA ||
+	    !priv->bss_params.aid)
+		return;
+
+	if (priv->ap_ps_bad) {
+		if (priv->firmware_ps_mode.pmMode & WSM_PSM_PS)
+			bes2600_ap_ps_failed(priv, "leave FAST_PS");
+		return;
+	}
+
+	if (!priv->data_acked)
+		return;
+
+	if (atomic_read(&priv->hw_priv->scan.in_progress) ||
+	    priv->hw_priv->scan.req)
+		return;
+
+	/*
+	 * Stay ACTIVE until we have seen BSS RX after DATA.
+	 * Entering FAST_PS+BA with no RX is what killed the
+	 * second Netgear join after a 5 GHz BSS.
+	 */
+	if ((priv->powersave_mode.pmMode & WSM_PSM_PS) &&
+	    !time_after(priv->hw_priv->last_bss_rx,
+			priv->data_acked_jiffies)) {
+		bes2600_ps_watchdog_arm(priv);
+		return;
+	}
+
+	bes2600_set_pm(priv, &priv->powersave_mode);
+	if (priv->powersave_mode.pmMode & WSM_PSM_PS)
+		bes2600_ps_watchdog_arm(priv);
+	else
+		bes2600_ps_watchdog_disarm(priv);
 }
 
 void bes2600_set_pm_work(struct work_struct *work)
@@ -1712,15 +1914,9 @@ void bes2600_event_handler(struct work_struct *work)
 			}
 		case WSM_EVENT_PS_MODE_ERROR:
 			{
-				bes_err("PS Mode Error, Reason:%u\n", event->evt.eventData);
-
-				if (event->evt.eventData != WSM_PS_ERROR_AP_NO_DATA_AFTER_TIM &&
-					!priv->uapsd_info.uapsdFlags &&
-					(priv->user_pm_mode != WSM_PSM_PS))
-				{
-					bes2600_pwr_mark_ap_lp_bad(hw_priv);
-					priv->powersave_mode.pmMode = WSM_PSM_ACTIVE;
-				}
+				bes_err("PS Mode Error, Reason:%u\n",
+					event->evt.eventData);
+				bes2600_ap_ps_failed(priv, "firmware PS_MODE_ERROR");
 				break;
 			}
 		case WSM_EVENT_WAKEUP_EVENT:
@@ -2726,6 +2922,12 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	bes_devel("P03 set join_status=STA\n");
 	priv->join_status = BES2600_JOIN_STATUS_STA;
 	priv->data_acked = false;
+	priv->data_acked_jiffies = 0;
+	priv->ap_ps_bad = false;
+	priv->ap_ps_checked = false;
+	hw_priv->last_bss_rx = 0;
+	hw_priv->last_bss_tx_ack = 0;
+	hw_priv->ps_probe_holdoff = 0;
 	/*
 	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
 	 * never sends 0x0010, so that cache is a lie — the next set_pm
@@ -2897,6 +3099,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		/* Non-sync cancels — we run on bes2600_wq */
 		cancel_work(&priv->update_filtering_work);
 		cancel_delayed_work(&priv->set_pm_work);
+		cancel_work(&hw_priv->ba_work);
 		cancel_work(&priv->set_beacon_wakeup_period_work);
 		cancel_work(&hw_priv->event_handler);
 		cancel_delayed_work(&priv->connection_loss_work);
@@ -2908,6 +3111,9 @@ void bes2600_unjoin_work(struct work_struct *work)
 #endif
 		bes2600_pwr_clear_busy_event(priv->hw_priv, BES_PWR_LOCK_ON_PS_ACTIVE);
 		bes2600_pwr_clear_ap_lp_bad_mark(hw_priv);
+		bes2600_ps_watchdog_disarm(priv);
+		priv->ap_ps_bad = false;
+		priv->ap_ps_checked = false;
 		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
 		atomic_set(&priv->connect_in_process, 0);
 		priv->delayed_unjoin = false;
@@ -2929,6 +3135,12 @@ void bes2600_unjoin_work(struct work_struct *work)
 				 __func__);
 			if (wsm_reset(hw_priv, &reset, priv->if_id))
 				bes_warn("%s: wsm_reset failed\n", __func__);
+			wsm_set_block_ack_policy(hw_priv, 0, 0, priv->if_id);
+			spin_lock_bh(&hw_priv->ba_lock);
+			hw_priv->ba_ena = false;
+			hw_priv->ba_cnt = hw_priv->ba_acc = hw_priv->ba_hist = 0;
+			hw_priv->ba_cnt_rx = hw_priv->ba_acc_rx = 0;
+			spin_unlock_bh(&hw_priv->ba_lock);
 			tx_policy_clean(hw_priv);
 			/*
 			 * Reset drops in-flight frames; host confirms will
@@ -2948,6 +3160,10 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
+		priv->data_acked_jiffies = 0;
+		hw_priv->last_bss_rx = 0;
+		hw_priv->last_bss_tx_ack = 0;
+		hw_priv->ps_probe_holdoff = 0;
 		priv->pm_ind_failed = false;
 		priv->disable_beacon_filter = false;
 		bes2600_free_event_queue(hw_priv);
@@ -3074,11 +3290,30 @@ int bes2600_set_uapsd_param(struct bes2600_vif *priv,
 	return ret;
 }
 
+bool bes2600_ps_fast_ps_ok(const struct bes2600_vif *priv)
+{
+	return priv && priv->ap_ps_checked && !priv->ap_ps_bad;
+}
+
+static bool bes2600_ps_settled(const struct bes2600_vif *priv)
+{
+	if (!priv || !priv->data_acked)
+		return false;
+	if (priv->ap_ps_bad)
+		return true;
+	return bes2600_ps_fast_ps_ok(priv);
+}
+
 void bes2600_enable_ba_policy(struct bes2600_common *hw_priv, int if_id)
 {
+	struct bes2600_vif *priv;
 	int ret;
 
 	if (hw_priv->ba_ena)
+		return;
+
+	priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
+	if (!bes2600_ps_settled(priv))
 		return;
 
 	ret = wsm_set_block_ack_policy(hw_priv,
@@ -3132,6 +3367,12 @@ void bes2600_ba_timer(struct timer_list *t)
 	hw_priv->ba_cnt_rx = 0;
 	hw_priv->ba_acc_rx = 0;
 
+	if (ba_ena && !hw_priv->ba_ena) {
+		spin_unlock_bh(&hw_priv->ba_lock);
+		queue_work(hw_priv->workqueue, &hw_priv->ba_work);
+		return;
+	}
+
 	if (ba_ena != hw_priv->ba_ena) {
 		if (ba_ena || ++hw_priv->ba_hist >= BES2600_BLOCK_ACK_HIST) {
 			hw_priv->ba_ena = ba_ena;
@@ -3174,6 +3415,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 #endif
 	INIT_WORK(&priv->update_filtering_work, bes2600_update_filtering_work);
 	INIT_DELAYED_WORK(&priv->set_pm_work, bes2600_set_pm_work);
+	INIT_DELAYED_WORK(&priv->ps_watchdog_work, bes2600_ps_watchdog_work);
 	INIT_DELAYED_WORK(&priv->pending_offchanneltx_work,
 			bes2600_pending_offchanneltx_work);
 	INIT_WORK(&priv->set_beacon_wakeup_period_work,
@@ -3183,6 +3425,8 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 
 	priv->setbssparams_done = false;
 	priv->pm_ind_failed = false;
+	priv->ap_ps_bad = false;
+	priv->ap_ps_checked = false;
 	priv->power_set_true = 0;
 	priv->user_power_set_true = 0;
 	priv->user_pm_mode = 0;
@@ -3231,6 +3475,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		priv->ap_privacy = false;
 		priv->assoc_jiffies = 0;
 		priv->data_acked = false;
+		priv->data_acked_jiffies = 0;
 		priv->cqm_link_loss_count = 100;
 		priv->cqm_beacon_loss_count = 50;
 
@@ -3380,8 +3625,10 @@ int bes2600_set_macaddrfilter(struct bes2600_common *hw_priv, struct bes2600_vif
 		mac_addr_filter->macaddrfilter[i].filter_mode = \
 						addr_info[i].filter_mode;
 	}
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_MAC_ADDR_FILTER, \
-					 mac_addr_filter, macaddrfiltersize, priv->if_id));
+	ret = wsm_write_mib(hw_priv, WSM_MIB_ID_MAC_ADDR_FILTER,
+			    mac_addr_filter, macaddrfiltersize, priv->if_id);
+	if (ret)
+		bes_err("%s: MAC filter MIB failed %d\n", __func__, ret);
 
 	kfree(mac_addr_filter);
 exit_p:

@@ -71,6 +71,10 @@ u64 bes2600_prepare_multicast(struct ieee80211_hw *hw,
 int bes2600_set_pm(struct bes2600_vif *priv, const struct wsm_set_pm *arg);
 void bes2600_pm_apply(struct bes2600_vif *priv);
 void bes2600_set_pm_work(struct work_struct *work);
+void bes2600_ap_ps_failed(struct bes2600_vif *priv, const char *why);
+bool bes2600_ps_fast_ps_ok(const struct bes2600_vif *priv);
+void bes2600_ps_watchdog_arm(struct bes2600_vif *priv);
+void bes2600_ps_watchdog_disarm(struct bes2600_vif *priv);
 void bes2600_pin_fw_counters(struct bes2600_common *hw_priv, const char *tag);
 
 void bes2600_set_data_filter(struct ieee80211_hw *hw,

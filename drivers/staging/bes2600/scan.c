@@ -263,6 +263,27 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 			 __func__, req->n_channels, req->n_ssids,
 			 hw_priv->channel ? hw_priv->channel->hw_value : 0);
 
+	if (bes2600_vif_associated(priv) && priv->ap_ps_bad) {
+		bes_info("%s: -EBUSY AP PS-bad, no associated scan\n",
+			 __func__);
+		return -EBUSY;
+	}
+
+	/*
+	 * Same gate as BA: do not associated-scan until FAST_PS
+	 * is proven.  Good APs scan in FAST_PS; bad APs never
+	 * associated-scan.
+	 */
+	if (bes2600_vif_associated(priv) &&
+	    (priv->powersave_mode.pmMode & WSM_PSM_PS) &&
+	    !bes2600_ps_fast_ps_ok(priv)) {
+		bes_info("%s: -EBUSY until FAST_PS proven\n", __func__);
+		return -EBUSY;
+	}
+
+	if (bes2600_vif_associated(priv))
+		bes2600_ps_watchdog_disarm(priv);
+
 	if (bes2600_scan_bus_unusable(hw_priv)) {
 		bes_warn("%s: skip scan (bus unusable)\n", __func__);
 		return -EBUSY;
@@ -397,6 +418,7 @@ static bool bes2600_scan_setup(struct bes2600_common *hw_priv, struct bes2600_vi
 	 */
 	if (first_run &&
 	    priv->join_status == BES2600_JOIN_STATUS_STA &&
+	    !priv->ap_ps_bad &&
 	    !(priv->powersave_mode.pmMode & WSM_PSM_PS)) {
 		struct wsm_set_pm pm = priv->powersave_mode;
 
@@ -516,9 +538,27 @@ static void bes2600_scan_finish(struct bes2600_common *hw_priv, struct bes2600_v
 			 __func__, hw_priv->scan.status);
 
 	/* cw1200: restore the mode we had before the scan wrapper. */
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-	    !(priv->powersave_mode.pmMode & WSM_PSM_PS))
-		bes2600_set_pm(priv, &priv->powersave_mode);
+	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
+		if (priv->ap_ps_bad) {
+			if (priv->firmware_ps_mode.pmMode & WSM_PSM_PS) {
+				struct wsm_set_pm pm = priv->firmware_ps_mode;
+
+				pm.pmMode = WSM_PSM_ACTIVE;
+				bes2600_set_pm(priv, &pm);
+			}
+		} else if (!(priv->powersave_mode.pmMode & WSM_PSM_PS)) {
+			bes2600_set_pm(priv, &priv->powersave_mode);
+		} else {
+			/*
+			 * Off-channel TX/RX is not a FAST_PS probe.
+			 * Forget the TX ACK; keep last_bss_rx so the
+			 * next associated scan stays allowed.
+			 */
+			hw_priv->last_bss_tx_ack = priv->fast_ps_since;
+			hw_priv->ps_probe_holdoff = jiffies + 2 * HZ;
+			bes2600_ps_watchdog_arm(priv);
+		}
+	}
 
     bes2600_scan_restart_delayed(priv);
 #ifdef CONFIG_BES2600_TESTMODE

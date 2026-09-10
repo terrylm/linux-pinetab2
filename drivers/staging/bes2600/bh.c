@@ -467,7 +467,12 @@ int wsm_release_buffer_to_fw(struct bes2600_vif *priv, int count)
 
 			/* Add sequence number */
 			wsm = (struct wsm_hdr *)buf->begin;
-			BUG_ON(buf_len < sizeof(*wsm));
+			if (buf_len < sizeof(*wsm)) {
+				bes_err("%s: release buf too small %zu\n",
+					__func__, buf_len);
+				wsm_release_tx_buffer(hw_priv, 1);
+				break;
+			}
 
 			wsm->id &= __cpu_to_le32(~WSM_TX_SEQ(WSM_TX_SEQ_MAX));
 			wsm->id |= cpu_to_le32(WSM_TX_SEQ(hw_priv->wsm_tx_seq[WSM_TXRX_SEQ_IDX(wsm->id)]));
@@ -762,8 +767,14 @@ static int bes2600_bh_tx_helper(struct bes2600_common *hw_priv,
 	}
 
 	wsm = (struct wsm_hdr *)data;
-	BUG_ON(tx_len < sizeof(*wsm));
-	BUG_ON(__le16_to_cpu(wsm->len) != tx_len);
+	if (tx_len < sizeof(*wsm) ||
+	    __le16_to_cpu(wsm->len) != tx_len) {
+		bes_err("%s: bad WSM TX hdr len=%zu wsm_len=%u\n",
+			__func__, tx_len,
+			tx_len >= sizeof(*wsm) ? __le16_to_cpu(wsm->len) : 0);
+		wsm_release_tx_buffer(hw_priv, 1);
+		return -EINVAL;
+	}
 	tx_len += 4;
 
 	atomic_add(1, &hw_priv->bh_tx);

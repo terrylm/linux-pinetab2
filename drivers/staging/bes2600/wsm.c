@@ -1983,7 +1983,15 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		*(u32 *)buf->data = (u32)jiffies_to_msecs(jiffies);
 
 	spin_lock(&hw_priv->wsm_cmd.lock);
-	BUG_ON(hw_priv->wsm_cmd.ptr);
+	if (hw_priv->wsm_cmd.ptr) {
+		u16 busy = hw_priv->wsm_cmd.cmd;
+
+		spin_unlock(&hw_priv->wsm_cmd.lock);
+		bes_err("%s: cmd 0x%04x while 0x%04x still in flight\n",
+			__func__, cmd, busy);
+		wsm_buf_reset(buf);
+		return -EBUSY;
+	}
 	hw_priv->wsm_cmd.done = 0;
 	hw_priv->wsm_cmd.ptr = buf->begin;
 	hw_priv->wsm_cmd.len = buf_len;
@@ -2085,13 +2093,12 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		/* Race condition check to make sure _confirm is not called
 		 * after exit of _send */
 		if (raceCheck == 0xFFFF) {
-			/* If wsm_handle_rx got stuck in _confirm we will hang
-			 * system there. It's better than silently currupt
-			 * stack or heap, isn't it? */
-			BUG_ON(wait_event_timeout(
+			if (wait_event_timeout(
 					hw_priv->wsm_cmd_wq,
 					hw_priv->wsm_cmd.done,
-					WSM_CMD_LAST_CHANCE_TIMEOUT) <= 0);
+					WSM_CMD_LAST_CHANCE_TIMEOUT) <= 0)
+				bes_err("%s: LAST_CHANCE wait failed\n",
+					__func__);
 		}
 
 		/* Kill BH thread to report the error to the top layer. */
@@ -2102,8 +2109,13 @@ int wsm_cmd_send(struct bes2600_common *hw_priv,
 		spin_lock(&hw_priv->wsm_cmd.lock);
 		hw_priv->wsm_cmd.arg = NULL;
 		hw_priv->wsm_cmd.ptr = NULL;
-		BUG_ON(!hw_priv->wsm_cmd.done);
-		ret = hw_priv->wsm_cmd.ret;
+		if (!hw_priv->wsm_cmd.done) {
+			bes_err("%s: cmd 0x%04x wait woke without done\n",
+				__func__, cmd);
+			ret = -ETIMEDOUT;
+		} else {
+			ret = hw_priv->wsm_cmd.ret;
+		}
 		spin_unlock(&hw_priv->wsm_cmd.lock);
 	}
 	bes2600_tx_loop_clear_wsm_cmd(hw_priv);
@@ -2151,8 +2163,10 @@ bool wsm_flush_tx(struct bes2600_common *hw_priv)
 	long timeout;
 	int i;
 
-	/* Flush must be called with TX lock held. */
-	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	if (!atomic_read(&hw_priv->tx_lock)) {
+		bes_err("%s: flush without TX lock\n", __func__);
+		return true;
+	}
 
 	/* First check if we really need to do something.
 	 * It is safe to use unprotected access, as hw_bufs_used
@@ -2222,8 +2236,10 @@ bool wsm_vif_flush_tx(struct bes2600_vif *priv)
 	int if_id = priv->if_id;
 
 
-	/* Flush must be called with TX lock held. */
-	BUG_ON(!atomic_read(&hw_priv->tx_lock));
+	if (!atomic_read(&hw_priv->tx_lock)) {
+		bes_err("%s: vif flush without TX lock\n", __func__);
+		return true;
+	}
 
 	/* First check if we really need to do something.
 	 * It is safe to use unprotected access, as hw_bufs_used
@@ -2760,11 +2776,15 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 		 * We are dropping everything except AUTH in non-joined mode. */
 		bes_err("[WSM] Drop frame (0x%.4X).\n", fctl);
 #ifdef CONFIG_BES2600_TESTMODE
-		BUG_ON(bes2600_queue_remove(hw_priv, queue,
-			__le32_to_cpu(wsm->packetID)));
+		if (bes2600_queue_remove(hw_priv, queue,
+					 __le32_to_cpu(wsm->packetID)))
+			bes_err("%s: queue_remove failed id=0x%x\n",
+				__func__, __le32_to_cpu(wsm->packetID));
 #else
-		BUG_ON(bes2600_queue_remove(queue,
-			__le32_to_cpu(wsm->packetID)));
+		if (bes2600_queue_remove(queue,
+					 __le32_to_cpu(wsm->packetID)))
+			bes_err("%s: queue_remove failed id=0x%x\n",
+				__func__, __le32_to_cpu(wsm->packetID));
 #endif /*CONFIG_BES2600_TESTMODE*/
 		handled = true;
 	}
@@ -2964,9 +2984,13 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 		return 0;
 
 	if (hw_priv->wsm_cmd.ptr) {
-		++count;
 		spin_lock(&hw_priv->wsm_cmd.lock);
-		BUG_ON(!hw_priv->wsm_cmd.ptr);
+		if (!hw_priv->wsm_cmd.ptr) {
+			spin_unlock(&hw_priv->wsm_cmd.lock);
+			bes_err("%s: cmd ptr raced to NULL\n", __func__);
+			return 0;
+		}
+		++count;
 		*data = hw_priv->wsm_cmd.ptr;
 		*tx_len = hw_priv->wsm_cmd.len;
 		*burst = 1;
@@ -3208,8 +3232,10 @@ void wsm_txed(struct bes2600_common *hw_priv, u8 *data)
 
 void wsm_buf_init(struct wsm_buf *buf)
 {
-	if (buf->begin)
+	if (buf->begin) {
+		bes_err("%s: buffer already allocated\n", __func__);
 		return;
+	}
 	buf->begin = kmalloc(SDIO_BLOCK_SIZE, GFP_KERNEL | GFP_DMA);
 	buf->end = buf->begin ? &buf->begin[SDIO_BLOCK_SIZE] : buf->begin;
 	wsm_buf_reset(buf);

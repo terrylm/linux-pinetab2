@@ -368,8 +368,12 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	for (i = 0; i < req->n_ssids; ++i) {
 		struct wsm_ssid *dst =
 			&hw_priv->scan.ssids[hw_priv->scan.n_ssids];
-		if (req->ssids[i].ssid_len > sizeof(dst->ssid))
+		if (req->ssids[i].ssid_len > sizeof(dst->ssid)) {
+			bes_err("%s: SSID len %u > %zu, skip\n",
+				__func__, req->ssids[i].ssid_len,
+				sizeof(dst->ssid));
 			continue;
+		}
 		memcpy(&dst->ssid[0], req->ssids[i].ssid,
 			sizeof(dst->ssid));
 		dst->length = req->ssids[i].ssid_len;
@@ -1173,10 +1177,14 @@ void bes2600_probe_work(struct work_struct *work)
 	if (!ret)
 		IEEE80211_SKB_CB(frame.skb)->flags |= IEEE80211_TX_STAT_ACK;
 #ifdef CONFIG_BES2600_TESTMODE
-	BUG_ON(bes2600_queue_remove(hw_priv, queue,
-			hw_priv->pending_frame_id));
+	if (bes2600_queue_remove(hw_priv, queue,
+				 hw_priv->pending_frame_id))
+		bes_err("%s: queue_remove failed id=0x%x\n",
+			__func__, hw_priv->pending_frame_id);
 #else
-	BUG_ON(bes2600_queue_remove(queue, hw_priv->pending_frame_id));
+	if (bes2600_queue_remove(queue, hw_priv->pending_frame_id))
+		bes_err("%s: queue_remove failed id=0x%x\n",
+			__func__, hw_priv->pending_frame_id);
 #endif
 
 	if (ret) {

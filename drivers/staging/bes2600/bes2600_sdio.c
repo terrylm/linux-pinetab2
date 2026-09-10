@@ -173,6 +173,7 @@ static int bes_sdio_memcpy_io_helper(struct sdio_func *func, int write, void *da
 #ifdef CONFIG_BES_SDIO_RXTX_TOGGLE
 	self = sdio_get_drvdata(func);
 	if (!self) {
+		bes_err("%s: no sbus_priv\n", __func__);
 		ret = -ENODEV;
 		goto out;
 	}
@@ -405,8 +406,10 @@ static u32 bes2600_gpio_irq_handler(void *dev_id)
 	struct sbus_priv *self = (struct sbus_priv *)dev_id;
 
 	bes_devel("\n %s called \n", __func__);
-	if (!self)
+	if (!self) {
+		WARN_ON_ONCE(1);
 		return 0;
+	}
 	if (self->irq_handler)
 		self->irq_handler(self->irq_priv);
 	return 0;
@@ -1895,8 +1898,10 @@ int bes2600_register_net_dev(struct sbus_priv *bus_priv)
 {
 	int status = 0;
 
-	if (!bus_priv)
+	if (!bus_priv) {
+		bes_err("%s: NULL bus_priv\n", __func__);
 		return -EINVAL;
+	}
 	status = bes2600_core_probe(&bes2600_sdio_sbus_ops,
 			      bus_priv, bus_priv->dev, &bus_priv->core);
 	if(!status)
@@ -1907,8 +1912,10 @@ int bes2600_register_net_dev(struct sbus_priv *bus_priv)
 
 int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 {
-	if (!bus_priv)
+	if (!bus_priv) {
+		bes_err("%s: NULL bus_priv\n", __func__);
 		return -EINVAL;
+	}
 	if (bus_priv->core && !bus_priv->unregister_in_process) {
 		bus_priv->unregister_in_process = true;
 		bes2600_core_release(bus_priv->core);
@@ -1949,8 +1956,10 @@ int bes2600_unregister_net_dev(struct sbus_priv *bus_priv)
 
 bool bes2600_is_net_dev_created(struct sbus_priv *bus_priv)
 {
-	if (!bus_priv)
+	if (!bus_priv) {
+		bes_err("%s: NULL bus_priv\n", __func__);
 		return false;
+	}
 	return (bus_priv->core != NULL);
 }
 

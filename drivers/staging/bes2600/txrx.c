@@ -94,8 +94,12 @@ static void tx_policy_build(const struct bes2600_common *hw_priv,
 	unsigned total = 0;
 	static int tx_rate_idx;
 
-	BUG_ON(rates[0].idx < 0);
 	memset(policy, 0, sizeof(*policy));
+	if (rates[0].idx < 0) {
+		bes_err("%s: minstrel gave idx=%d, skip policy\n",
+			__func__, rates[0].idx);
+		return;
+	}
 
 	/*
 	 * Calculate the count of rate list.
@@ -1010,8 +1014,10 @@ void bes2600_tx(struct ieee80211_hw *dev,
 {
 	struct bes2600_common *hw_priv = dev->priv;
 
-	if (!skb || !skb->data)
+	if (!skb || !skb->data) {
+		bes_err("%s: NULL skb\n", __func__);
 		return;
+	}
 
 	struct bes2600_txinfo t = {
 		.skb = skb,
@@ -1158,8 +1164,14 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	spin_lock_bh(&priv->ps_state_lock);
 	{
 		tid_update = bes2600_tx_h_pm_state(priv, &t);
-		BUG_ON(bes2600_queue_put(&hw_priv->tx_queue[t.queue],
-				t.skb, &t.txpriv));
+		if (bes2600_queue_put(&hw_priv->tx_queue[t.queue],
+				      t.skb, &t.txpriv)) {
+			bes_err("%s: queue_put failed q=%u\n",
+				__func__, t.queue);
+			spin_unlock_bh(&priv->ps_state_lock);
+			rcu_read_unlock();
+			goto drop;
+		}
 
 		if (skb->sk)
 			sk_pacing_shift_update(skb->sk, 7);
@@ -2282,7 +2294,12 @@ int bes2600_alloc_key(struct bes2600_common *hw_priv)
 
 void bes2600_free_key(struct bes2600_common *hw_priv, int idx)
 {
-	BUG_ON(!(hw_priv->key_map & BIT(idx)));
+	if (idx < 0 || idx > WSM_KEY_MAX_INDEX ||
+	    !(hw_priv->key_map & BIT(idx))) {
+		bes_err("%s: key idx %d not allocated (map=0x%x)\n",
+			__func__, idx, hw_priv->key_map);
+		return;
+	}
 	memset(&hw_priv->keys[idx], 0, sizeof(hw_priv->keys[idx]));
 	hw_priv->key_map &= ~BIT(idx);
 }

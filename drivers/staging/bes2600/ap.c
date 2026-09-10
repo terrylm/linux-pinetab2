@@ -574,6 +574,9 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			rcu_read_lock();
 			if (info->bssid)
 					sta = ieee80211_find_sta(vif, info->bssid);
+			if (sta && !hw_priv->channel)
+				bes_err("%s: sta present but no channel\n",
+					__func__);
 			if (sta && hw_priv->channel) {
 					/* TODO:COMBO:Change this once
 					 * mac80211 changes are available */

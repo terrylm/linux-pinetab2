@@ -48,8 +48,11 @@ int bes2600_queue_get_skb_and_timestamp(struct bes2600_queue *queue, u32 packetI
 		return -EINVAL;
 	item = &queue->pool[item_id];
 	spin_lock_bh(&queue->lock);
-	BUG_ON(queue_id != queue->queue_id);
-	if (unlikely(queue_generation != queue->generation)) {
+	if (queue_id != queue->queue_id) {
+		bes_err("%s: queue_id %u != %u\n",
+			__func__, queue_id, queue->queue_id);
+		ret = -EINVAL;
+	} else if (unlikely(queue_generation != queue->generation)) {
 		WARN(1, "queue generation mismatch, %u, expect %u, if_id: %u.\n",
 		queue_generation, queue->generation, if_id);
 		ret = -ENOENT;
@@ -81,7 +84,11 @@ static inline void __bes2600_queue_lock(struct bes2600_queue *queue)
 static inline void __bes2600_queue_unlock(struct bes2600_queue *queue)
 {
 	struct bes2600_queue_stats *stats = queue->stats;
-	BUG_ON(!queue->tx_locked_cnt);
+	if (!queue->tx_locked_cnt) {
+		bes_err("%s: unlock of unlocked queue %d\n",
+			__func__, queue->queue_id);
+		return;
+	}
 	if (--queue->tx_locked_cnt == 0) {
 		bes_devel("[TX] Queue %d is unlocked.\n", queue->queue_id);
 		ieee80211_wake_queue(stats->hw_priv->hw, queue->queue_id);
@@ -115,13 +122,20 @@ static void bes2600_queue_post_gc(struct bes2600_queue_stats *stats,
 	}
 }
 
-static void bes2600_queue_register_post_gc(struct list_head *gc_list,
+static void bes2600_queue_register_post_gc(struct bes2600_queue_stats *stats,
+				     struct list_head *gc_list,
 				     struct bes2600_queue_item *item)
 {
 	struct bes2600_queue_item *gc_item;
-	gc_item = kmalloc(sizeof(struct bes2600_queue_item),
-			GFP_ATOMIC);
-	BUG_ON(!gc_item);
+
+	gc_item = kmalloc(sizeof(struct bes2600_queue_item), GFP_ATOMIC);
+	if (!gc_item) {
+		bes_err("%s: OOM gc item\n", __func__);
+		if (item->skb)
+			stats->skb_dtor(stats->hw_priv, item->skb,
+					&item->txpriv);
+		return;
+	}
 	memcpy(gc_item, item, sizeof(struct bes2600_queue_item));
 	list_add_tail(&gc_item->head, gc_list);
 }
@@ -131,8 +145,11 @@ static void bes2600_queue_pending_record(struct list_head *pending_record_list,
 {
 	struct bes2600_queue_item *record_item;
 
-	record_item = kmalloc(sizeof(struct bes2600_queue_item),GFP_ATOMIC);
-	BUG_ON(!record_item);
+	record_item = kmalloc(sizeof(struct bes2600_queue_item), GFP_ATOMIC);
+	if (!record_item) {
+		bes_err("%s: OOM pending record\n", __func__);
+		return;
+	}
 	memcpy(record_item, pending_item, sizeof(struct bes2600_queue_item));
 	record_item->skb = skb_clone(pending_item->skb, GFP_ATOMIC);
 	list_add_tail(&record_item->head, pending_record_list);
@@ -170,7 +187,7 @@ static void __bes2600_queue_gc(struct bes2600_queue *queue,
 			bes2600_debug_tx_ttl(priv);
 			spin_unlock(&priv->vif_lock);
 		}
-		bes2600_queue_register_post_gc(head, item);
+		bes2600_queue_register_post_gc(stats, head, item);
 		item->skb = NULL;
 		list_move_tail(&item->head, &queue->free_pool);
 	}
@@ -300,7 +317,7 @@ int bes2600_queue_clear(struct bes2600_queue *queue, int if_id)
 			&queue->pending, struct bes2600_queue_item, head);
 		WARN_ON(!item->skb);
 		if (CW12XX_ALL_IFS == if_id || item->txpriv.if_id == if_id) {
-			bes2600_queue_register_post_gc(&gc_list, item);
+			bes2600_queue_register_post_gc(stats, &gc_list, item);
 			item->skb = NULL;
 			list_move_tail(&item->head, &queue->free_pool);
 			cnt++;
@@ -421,7 +438,12 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 	if (!WARN_ON(list_empty(&queue->free_pool))) {
 		struct bes2600_queue_item *item = list_first_entry(
 			&queue->free_pool, struct bes2600_queue_item, head);
-		BUG_ON(item->skb);
+		if (item->skb) {
+			bes_err("%s: free pool slot still has skb\n",
+				__func__);
+			spin_unlock_bh(&queue->lock);
+			return -ENOENT;
+		}
 
 		list_move_tail(&item->head, &queue->queue);
 		item->skb = skb;
@@ -563,8 +585,11 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 	/*if_id = item->txpriv.if_id;*/
 
 	spin_lock_bh(&queue->lock);
-	BUG_ON(queue_id != queue->queue_id);
-	if (unlikely(queue_generation != queue->generation)) {
+	if (queue_id != queue->queue_id) {
+		bes_err("%s: queue_id %u != %u\n",
+			__func__, queue_id, queue->queue_id);
+		ret = -EINVAL;
+	} else if (unlikely(queue_generation != queue->generation)) {
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
@@ -615,8 +640,11 @@ int bes2600_sw_retry_requeue(struct bes2600_common *hw_priv,
 
 	/*if_id = item->txpriv.if_id;*/
 	spin_lock_bh(&queue->lock);
-	BUG_ON(queue_id != queue->queue_id);
-	if (unlikely(queue_generation != queue->generation)) {
+	if (queue_id != queue->queue_id) {
+		bes_err("%s: queue_id %u != %u\n",
+			__func__, queue_id, queue->queue_id);
+		ret = -EINVAL;
+	} else if (unlikely(queue_generation != queue->generation)) {
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
@@ -696,9 +724,11 @@ int bes2600_queue_remove(struct bes2600_queue *queue, u32 packetID)
 	item = &queue->pool[item_id];
 
 	spin_lock_bh(&queue->lock);
-	BUG_ON(queue_id != queue->queue_id);
-	/*TODO:COMBO:Add check for interface ID also */
-	if (unlikely(queue_generation != queue->generation)) {
+	if (queue_id != queue->queue_id) {
+		bes_err("%s: queue_id %u != %u\n",
+			__func__, queue_id, queue->queue_id);
+		ret = -EINVAL;
+	} else if (unlikely(queue_generation != queue->generation)) {
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {

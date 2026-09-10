@@ -53,7 +53,13 @@ WARN_ON / BUG_ON
 * hwio.c: BUG_ON(!bes2600_subs_ops) → -ENODEV.
 * bes2600_sdio.c: BUG_ON(!self/!bus_priv) → -ENODEV/-EINVAL/false.
 * wsm.c (easy): unknown confirm id, wsm_buf_init already allocated.
-  Still open: wsm_cmd.ptr, tx_lock, wait_event LAST_CHANCE, queue_remove.
+* bh.c: bad WSM TX/release length → drop, no panic.
+* txrx.c: rates[0].idx < 0, free_key if not allocated.
+* queue.c: queue_id mismatch, unlock-of-unlocked, OOM gc/record,
+  free-pool skb still set — log and return, no panic.
+* queue_put / queue_remove callers: log and drop/continue, no panic.
+* wsm.c last panics: cmd already in flight → -EBUSY; flush without
+  TX lock → return; LAST_CHANCE wait fail → log; cmd ptr race → skip.
 
 Logging
 -------

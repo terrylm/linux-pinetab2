@@ -574,11 +574,10 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 			rcu_read_lock();
 			if (info->bssid)
 					sta = ieee80211_find_sta(vif, info->bssid);
-			if (sta) {
+			if (sta && hw_priv->channel) {
 					/* TODO:COMBO:Change this once
 					 * mac80211 changes are available */
 					enum nl80211_channel_type ch_type;
-					BUG_ON(!hw_priv->channel);
 					hw_priv->ht_info.ht_cap = sta->deflink.ht_cap;
 					priv->bss_params.operationalRateSet =
 							__cpu_to_le32(

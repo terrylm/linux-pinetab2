@@ -1548,7 +1548,8 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 		bes2600_free_key(hw_priv, wsm_key.entryIndex);
 		ret = wsm_remove_key(hw_priv, &wsm_key, priv->if_id);
 	} else {
-		BUG_ON("Unsupported command");
+		bes_err("%s: unsupported set_key cmd=%d\n", __func__, cmd);
+		ret = -EOPNOTSUPP;
 	}
 
 finally:
@@ -1563,11 +1564,16 @@ void bes2600_wep_key_work(struct work_struct *work)
 		container_of(work, struct bes2600_vif , wep_key_work);
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	u8 queueId = bes2600_queue_get_queue_id(hw_priv->pending_frame_id);
-	struct bes2600_queue *queue = &hw_priv->tx_queue[queueId];
+	struct bes2600_queue *queue;
 	__le32 wep_default_key_id = __cpu_to_le32(
 		priv->wep_default_key_id);
 
-	BUG_ON(queueId >= 4);
+	if (queueId >= 4) {
+		bes_err("%s: bad queue %u\n", __func__, queueId);
+		wsm_unlock_tx(hw_priv);
+		return;
+	}
+	queue = &hw_priv->tx_queue[queueId];
 
 	bes_devel("[STA] Setting default WEP key: %d\n",
 		priv->wep_default_key_id);
@@ -2389,7 +2395,9 @@ int bes2600_setup_mac(struct bes2600_common *hw_priv)
 			break;
 #endif/*BES2600_DETECTION_LOGIC*/
 		default:
-			BUG_ON(1);
+			bes_err("%s: unknown hw_revision %d, using SDD 22\n",
+				__func__, hw_priv->hw_revision);
+			break;
 		}
 
 		g_sdd.data = sdd_22;
@@ -2437,10 +2445,15 @@ void bes2600_offchannel_work(struct work_struct *work)
 		container_of(work, struct bes2600_vif, offchannel_work);
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	u8 queueId = bes2600_queue_get_queue_id(hw_priv->pending_frame_id);
-	struct bes2600_queue *queue = &hw_priv->tx_queue[queueId];
+	struct bes2600_queue *queue;
 
-	BUG_ON(queueId >= 4);
-	BUG_ON(!hw_priv->channel);
+	if (queueId >= 4 || !hw_priv->channel) {
+		bes_err("%s: bad queue %u or no channel\n",
+			__func__, queueId);
+		wsm_unlock_tx(hw_priv);
+		return;
+	}
+	queue = &hw_priv->tx_queue[queueId];
 
 	if (unlikely(down_trylock(&hw_priv->scan.lock))) {
 		int ret = 0;

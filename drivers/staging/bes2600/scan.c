@@ -344,7 +344,15 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	else
 		wsm_vif_lock_tx(priv);
 
-	BUG_ON(hw_priv->scan.req);
+	if (hw_priv->scan.req) {
+		bes_err("%s: scan already in progress\n", __func__);
+		up(&hw_priv->conf_lock);
+		up(&hw_priv->scan.lock);
+		wsm_unlock_tx(hw_priv);
+		dev_kfree_skb(frame.skb);
+		bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_SCAN);
+		return -EBUSY;
+	}
 	hw_priv->scan.req = req;
 	hw_priv->scan.n_ssids = 0;
 	hw_priv->scan.status = 0;
@@ -360,7 +368,8 @@ int bes2600_hw_scan(struct ieee80211_hw *hw,
 	for (i = 0; i < req->n_ssids; ++i) {
 		struct wsm_ssid *dst =
 			&hw_priv->scan.ssids[hw_priv->scan.n_ssids];
-		BUG_ON(req->ssids[i].ssid_len > sizeof(dst->ssid));
+		if (req->ssids[i].ssid_len > sizeof(dst->ssid))
+			continue;
 		memcpy(&dst->ssid[0], req->ssids[i].ssid,
 			sizeof(dst->ssid));
 		dst->length = req->ssids[i].ssid_len;
@@ -949,17 +958,19 @@ void bes2600_scan_timeout(struct work_struct *work)
 			hw_priv->scan.status = -ETIMEDOUT;
 			hw_priv->scan.curr = hw_priv->scan.end;
 			/*
-			 * 0x0008 while associated sat behind a hung
-			 * 0x0007 / full TX window and produced SDIO -16.
-			 * Host-abort is enough; firmware completes later.
+			 * Skipping 0x0008 left LMAC off-channel for tens
+			 * of seconds (empty scan, then DNS RETRY_EXCEEDED).
+			 * 0x0007 has already confirmed; stop-scan returns
+			 * to the home channel.  Skip only if the bus is
+			 * already dead.
 			 */
-			if (!associated &&
-			    !bes2600_scan_bus_unusable(hw_priv))
-				wsm_stop_scan(hw_priv,
-					      hw_priv->scan.if_id ? 1 : 0);
-			else if (associated)
-				bes_info("%s: skip 0x0008 while associated\n",
-					 __func__);
+			if (!bes2600_scan_bus_unusable(hw_priv)) {
+				int if_id = priv ? priv->if_id : 0;
+
+				bes_info("%s: 0x0008 abort scan if_id=%d assoc=%d\n",
+					 __func__, if_id, associated);
+				wsm_stop_scan(hw_priv, if_id);
+			}
 		}
 		bes2600_scan_complete(hw_priv, hw_priv->scan.if_id);
 	}
@@ -1036,7 +1047,7 @@ void bes2600_probe_work(struct work_struct *work)
 		container_of(work, struct bes2600_common, scan.probe_work.work);
 	struct bes2600_vif *priv, *vif;
 	u8 queueId = bes2600_queue_get_queue_id(hw_priv->pending_frame_id);
-	struct bes2600_queue *queue = &hw_priv->tx_queue[queueId];
+	struct bes2600_queue *queue;
 	const struct bes2600_txpriv *txpriv;
 	struct wsm_tx *wsm;
 	struct wsm_template_frame frame = {
@@ -1063,8 +1074,13 @@ void bes2600_probe_work(struct work_struct *work)
 	int i;
 	wiphy_info(hw_priv->hw->wiphy, "[SCAN] Direct probe work.\n");
 
-	BUG_ON(queueId >= 4);
-	BUG_ON(!hw_priv->channel);
+	if (queueId >= 4 || !hw_priv->channel) {
+		bes_err("%s: bad queue %u or no channel\n",
+			__func__, queueId);
+		wsm_unlock_tx(hw_priv);
+		return;
+	}
+	queue = &hw_priv->tx_queue[queueId];
 
 	down(&hw_priv->conf_lock);
 	if (unlikely(down_trylock(&hw_priv->scan.lock))) {

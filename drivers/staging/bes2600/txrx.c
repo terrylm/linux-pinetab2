@@ -1009,6 +1009,10 @@ void bes2600_tx(struct ieee80211_hw *dev,
 			struct sk_buff *skb)
 {
 	struct bes2600_common *hw_priv = dev->priv;
+
+	if (!skb || !skb->data)
+		return;
+
 	struct bes2600_txinfo t = {
 		.skb = skb,
 		.queue = skb_get_queue_mapping(skb),
@@ -1026,9 +1030,6 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	struct bes2600_vif *priv;
 	struct ieee80211_hdr *frame = (struct ieee80211_hdr *)skb->data;
 	struct ieee80211_mgmt *mgmt = (struct ieee80211_mgmt *)skb->data;
-
-	if (!skb || !skb->data)
-		BUG_ON(1);
 
 	if (!(t.tx_info->control.vif)) {
 			goto drop;

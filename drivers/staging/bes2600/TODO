@@ -46,6 +46,14 @@ WARN_ON / BUG_ON
   tested hunks.
 * Keep WARN_ON only for programmer invariants (NULL about to be
   dereferenced, queue id out of range).
+* Easy BUG_ON pass (no I/O / TX-lock / queue-remove): unsupported
+  set_key cmd, double hw_scan, SSID length, queueId>=4 and missing
+  channel in work items, unknown SDD rev, missing DPD blob.  Leave
+  wsm_cmd.ptr, tx_lock, queue.c, BH lengths, queue_remove for later.
+* hwio.c: BUG_ON(!bes2600_subs_ops) → -ENODEV.
+* bes2600_sdio.c: BUG_ON(!self/!bus_priv) → -ENODEV/-EINVAL/false.
+* wsm.c (easy): unknown confirm id, wsm_buf_init already allocated.
+  Still open: wsm_cmd.ptr, tx_lock, wait_event LAST_CHANCE, queue_remove.
 
 Logging
 -------
@@ -107,13 +115,20 @@ Association / rates / aggregation
   NETGEAR, 4-way succeeded then minstrel/BA ran on the EAPOL ACK
   and data RETRY_EXCEEDED.  Stay on 1/6 Mbps until a non-EAPOL
   unicast data ACK, then BA (open and WPA2).
+* Occasional first 4-way timeout on NETGEAR: M1 RX, then
+  P53 drop st=9 (WSM_STATUS_NO_KEY_FOUND) — M3 encrypted before
+  set_key installed the PTK.  NM retry / "connect" again works.
+  Firmware already dropped the frame; host cannot decrypt it.
+  Not an easy driver fix without LMAC buffering.
 * Do not clamp ICMP/DNS/DHCP to 1 Mbps the way 0d7099 did until that
   change is re-proven against STARLINK.
 * Firmware owns BlockAck.  Host ADDBA-Resp is dropped.  Do not
   auto-enable BA after HT ACKs ("connected" with 0% ping).
-* Join with leftover hw_bufs_used: find the leak; do not poke RX.
-  After wsm_reset on unjoin, drop the host count (firmware will not
-  confirm those frames).  Do not queue_clear on unjoin.
+* Join with leftover hw_bufs_used: often 1 and expected (auth
+  already in flight, or a scan/WSM slot after unjoin reset).
+  prepare_for_join host-clears it; late confirms clamp underflow.
+  Do not poke RX.  Do not queue_clear on unjoin.  Demote the
+  bes_warn when we next touch that path; not a leak to chase now.
 * wsm_reset drops the firmware TX rate-policy table.  Host cache must
   clear uploaded so MCS policies are sent again on the next BSS.
 

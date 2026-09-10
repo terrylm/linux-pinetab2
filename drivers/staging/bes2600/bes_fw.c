@@ -959,7 +959,10 @@ static int bes2600_load_wifi_firmware_with_dpd(struct platform_fw_t *fw_data)
 	fw_name_tbl[2] = BES2600_LOAD_BTRF_FW_NAME;
 
 	dpd_data = bes2600_chrdev_get_dpd_data(&dpd_data_len);
-	BUG_ON(!dpd_data);
+	if (!dpd_data) {
+		bes_err("%s: no DPD calibration data\n", __func__);
+		return -EINVAL;
+	}
 
 	bes_devel("bes2600 download firmware with dpd\n");
 	ret = bes_firmware_download_write_mem(fw_data, BES2600_DPD_ADDR, dpd_data, dpd_data_len);

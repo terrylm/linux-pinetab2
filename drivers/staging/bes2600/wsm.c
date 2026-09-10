@@ -2528,7 +2528,10 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		case 0x0424: /* wifi sleep disable */
 			break;
 		default:
-			BUG_ON(1);
+			bes_err("%s: unexpected confirm id=0x%04x\n",
+				__func__, id);
+			ret = -EINVAL;
+			break;
 		}
 
 		spin_lock(&hw_priv->wsm_cmd.lock);
@@ -3205,7 +3208,8 @@ void wsm_txed(struct bes2600_common *hw_priv, u8 *data)
 
 void wsm_buf_init(struct wsm_buf *buf)
 {
-	BUG_ON(buf->begin);
+	if (buf->begin)
+		return;
 	buf->begin = kmalloc(SDIO_BLOCK_SIZE, GFP_KERNEL | GFP_DMA);
 	buf->end = buf->begin ? &buf->begin[SDIO_BLOCK_SIZE] : buf->begin;
 	wsm_buf_reset(buf);

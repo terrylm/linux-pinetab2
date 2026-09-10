@@ -1269,35 +1269,15 @@ static bool bes2600_l4_expects_reply(u8 proto, const u8 *l4, unsigned int len)
 		return len >= 1 &&
 		       (l4[0] == ICMPV6_ECHO_REQUEST ||
 			l4[0] == 135 /* NDISC NS */);
-	case IPPROTO_TCP: {
-		u8 flags, doff;
-		unsigned int hlen;
-
+	case IPPROTO_TCP:
 		if (len < 14)
 			return false;
-		flags = l4[13];
-		if (flags & 0x04)
-			return false;
-		if (flags & (0x02 | 0x01))
-			return true;
-		doff = l4[12] >> 4;
-		hlen = doff * 4;
-		if (doff < 5 || len < hlen)
-			return false;
-		return len > hlen;
-	}
-	case IPPROTO_UDP: {
-		u16 sport, dport;
-
-		if (len < 4)
-			return false;
-		sport = get_unaligned_be16(l4);
-		dport = get_unaligned_be16(l4 + 2);
-		/* DNS only.  DHCP often finishes as FAST_PS starts
-		 * and is not proof that unicast IP still works.
+		/* SYN only.  Payload/FIN ACKs are delayed in FAST_PS
+		 * and falsely failed Starlink.
 		 */
-		return sport == 53 || dport == 53;
-	}
+		return (l4[13] & 0x02) && !(l4[13] & 0x04);
+	case IPPROTO_UDP:
+		return false;
 	default:
 		return false;
 	}
@@ -1505,6 +1485,9 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 						   &priv->set_pm_work, 0);
 			}
 		} else {
+			if (arg->status == WSM_STATUS_RETRY_EXCEEDED ||
+			    arg->status == WSM_STATUS_TX_LIFETIME_EXCEEDED)
+				hw_priv->last_tx_fail = jiffies;
 			spin_lock(&priv->bss_loss_lock);
 			if (priv->bss_loss_status == BES2600_BSS_LOSS_CONFIRMING &&
 					priv->bss_loss_confirm_id == arg->packetID) {

@@ -15,6 +15,7 @@
 #include <linux/skbuff.h>
 #include <linux/delay.h>
 #include <linux/sched.h>
+#include <linux/semaphore.h>
 #include <linux/random.h>
 #include <linux/etherdevice.h>
 
@@ -112,10 +113,21 @@ static inline void wsm_cmd_unlock(struct bes2600_common *hw_priv)
 	bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_WSM_TX);
 }
 
-static inline void wsm_oper_lock(struct bes2600_common *hw_priv)
+static inline int wsm_oper_lock(struct bes2600_common *hw_priv)
 {
 	bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_WSM_OPER);
-	down(&hw_priv->wsm_oper_lock);
+	/*
+	 * Held until scan-complete.  Associated timeout skips
+	 * 0x0008, so this can stay down.  Never wait forever —
+	 * that blocked deauth/rtnl (login/sudo).
+	 */
+	if (down_timeout(&hw_priv->wsm_oper_lock, 10 * HZ)) {
+		bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_WSM_OPER);
+		bes_err("%s: timeout waiting for prior scan complete\n",
+			__func__);
+		return -ETIMEDOUT;
+	}
+	return 0;
 }
 
 static inline void wsm_oper_unlock(struct bes2600_common *hw_priv)
@@ -541,7 +553,9 @@ int wsm_scan(struct bes2600_common *hw_priv, const struct wsm_scan *arg,
 	bes_devel("%s %d Sending scan cmd to FW, band=%d, type=%d, flags=0x%x, autoInterval=%u\n",
 		__func__, __LINE__, arg->band, arg->scanType, arg->scanFlags, arg->autoScanInterval);
 
-	wsm_oper_lock(hw_priv);
+	ret = wsm_oper_lock(hw_priv);
+	if (ret)
+		return ret;
 	wsm_cmd_lock(hw_priv);
 
 	WSM_PUT8(buf, arg->band);
@@ -1745,7 +1759,9 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 		wake_up(&hw_priv->pm_ind_wq);
 		/*
 		 * Asked for FAST_PS, firmware stayed ACTIVE.
-		 * Do not retry this BSS.  Do not send 0x0010 from BH.
+		 * One refuse after a roam is not a verdict
+		 * (Starlink does this).  Do not send 0x0010
+		 * from BH; retry from the watchdog.
 		 */
 		if (arg.psm == WSM_PSM_ACTIVE) {
 			struct bes2600_vif *priv;
@@ -1756,18 +1772,26 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 					continue;
 				if (priv->firmware_ps_mode.pmMode &
 				    WSM_PSM_PS) {
-					bes_info("%s: fw stayed ACTIVE, cache was 0x%x\n",
+					bes_info("%s: fw stayed ACTIVE, cache was 0x%x refuse=%u\n",
 						 __func__,
-						 priv->firmware_ps_mode.pmMode);
+						 priv->firmware_ps_mode.pmMode,
+						 priv->ps_refuse_count + 1);
 					priv->firmware_ps_mode.pmMode =
 						WSM_PSM_ACTIVE;
-					if (!priv->ap_ps_bad) {
+					if (priv->ps_refuse_count < 3)
+						priv->ps_refuse_count++;
+					if (priv->ps_refuse_count >= 3 &&
+					    !priv->ap_ps_bad) {
 						priv->ap_ps_bad = true;
 						priv->ap_ps_checked = true;
 						bes2600_pwr_mark_ap_lp_bad(hw_priv);
 						cancel_delayed_work(&priv->ps_watchdog_work);
 						bes_info("%s: AP PS unusable (0x0809 psm=0), stay ACTIVE, no assoc scan\n",
 							 __func__);
+					} else if (!priv->ap_ps_bad) {
+						queue_delayed_work(hw_priv->workqueue,
+								   &priv->ps_watchdog_work,
+								   HZ);
 					}
 				}
 			}

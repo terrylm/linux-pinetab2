@@ -789,8 +789,13 @@ void bes2600_scan_work(struct work_struct *work)
 		return;
     }
 
-    bes2600_scan_execute(hw_priv, priv, &scan);
+    /*
+     * 0x0007 / wsm_oper_lock can block.  Do not hold conf_lock
+     * across that — deauth needs it (and rtnl/login sat behind
+     * deauth when a prior scan never completed).
+     */
     up(&hw_priv->conf_lock);
+    bes2600_scan_execute(hw_priv, priv, &scan);
 }
 
 /*                            GROK 3                                  */

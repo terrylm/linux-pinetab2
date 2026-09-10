@@ -416,6 +416,7 @@ struct bes2600_common {
 	unsigned long		rx_timestamp;
 	unsigned long		last_bss_rx;
 	unsigned long		last_bss_tx_ack;
+	unsigned long		last_tx_fail;
 	unsigned long		ps_probe_holdoff;
 	/*
 	 * Set after join/WSM timeout with a silent bus.  Blocks further WSM
@@ -575,6 +576,7 @@ struct bes2600_vif {
 	 */
 	bool				ap_ps_bad;
 	bool				ap_ps_checked;
+	u8				ps_refuse_count;
 	unsigned long			fast_ps_since;
 
 	/* WSM Join */

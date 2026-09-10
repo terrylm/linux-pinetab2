@@ -1177,15 +1177,21 @@ static void bes2600_ps_watchdog_work(struct work_struct *work)
 	}
 
 	/*
-	 * One probe per BSS.  Ignore TX from the first second
-	 * after 0x0010 (in-flight DHCP/ARP still looks healthy).
-	 * After an 802.11 ACK of ping/TCP/DNS we need IP RX.
+	 * One probe per BSS.  Any unicast IP after FAST_PS has
+	 * settled is a pass (do not require it to follow a
+	 * specific TX).  Fail only after ping/TCP SYN with no
+	 * IP RX — DNS and TCP payload are too racy on 5 GHz.
 	 */
 	{
 		unsigned long ready = priv->fast_ps_since + HZ;
 
 		if (time_after(hw_priv->ps_probe_holdoff, ready))
 			ready = hw_priv->ps_probe_holdoff;
+		if (time_after(hw_priv->last_bss_rx, ready)) {
+			priv->ap_ps_checked = true;
+			bes_info("%s: FAST_PS ok, stop probe\n", __func__);
+			goto out;
+		}
 		if (!time_after(hw_priv->last_bss_tx_ack, ready)) {
 			queue_delayed_work(hw_priv->workqueue,
 					   &priv->ps_watchdog_work,
@@ -1193,16 +1199,27 @@ static void bes2600_ps_watchdog_work(struct work_struct *work)
 			goto out;
 		}
 	}
-	if (time_after(hw_priv->last_bss_rx, hw_priv->last_bss_tx_ack)) {
-		priv->ap_ps_checked = true;
-		bes_info("%s: FAST_PS ok, stop probe\n", __func__);
-		goto out;
+	{
+		unsigned long wait = 8 * HZ;
+
+		if (time_before(jiffies, hw_priv->last_bss_tx_ack + wait)) {
+			queue_delayed_work(hw_priv->workqueue,
+					   &priv->ps_watchdog_work,
+					   hw_priv->last_bss_tx_ack + wait -
+					   jiffies);
+			goto out;
+		}
 	}
-	if (time_before(jiffies,
-			hw_priv->last_bss_tx_ack + silence)) {
+
+	/*
+	 * RETRY_EXCEEDED means the radio already lost the AP
+	 * (5 GHz Starlink does this).  That is not a FAST_PS
+	 * verdict — wait for a clean sample.
+	 */
+	if (time_after(hw_priv->last_tx_fail, hw_priv->last_bss_tx_ack) ||
+	    time_after(hw_priv->last_tx_fail, priv->fast_ps_since)) {
 		queue_delayed_work(hw_priv->workqueue, &priv->ps_watchdog_work,
-				   hw_priv->last_bss_tx_ack + silence -
-				   jiffies);
+				   silence);
 		goto out;
 	}
 
@@ -1265,8 +1282,10 @@ void bes2600_pm_apply(struct bes2600_vif *priv)
 	 * second Netgear join after a 5 GHz BSS.
 	 */
 	if ((priv->powersave_mode.pmMode & WSM_PSM_PS) &&
-	    !time_after(priv->hw_priv->last_bss_rx,
-			priv->data_acked_jiffies)) {
+	    (!time_after(priv->hw_priv->last_bss_rx,
+			 priv->data_acked_jiffies) ||
+	     time_after(priv->hw_priv->last_tx_fail,
+			priv->hw_priv->last_bss_rx))) {
 		bes2600_ps_watchdog_arm(priv);
 		return;
 	}
@@ -2925,8 +2944,10 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 	priv->data_acked_jiffies = 0;
 	priv->ap_ps_bad = false;
 	priv->ap_ps_checked = false;
+	priv->ps_refuse_count = 0;
 	hw_priv->last_bss_rx = 0;
 	hw_priv->last_bss_tx_ack = 0;
+	hw_priv->last_tx_fail = 0;
 	hw_priv->ps_probe_holdoff = 0;
 	/*
 	 * Unjoin zeros firmware_ps_mode (same as WSM_PSM_ACTIVE).  Join
@@ -3114,6 +3135,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		bes2600_ps_watchdog_disarm(priv);
 		priv->ap_ps_bad = false;
 		priv->ap_ps_checked = false;
+		priv->ps_refuse_count = 0;
 		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
 		atomic_set(&priv->connect_in_process, 0);
 		priv->delayed_unjoin = false;
@@ -3163,6 +3185,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 		priv->data_acked_jiffies = 0;
 		hw_priv->last_bss_rx = 0;
 		hw_priv->last_bss_tx_ack = 0;
+		hw_priv->last_tx_fail = 0;
 		hw_priv->ps_probe_holdoff = 0;
 		priv->pm_ind_failed = false;
 		priv->disable_beacon_filter = false;
@@ -3427,6 +3450,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	priv->pm_ind_failed = false;
 	priv->ap_ps_bad = false;
 	priv->ap_ps_checked = false;
+	priv->ps_refuse_count = 0;
 	priv->power_set_true = 0;
 	priv->user_power_set_true = 0;
 	priv->user_pm_mode = 0;

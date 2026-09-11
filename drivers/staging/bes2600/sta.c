@@ -168,7 +168,7 @@ int bes2600_start(struct ieee80211_hw *dev)
 
 	bes_devel("%s %pM.\n", __func__, hw_priv->mac_addr);
 	ret = bes2600_setup_mac(hw_priv);
-	if (WARN_ON(ret))
+	if (bes_fail(__func__, ret))
 		goto out;
 
 	bwifi_change_current_status(hw_priv, BWIFI_STATUS_IDLE);
@@ -390,7 +390,7 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	if (vif->type == NL80211_IFTYPE_P2P_DEVICE)
 		return 0;
 
-	return WARN_ON(bes2600_setup_mac_pvif(priv));
+	return bes_fail(__func__, bes2600_setup_mac_pvif(priv));
 }
 
 void bes2600_remove_interface(struct ieee80211_hw *dev,
@@ -816,7 +816,7 @@ void bes2600_set_beacon_wakeup_period_work(struct work_struct *work)
 		container_of(work, struct bes2600_vif,
 		set_beacon_wakeup_period_work);
 
-	WARN_ON(wsm_set_beacon_wakeup_period(priv->hw_priv,
+	bes_fail(__func__, wsm_set_beacon_wakeup_period(priv->hw_priv,
 		priv->beacon_int * priv->join_dtim_period >
 		MAX_BEACON_SKIP_TIME_MS ? 1 :
 		priv->join_dtim_period, 0, priv->if_id));
@@ -933,8 +933,10 @@ int bes2600_conf_tx(struct ieee80211_hw *dev, struct ieee80211_vif *vif,
 	/* To prevent re-applying PM request OID again and again*/
 	bool old_uapsdFlags;
 
-	if (WARN_ON(!priv))
+	if (!priv) {
+		bes_err("%s: no vif\n", __func__);
 		return -EOPNOTSUPP;
+	}
 
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		return 0;
@@ -1317,7 +1319,8 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 	struct bes2600_vif *priv = cw12xx_get_vif_from_ieee80211(vif);
 	struct wsm_protected_mgmt_policy mgmt_policy;
 
-	WARN_ON(priv->if_id == CW12XX_GENERIC_IF_ID);
+	if (priv->if_id == CW12XX_GENERIC_IF_ID)
+		bes_err("%s: generic if_id\n", __func__);
 	memset(&mgmt_policy, 0, sizeof(mgmt_policy));
 	/* INFO: if this never appears after "associated", freeze is before 4-way */
 	bes_pin("P57 set_key cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
@@ -1460,7 +1463,8 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 			break;
 #endif /* CONFIG_BES2600_WAPI_SUPPORT */
 		default:
-			WARN_ON(1);
+			bes_err("%s: unknown cipher 0x%x\n",
+				__func__, key->cipher);
 			bes2600_free_key(hw_priv, idx);
 			ret = -EOPNOTSUPP;
 			goto finally;
@@ -1578,7 +1582,7 @@ void bes2600_wep_key_work(struct work_struct *work)
 	bes_devel("[STA] Setting default WEP key: %d\n",
 		priv->wep_default_key_id);
 	wsm_flush_tx(hw_priv);
-	WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_WEP_DEFAULT_KEY_ID,
+	bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_WEP_DEFAULT_KEY_ID,
 		&wep_default_key_id, sizeof(wep_default_key_id), priv->if_id));
 #ifdef CONFIG_BES2600_TESTMODE
 	bes2600_queue_requeue(hw_priv, queue, hw_priv->pending_frame_id, true);
@@ -1610,7 +1614,7 @@ int bes2600_set_rts_threshold(struct ieee80211_hw *hw, u32 value)
 	else
 		val32 = 0; /* disabled */
 	/* mutex_lock(&priv->conf_mutex); */
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_RTS_THRESHOLD,
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_RTS_THRESHOLD,
 		&val32, sizeof(val32), 0));
 	/* mutex_unlock(&priv->conf_mutex); */
 
@@ -1710,7 +1714,7 @@ void bes2600_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 		priv = cw12xx_get_vif_from_ieee80211(vif);
 		if (!(hw_priv->if_id_slot & BIT(priv->if_id)))
 			return;
-		if (!WARN_ON(__bes2600_flush(hw_priv, drop, priv->if_id)))
+		if (!bes_fail(__func__, __bes2600_flush(hw_priv, drop, priv->if_id)))
 			wsm_unlock_tx(hw_priv);
 	} else {
 		bes2600_for_each_vif(hw_priv, priv, i) {
@@ -1718,7 +1722,7 @@ void bes2600_flush(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 				continue;
 			if (!(hw_priv->if_id_slot & BIT(priv->if_id)))
 				return;
-			if (!WARN_ON(__bes2600_flush(hw_priv, drop, priv->if_id)))
+			if (!bes_fail(__func__, __bes2600_flush(hw_priv, drop, priv->if_id)))
 				wsm_unlock_tx(hw_priv);
 		}
 	}
@@ -1745,7 +1749,7 @@ int bes2600_remain_on_channel(struct ieee80211_hw *hw,
 
 	bes_devel("ROC IN %d ch %d\n", priv->if_id, chan->hw_value);
 	hw_priv->roc_if_id = priv->if_id;
-	ret = WARN_ON(__bes2600_flush(hw_priv, false, if_id));
+	ret = bes_fail(__func__, __bes2600_flush(hw_priv, false, if_id));
 	wsm_unlock_tx(hw_priv);
 	ret = bes2600_enable_listening(priv, chan);
 
@@ -1920,9 +1924,13 @@ void bes2600_event_handler(struct work_struct *work)
 				cw12xx_unmap_link(priv, link_id);
 
 				skb = dev_alloc_skb(sizeof(struct ieee80211_mgmt) + 64);
+				if (!skb) {
+					bes_err("%s: no skb for inactivity deauth\n",
+						__func__);
+					break;
+				}
 				skb_reserve(skb, 64);
 				deauth = (struct ieee80211_mgmt *)skb_put(skb, sizeof(struct ieee80211_mgmt));
-				WARN_ON(!deauth);
 				entry = &priv->link_id_db[link_id - 1];
 				deauth->duration = 0;
 				memcpy(deauth->da, priv->vif->addr, ETH_ALEN);
@@ -1999,7 +2007,7 @@ void bes2600_bss_loss_work(struct work_struct *work)
 		bl_ck_cnt = 0;
 		bl_cfm_cnt = 0;
 		skb = ieee80211_nullfunc_get(priv->hw, priv->vif, 0, false);
-		if (!(WARN_ON(!skb))) {
+		if (skb) {
 			info = IEEE80211_SKB_CB(skb);
 			info->control.vif = priv->vif;
 			bes2600_tx(priv->hw, NULL, skb);
@@ -2007,6 +2015,8 @@ void bes2600_bss_loss_work(struct work_struct *work)
 			 * in 1 sec, forward event to upper layers */
 			queue_delayed_work(hw_priv->workqueue,
 					   &priv->bss_loss_work, 1 * HZ);
+		} else {
+			bes_err("%s: nullfunc alloc failed\n", __func__);
 		}
 		return;
 	} else if (priv->bss_loss_status == BES2600_BSS_LOSS_CONFIRMING) {
@@ -2018,13 +2028,15 @@ void bes2600_bss_loss_work(struct work_struct *work)
 			spin_unlock(&priv->bss_loss_lock);
 			priv->bss_loss_status = BES2600_BSS_LOSS_CHECKING;
 			skb = ieee80211_nullfunc_get(priv->hw, priv->vif, 0, false);
-			if (!(WARN_ON(!skb))) {
+			if (skb) {
 				info = IEEE80211_SKB_CB(skb);
 				info->control.vif = priv->vif;
 				bes2600_tx(priv->hw, NULL, skb);
 				/* detect every 3s until receive bss regain event */
 				queue_delayed_work(hw_priv->workqueue,
 						   &priv->bss_loss_work, BSS_LOSS_CK_INV * HZ / 1000);
+			} else {
+				bes_err("%s: nullfunc alloc failed\n", __func__);
 			}
 			return;
 		} else {
@@ -2044,12 +2056,14 @@ void bes2600_bss_loss_work(struct work_struct *work)
 			spin_unlock(&priv->bss_loss_lock);
 			priv->bss_loss_status = BES2600_BSS_LOSS_CHECKING;
 			skb = ieee80211_nullfunc_get(priv->hw, priv->vif, 0, false);
-			if (!(WARN_ON(!skb))) {
+			if (skb) {
 				info = IEEE80211_SKB_CB(skb);
 				info->control.vif = priv->vif;
 				bes2600_tx(priv->hw, NULL, skb);
 				queue_delayed_work(hw_priv->workqueue,
 						   &priv->bss_loss_work, BSS_LOSS_CK_INV * HZ / 1000);
+			} else {
+				bes_err("%s: nullfunc alloc failed\n", __func__);
 			}
 			return;
 		} else {
@@ -2409,7 +2423,7 @@ int bes2600_setup_mac(struct bes2600_common *hw_priv)
 		for (if_id = 0; if_id < 2;
 			 if_id++) {
 			/* Set low-power mode. */
-			ret |= WARN_ON(wsm_configuration(hw_priv, &cfg,
+			ret |= bes_fail(__func__, wsm_configuration(hw_priv, &cfg,
 					   if_id));
 		}
 		/* Parse SDD file for PTA element */
@@ -3257,7 +3271,8 @@ int bes2600_enable_listening(struct bes2600_vif *priv,
 	if (priv->join_status == BES2600_JOIN_STATUS_PASSIVE)
 		priv->join_status = BES2600_JOIN_STATUS_MONITOR;
 
-	WARN_ON(priv->join_status > BES2600_JOIN_STATUS_MONITOR);
+	if (priv->join_status > BES2600_JOIN_STATUS_MONITOR)
+		bes_err("%s: join_status %d\n", __func__, priv->join_status);
 	bes_devel("bes2600_enable_listening if_id:%d\n", priv->if_id);
 	return wsm_start(hw_priv, &start, CW12XX_GENERIC_IF_ID);
 }
@@ -3269,12 +3284,12 @@ int bes2600_disable_listening(struct bes2600_vif *priv)
 		.reset_statistics = true,
 	};
 	if(priv->if_id != 2) {
-		WARN_ON(priv->join_status > BES2600_JOIN_STATUS_MONITOR);
+		if (priv->join_status > BES2600_JOIN_STATUS_MONITOR)
+			bes_err("%s: join_status %d\n",
+				__func__, priv->join_status);
 		return 0;
 	}
 	priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
-
-	WARN_ON(priv->join_status > BES2600_JOIN_STATUS_MONITOR);
 
 	if (priv->hw_priv->roc_if_id == -1)
 		return 0;
@@ -3468,7 +3483,7 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 	priv->user_power_set_true = 0;
 	priv->user_pm_mode = 0;
 	ret = bes2600_debug_init_priv(hw_priv, priv);
-	if (WARN_ON(ret))
+	if (bes_fail(__func__, ret))
 		goto out;
 
 	/* Initialising the broadcast filter */
@@ -3499,11 +3514,11 @@ int bes2600_vif_setup(struct bes2600_vif *priv)
 		WSM_EDCA_SET(&priv->edca, 3, 0x0007, 0x000f, 0x03ff,
 				0, 0xc8, false);
 		ret = wsm_set_edca_params(hw_priv, &priv->edca, priv->if_id);
-		if (WARN_ON(ret))
+		if (bes_fail(__func__, ret))
 			goto out;
 
 		ret = bes2600_set_uapsd_param(priv, &priv->edca);
-		if (WARN_ON(ret))
+		if (bes_fail(__func__, ret))
 			goto out;
 
 		memset(priv->bssid, ~0, ETH_ALEN);
@@ -3568,7 +3583,7 @@ void bes2600_rem_chan_timeout(struct work_struct *work)
 	if_id = hw_priv->roc_if_id;
 	bes_devel("ROC TO IN %d\n", if_id);
 	priv = __cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
-	ret = WARN_ON(__bes2600_flush(hw_priv, false, if_id));
+	ret = bes_fail(__func__, __bes2600_flush(hw_priv, false, if_id));
 
 	if (!ret) {
 		wsm_unlock_tx(hw_priv);
@@ -3721,7 +3736,7 @@ static int bes2600_set_ipv6addrfilter(struct ieee80211_hw *hw,
 					(u8 *)(ipv6_info[i].ipv6), 16);
 	}
 
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_IP_IPV6_ADDR_FILTER, \
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_IP_IPV6_ADDR_FILTER, \
 					 ipv6_filter, ipaddrfiltersize, \
 					 if_id));
 
@@ -3915,7 +3930,7 @@ int bes2600_set_arpreply(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	template_frame[1] = 0xFF; /* Rate to be fixed */
 	((u16 *)&template_frame[2])[0] = framehdrlen + framebdylen;
 
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
 				template_frame, (framehdrlen+framebdylen+4), priv->if_id));
 
 	kfree(template_frame);
@@ -4066,7 +4081,7 @@ int bes2600_set_na(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	template_frame[1] = 0xFF; /* Rate to be fixed */
 	((u16 *)&template_frame[2])[0] = framehdrlen + framebdylen;
 
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_TEMPLATE_FRAME, \
 				template_frame, (framehdrlen+framebdylen+4), \
 				priv->if_id));
 
@@ -4162,7 +4177,7 @@ static int bes2600_set_txqueue_params(struct ieee80211_hw *hw,
 			WSM_ACK_POLICY_NORMAL,
 			txqueue_params->medium_time,
 			txqueue_params->expiry_time);
-	return WARN_ON(wsm_set_tx_queue_params(hw_priv,
+	return bes_fail(__func__, wsm_set_tx_queue_params(hw_priv,
 			&priv->tx_queue_params.params[queueId], queueId,
 			priv->if_id));
 }
@@ -4523,7 +4538,7 @@ int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_
 			   (u8 *)(ipv4_info[i].ipv4), 4);
 	}
 
-	ret = WARN_ON(wsm_write_mib(hw_priv, WSM_MIB_ID_IPV4_ADDR_FILTERING, \
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_IPV4_ADDR_FILTERING, \
 					ipv4_filter, ipaddrfiltersize, \
 					if_id));
 
@@ -4782,7 +4797,7 @@ int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
 	 */
 	tmp_frame[framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN] = (EncrType | (iac->klv_vendor << 4));
 
-	ret = WARN_ON(wsm_write_mib(hw_priv,
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
 								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
 								tmp_frame,
 								(framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN + 1),
@@ -4805,7 +4820,7 @@ int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
 	tmp_frame[1] = 0xFF; /* Fixed to 0xFF */
 	((u16 *)&tmp_frame[2])[0] = 0;
 
-	ret = WARN_ON(wsm_write_mib(hw_priv,
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
 								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
 								tmp_frame,
 								4,
@@ -4852,7 +4867,7 @@ int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
 	period.TcpKeepAlivePeriod = period_in_s;
 	period.EncrType = EncrType;
 	period.Reserved = 0;
-	ret = WARN_ON(wsm_write_mib(hw_priv,
+	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
 								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_PERIOD,
 								(u8 *)&period,
 								sizeof(period),

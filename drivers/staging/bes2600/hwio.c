@@ -43,7 +43,7 @@ static int __bes2600_reg_read(u16 addr, void *buf, size_t buf_len, int buf_id)
 	u32 sdio_reg_addr_17bit ;
 
 	/* Check if buffer is aligned to 4 byte boundary */
-	if (WARN_ON(((unsigned long)buf & 3) && (buf_len > 4))) {
+	if (((unsigned long)buf & 3) && (buf_len > 4)) {
 		bes_err("%s: buffer is not aligned.\n", __func__);
 		return -EINVAL;
 	}
@@ -227,9 +227,7 @@ int bes2600_indirect_read(u32 addr, void *buf, size_t buf_len, u32 prefetch, u16
 
 	if ((buf_len / 2) >= 0x1000) {
 		bes_err("%s: Can't read more than 0xfff words.\n", __func__);
-		WARN_ON(1);
 		return -EINVAL;
-		goto out;
 	}
 
 	if (bes2600_hwio_ops_ready())
@@ -292,7 +290,6 @@ int bes2600_apb_write(u32 addr, const void *buf, size_t buf_len)
 
 	if ((buf_len / 2) >= 0x1000) {
 		bes_err("%s: Can't wrire more than 0xfff words.\n", __func__);
-		WARN_ON(1);
 		return -EINVAL;
 	}
 
@@ -328,7 +325,6 @@ int bes2600_ahb_write(u32 addr, const void *buf, size_t buf_len)
 		bes2600_dbg(BES2600_DBG_SBUS,
 				"%s: Can't wrire more than 0xfff words.\n",
 				__func__);
-		WARN_ON(1);
 		bes2600_info(BES2600_DBG_SBUS, "%s:EXIT (1) \n",__func__);
 		return -EINVAL;
 	}

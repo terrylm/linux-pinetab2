@@ -712,8 +712,10 @@ struct bes2600_vif *cw12xx_hwpriv_to_vifpriv(struct bes2600_common *hw_priv,
 {
 	struct bes2600_vif *vif;
 
-	if (WARN_ON((-1 == if_id) || (if_id > CW12XX_MAX_VIFS)))
+	if ((-1 == if_id) || (if_id > CW12XX_MAX_VIFS)) {
+		bes_err("%s: bad if_id %d\n", __func__, if_id);
 		return NULL;
+	}
 	/* TODO:COMBO: During scanning frames can be received
 	 * on interface ID 3 */
 	spin_lock(&hw_priv->vif_list_lock);
@@ -723,7 +725,8 @@ struct bes2600_vif *cw12xx_hwpriv_to_vifpriv(struct bes2600_common *hw_priv,
 	}
 
 	vif = cw12xx_get_vif_from_ieee80211(hw_priv->vif_list[if_id]);
-	WARN_ON(!vif);
+	if (!vif)
+		bes_err("%s: no vif for if_id %d\n", __func__, if_id);
 	if (vif)
 		spin_lock(&vif->vif_lock);
 	spin_unlock(&hw_priv->vif_list_lock);
@@ -734,7 +737,8 @@ static inline
 struct bes2600_vif *__cw12xx_hwpriv_to_vifpriv(struct bes2600_common *hw_priv,
 						  int if_id)
 {
-	WARN_ON((-1 == if_id) || (if_id > CW12XX_MAX_VIFS));
+	if ((-1 == if_id) || (if_id > CW12XX_MAX_VIFS))
+		bes_err("%s: bad if_id %d\n", __func__, if_id);
 	/* TODO:COMBO: During scanning frames can be received
 	 * on interface ID 3 */
 	if (!hw_priv->vif_list[if_id]) {

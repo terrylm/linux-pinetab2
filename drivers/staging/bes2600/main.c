@@ -972,9 +972,11 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 		hw_priv->sbus_ops->gpio_wake(hw_priv->sbus_priv);
 
 	if (hw_priv->sbus_ops->sbus_active &&
-	    WARN_ON((ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv,
-							  SUBSYSTEM_WIFI))))
+	    (ret = hw_priv->sbus_ops->sbus_active(hw_priv->sbus_priv,
+						  SUBSYSTEM_WIFI))) {
+		bes_err("%s: sbus_active failed %d\n", __func__, ret);
 		goto out;
+	}
 
 	if (wait_event_interruptible_timeout(hw_priv->wsm_startup_done,
 					     hw_priv->wsm_caps.firmwareReady,
@@ -986,9 +988,12 @@ int bes2600_wifi_start(struct bes2600_common *hw_priv)
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		for (if_id = 0; if_id < 2; if_id++) {
-			if (WARN_ON((ret = wsm_use_multi_tx_conf(hw_priv, true,
-								 if_id))))
+			if ((ret = wsm_use_multi_tx_conf(hw_priv, true,
+							 if_id))) {
+				bes_err("%s: multi_tx_conf if_id %d failed %d\n",
+					__func__, if_id, ret);
 				goto out;
+			}
 		}
 
 		/* Drop the transient startup wake; PM owns the GPIO ref */

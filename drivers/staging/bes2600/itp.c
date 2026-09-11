@@ -228,7 +228,9 @@ void bes2600_itp_release(struct bes2600_common *priv)
 	wait_event_interruptible(itp->close_wait,
 			!atomic_read(&itp->open_count));
 
-	WARN_ON(atomic_read(&itp->open_count));
+	if (atomic_read(&itp->open_count))
+		bes_err("%s: open_count still %d\n",
+			__func__, atomic_read(&itp->open_count));
 
 	skb_queue_purge(&itp->log_queue);
 	bes2600_itp_tx_stop(priv);
@@ -418,10 +420,10 @@ static void bes2600_itp_tx_start(struct bes2600_common *priv)
 	bes2600_disable_listening(priv);
 	priv->channel = &priv->hw->
 		wiphy->bands[itp->band]->channels[itp->ch];
-	WARN_ON(wsm_set_output_power(priv, itp->power));
+	bes_fail(__func__, wsm_set_output_power(priv, itp->power));
 	if (itp->preamble == ITP_PREAMBLE_SHORT ||
 			itp->preamble == ITP_PREAMBLE_LONG)
-		WARN_ON(wsm_set_association_mode(priv,
+		bes_fail(__func__, wsm_set_association_mode(priv,
 					&assoc_mode));
 	wsm_set_bssid_filtering(priv, false);
 	bes2600_enable_listening(priv, priv->channel);

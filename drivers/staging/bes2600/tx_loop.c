@@ -86,7 +86,8 @@ void bes2600_tx_loop_set_enable(struct bes2600_common *hw_priv, bool need_warn)
 	if (hw_priv->tx_loop.enabled)
 		return;
 
-	WARN_ON(need_warn);
+	if (need_warn)
+		bes_err("%s: enabling TX loop\n", __func__);
 
 	hw_priv->tx_loop.enabled = true;
 	hw_priv->tx_loop.start_lmac_seq = hw_priv->wsm_rx_seq[0];

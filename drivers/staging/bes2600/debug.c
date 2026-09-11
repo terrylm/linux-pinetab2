@@ -711,15 +711,21 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	static int entrycount=0;
 	printk(KERN_DEBUG "bes2600_debug_init_priv entered %i times before, vif_%d\n", entrycount++, priv->if_id);
 
-	if (WARN_ON(!hw_priv))
+	if (!hw_priv) {
+		bes_err("%s: no hw_priv\n", __func__);
 		return ret;
+	}
 
-	if (WARN_ON(!hw_priv->debug))
+	if (!hw_priv->debug) {
+		bes_err("%s: no debugfs\n", __func__);
 		return ret;
+	}
 
 	d = kzalloc(sizeof(struct bes2600_debug_priv), GFP_KERNEL);
-	if (WARN_ON(!d))
+	if (!d) {
+		bes_err("%s: no memory\n", __func__);
 		return ret;
+	}
 
 	memset(name, 0, VIF_DEBUGFS_NAME_S);
 	ret = snprintf(name, VIF_DEBUGFS_NAME_S, "vif_%d", priv->if_id);
@@ -740,9 +746,11 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	}
 
 #if defined(CONFIG_BES2600_USE_STE_EXTENSIONS)
-	if (WARN_ON(!debugfs_create_file("hang", S_IWUSR, d->debugfs_phy,
-			priv, &fops_hang)))
+	if (!debugfs_create_file("hang", S_IWUSR, d->debugfs_phy,
+			priv, &fops_hang)) {
+		bes_err("%s: debugfs hang failed\n", __func__);
 		goto err;
+	}
 #endif
 
 	struct dentry *status_file = debugfs_lookup("status", d->debugfs_phy);

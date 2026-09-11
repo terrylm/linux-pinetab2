@@ -988,8 +988,10 @@ void bes2600_advance_scan_timeout(struct work_struct *work)
 
 	struct bes2600_vif *priv = cw12xx_hwpriv_to_vifpriv(hw_priv,
 					hw_priv->scan.if_id);
-	if (WARN_ON(!priv))
+	if (!priv) {
+		bes_err("%s: no vif\n", __func__);
 		return;
+	}
 	spin_unlock(&priv->vif_lock);
 
 	hw_priv->scan.status = 0;
@@ -1158,18 +1160,16 @@ void bes2600_probe_work(struct work_struct *work)
 		bes2600_remove_wps_p2p_ie(&frame);
 
 	/* FW bug: driver has to restart p2p-dev mode after scan */
-	if (priv->join_status == BES2600_JOIN_STATUS_MONITOR) {
-		WARN_ON(1);
-		/*bes2600_disable_listening(priv);*/
-	}
-	ret = WARN_ON(wsm_set_template_frame(hw_priv, &frame,
+	if (priv->join_status == BES2600_JOIN_STATUS_MONITOR)
+		bes_err("%s: still MONITOR after scan\n", __func__);
+	ret = bes_fail(__func__, wsm_set_template_frame(hw_priv, &frame,
 				priv->if_id));
 
 	hw_priv->scan.direct_probe = 1;
 	hw_priv->scan.if_id = priv->if_id;
 	if (!ret) {
 		wsm_flush_tx(hw_priv);
-		ret = WARN_ON(bes2600_scan_start(priv, &scan));
+		ret = bes_fail(__func__, bes2600_scan_start(priv, &scan));
 	}
 	up(&hw_priv->conf_lock);
 

@@ -53,14 +53,15 @@ int bes2600_queue_get_skb_and_timestamp(struct bes2600_queue *queue, u32 packetI
 			__func__, queue_id, queue->queue_id);
 		ret = -EINVAL;
 	} else if (unlikely(queue_generation != queue->generation)) {
-		WARN(1, "queue generation mismatch, %u, expect %u, if_id: %u.\n",
-		queue_generation, queue->generation, if_id);
+		bes_err("%s: queue generation mismatch, %u, expect %u, if_id: %u\n",
+			__func__, queue_generation, queue->generation, if_id);
 		ret = -ENOENT;
 	} else if (unlikely(item_generation != item->generation)) {
-		WARN(1, "item generation mismatch, %u, expect %u.\n",
-		item_generation, item->generation);
+		bes_err("%s: item generation mismatch, %u, expect %u\n",
+			__func__, item_generation, item->generation);
 		ret = -ENOENT;
-	} else if (unlikely(WARN_ON(!item->skb))) {
+	} else if (unlikely(!item->skb)) {
+		bes_err("%s: item has no skb\n", __func__);
 		ret = -ENOENT;
 	} else {
 		*skb = item->skb;
@@ -315,7 +316,8 @@ int bes2600_queue_clear(struct bes2600_queue *queue, int if_id)
 	while (!list_empty(&queue->pending)) {
 		struct bes2600_queue_item *item = list_first_entry(
 			&queue->pending, struct bes2600_queue_item, head);
-		WARN_ON(!item->skb);
+		if (!item->skb)
+			bes_err("%s: pending item has no skb\n", __func__);
 		if (CW12XX_ALL_IFS == if_id || item->txpriv.if_id == if_id) {
 			bes2600_queue_register_post_gc(stats, &gc_list, item);
 			item->skb = NULL;
@@ -435,7 +437,7 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 		return -EINVAL;
 
 	spin_lock_bh(&queue->lock);
-	if (!WARN_ON(list_empty(&queue->free_pool))) {
+	if (!list_empty(&queue->free_pool)) {
 		struct bes2600_queue_item *item = list_first_entry(
 			&queue->free_pool, struct bes2600_queue_item, head);
 		if (item->skb) {
@@ -593,10 +595,11 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
-		WARN_ON(1);
+		bes_err("%s: item_id %u >= cap %zu\n",
+			__func__, item_id, queue->capacity);
 		ret = -EINVAL;
 	} else if (unlikely(item->generation != item_generation)) {
-		WARN_ON(1);
+		bes_err("%s: generation mismatch\n", __func__);
 		ret = -ENOENT;
 	} else {
 		--queue->num_pending;
@@ -648,10 +651,11 @@ int bes2600_sw_retry_requeue(struct bes2600_common *hw_priv,
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
-		WARN_ON(1);
+		bes_err("%s: item_id %u >= cap %zu\n",
+			__func__, item_id, queue->capacity);
 		ret = -EINVAL;
 	} else if (unlikely(item->generation != item_generation)) {
-		WARN_ON(1);
+		bes_err("%s: generation mismatch\n", __func__);
 		ret = -ENOENT;
 	} else {
 		--queue->num_pending;
@@ -732,10 +736,11 @@ int bes2600_queue_remove(struct bes2600_queue *queue, u32 packetID)
 		bes_info("%s, Queue Generation is not equal\n", __func__);
 		ret = 0;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
-		WARN_ON(1);
+		bes_err("%s: item_id %u >= cap %zu\n",
+			__func__, item_id, queue->capacity);
 		ret = -EINVAL;
 	} else if (unlikely(item->generation != item_generation)) {
-		WARN_ON(1);
+		bes_err("%s: generation mismatch\n", __func__);
 		ret = -ENOENT;
 	} else {
 		gc_txpriv = item->txpriv;
@@ -841,15 +846,14 @@ int bes2600_queue_get_skb(struct bes2600_queue *queue, u32 packetID,
 	/* TODO:COMBO: Add check for interface ID here */
 	if (unlikely(queue_generation != queue->generation)) {
 		bes_info("%s, Queue Generation is not equal\n", __func__);
-		WARN_ON(1);
 		ret = -EINVAL;
 	} else if (unlikely(item_id >= (unsigned) queue->capacity)) {
-		WARN_ON(1);
+		bes_err("%s: item_id %u >= cap %zu\n",
+			__func__, item_id, queue->capacity);
 		ret = -EINVAL;
 	} else if (unlikely(item->generation != item_generation)) {
 		bes_info("%s, item_generation =%u, item_id =%u link_id=%u queue_generation =%u packetID =%u\n",
 			__func__, item_generation, item_id, link_id, queue_generation, packetID);
-		WARN_ON(1);
 		ret = -ENOENT;
 	} else {
 		*skb = item->skb;

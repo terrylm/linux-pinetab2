@@ -152,7 +152,7 @@ static int wsm_generic_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -198,8 +198,10 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 	int status;
 
 	status = WSM_GET32(buf);
-	if (WARN_ON(status != WSM_STATUS_SUCCESS))
+	if (status != WSM_STATUS_SUCCESS) {
+		bes_err("%s: FW status %d\n", __func__, status);
 		return -EINVAL;
+	}
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		WSM_GET(buf, arg->dot11StationId, ETH_ALEN);
@@ -217,7 +219,7 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -377,7 +379,8 @@ static int wsm_sleep_ctrl(struct bes2600_common *hw_priv, u32 disable, int if_id
 	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
 
 	if (if_id != 0) {
-		WARN_ON(1);
+		bes_err("%s: sleep_ctrl only on if_id 0 (got %d)\n",
+			__func__, if_id);
 		return -EBUSY;
 	}
 
@@ -446,11 +449,15 @@ static int wsm_read_mib_confirm(struct bes2600_common *hw_priv,
 				struct wsm_buf *buf)
 {
 	u16 size;
-	if (WARN_ON(WSM_GET32(buf) != WSM_STATUS_SUCCESS))
+	if (WSM_GET32(buf) != WSM_STATUS_SUCCESS) {
+		bes_err("%s: MIB confirm not success\n", __func__);
 		return -EINVAL;
+	}
 
-	if (WARN_ON(WSM_GET16(buf) != arg->mibId))
+	if (WSM_GET16(buf) != arg->mibId) {
+		bes_err("%s: MIB confirm id mismatch\n", __func__);
 		return -EINVAL;
+	}
 
 	size = WSM_GET16(buf);
 	if (size > arg->buf_size)
@@ -461,7 +468,7 @@ static int wsm_read_mib_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -689,7 +696,7 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -702,8 +709,10 @@ static int wsm_multi_tx_confirm(struct bes2600_common *hw_priv,
 	int i;
 
 	count = WSM_GET32(buf);
-	if (WARN_ON(count <= 0))
+	if (count <= 0) {
+		bes_err("%s: multi_tx_confirm count %d\n", __func__, count);
 		return -EINVAL;
+	}
 	else if (count > 1) {
 		ret = wsm_release_tx_buffer(hw_priv, count - 1);
 		if (ret < 0)
@@ -727,7 +736,7 @@ static int wsm_multi_tx_confirm(struct bes2600_common *hw_priv,
 	return ret;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -758,7 +767,6 @@ static int wsm_join_confirm(struct bes2600_common *hw_priv,
 
 underflow:
 	bes_err("%s: underflow parsing 0x040B\n", __func__);
-	WARN_ON(1);
 	return -EINVAL;
 }
 
@@ -1386,7 +1394,9 @@ static int wsm_request_buffer_confirm(struct bes2600_vif *priv,
 				} else {
 					ret = ieee80211_sta_ps_transition_ni(sta, (sta_asleep_mask & mask) ? true: false);
 					bes_devel("PS State NOTIFIED %d\n", ret);
-					WARN_ON(ret);
+					if (ret)
+						bes_err("%s: sta_ps_transition %d\n",
+							__func__, ret);
 				}
 				rcu_read_unlock();
 			}
@@ -1400,12 +1410,15 @@ static int wsm_request_buffer_confirm(struct bes2600_vif *priv,
 	bes_devel("[WSM] WRBC - HW Buf count %d SleepMask %d\n",
 					hw_priv->hw_bufs_used, sta_asleep_mask);
 	hw_priv->buf_released = 0;
-	WARN_ON(count != (hw_priv->wsm_caps.numInpChBufs - 1));
+	if (count != (hw_priv->wsm_caps.numInpChBufs - 1))
+		bes_err("%s: WRBC count %d expected %d\n",
+			__func__, count,
+			hw_priv->wsm_caps.numInpChBufs - 1);
 
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -1479,11 +1492,16 @@ static int wsm_startup_indication(struct bes2600_common *hw_priv,
 	WSM_GET(buf, &fw_label[0], sizeof(fw_label) - 1);
 	fw_label[sizeof(fw_label) - 1] = 0; /* Do not trust FW too much. */
 
-	if (WARN_ON(status))
+	if (status) {
+		bes_err("%s: startup status %d\n", __func__, status);
 		return -EINVAL;
+	}
 
-	if (WARN_ON(hw_priv->wsm_caps.firmwareType > 4))
+	if (hw_priv->wsm_caps.firmwareType > 4) {
+		bes_err("%s: firmwareType %d\n", __func__,
+			hw_priv->wsm_caps.firmwareType);
 		return -EINVAL;
+	}
 
 	bes_devel("BES2600 WSM init done.\n"
 		"	Input buffers: %d x %d bytes\n"
@@ -1508,7 +1526,7 @@ static int wsm_startup_indication(struct bes2600_common *hw_priv,
 	return 0;
 
 underflow:
-	WARN_ON(1);
+	bes_err("%s: WSM buffer underflow\n", __func__);
 	return -EINVAL;
 }
 
@@ -1731,7 +1749,8 @@ static int wsm_channel_switch_indication(struct bes2600_common *hw_priv,
 						struct wsm_buf *buf)
 {
 	wsm_unlock_tx(hw_priv); /* Re-enable datapath */
-	WARN_ON(WSM_GET32(buf));
+	if (WSM_GET32(buf))
+		bes_err("%s: channel switch status nonzero\n", __func__);
 
 	hw_priv->channel_switch_in_progress = 0;
 	wake_up(&hw_priv->channel_switch_done);
@@ -2525,7 +2544,9 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		case 0x041B: /* update_ie */
 		case 0x041C: /* map_link */
 		case 0x0429: /* epta */
-			WARN_ON(wsm_arg != NULL);
+			if (wsm_arg != NULL)
+				bes_err("%s: confirm 0x%04x has unexpected arg\n",
+					__func__, id);
 			ret = wsm_generic_confirm(hw_priv, wsm_arg, &wsm_buf);
 			if (ret)
 				wiphy_warn(hw_priv->hw->wiphy,
@@ -2610,7 +2631,7 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 			break;
 		}
 	} else {
-		WARN_ON(1);
+		bes_err("%s: unhandled WSM id=0x%04x\n", __func__, id);
 		ret = -EINVAL;
 	}
 out:

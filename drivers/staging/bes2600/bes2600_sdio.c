@@ -385,7 +385,8 @@ static void bes2600_sdio_irq_handler(struct sdio_func *func)
 	struct sbus_priv *self = sdio_get_drvdata(func);
 	unsigned long flags;
 
-	if (WARN_ON(!self)) {
+	if (!self) {
+		bes_err("%s: no sbus_priv\n", __func__);
 		return;
 	}
 
@@ -407,7 +408,7 @@ static u32 bes2600_gpio_irq_handler(void *dev_id)
 
 	bes_devel("\n %s called \n", __func__);
 	if (!self) {
-		WARN_ON_ONCE(1);
+		bes_err("%s: no sbus_priv\n", __func__);
 		return 0;
 	}
 	if (self->irq_handler)
@@ -429,8 +430,10 @@ static int bes2600_request_irq(struct sbus_priv *self,
 	self->func->num = 0;
 
 	cccr = sdio_readb(self->func, SDIO_CCCR_IENx, &ret);
-	if (WARN_ON(ret))
+	if (ret) {
+		bes_err("%s: CCCR_IENx read failed %d\n", __func__, ret);
 		goto set_func;
+	}
 
 	/* Master interrupt enable ... */
 	cccr |= BIT(0);
@@ -439,8 +442,10 @@ static int bes2600_request_irq(struct sbus_priv *self,
 	cccr |= BIT(func_num);
 
 	sdio_writeb(self->func, cccr, SDIO_CCCR_IENx, &ret);
-	if (WARN_ON(ret))
+	if (ret) {
+		bes_err("%s: CCCR_IENx write failed %d\n", __func__, ret);
 		goto set_func;
+	}
 
 	/* Restore the WLAN function number */
 	self->func->num = func_num;
@@ -493,9 +498,10 @@ static int bes2600_sdio_irq_unsubscribe(struct sbus_priv *self)
 	const struct resource *irq = self->pdata->irq;
 #endif
 
-	WARN_ON(!self->irq_handler);
-	if (!self->irq_handler)
+	if (!self->irq_handler) {
+		bes_err("%s: no irq_handler\n", __func__);
 		return 0;
+	}
 
 	bes_devel("SW IRQ unsubscribe\n");
 
@@ -697,7 +703,9 @@ static int bes2600_sdio_extract_packets(struct sbus_priv *self, u32 ctrl_reg, u8
 			msleep(100);
 			++alloc_retry;
 		} while(alloc_retry < 10);
-		if (WARN_ON(!skb)) {
+		if (!skb) {
+			bes_err("%s: no skb for packet_len %u\n",
+				__func__, packet_len);
 			return -ENOMEM;
 		}
 		skb_trim(skb, 0);
@@ -830,7 +838,7 @@ static void sdio_rx_work(struct work_struct *work)
 failed:
 	bes2600_gpio_allow_mcu_sleep(self);
 	bes2600_chrdev_wifi_force_close(self->core, false);
-	WARN_ON(1);
+	bes_err("%s: SDIO rx failed\n", __func__);
 }
 
 static void *bes2600_sdio_pipe_read(struct sbus_priv *self)
@@ -1054,8 +1062,11 @@ static void sdio_tx_work(struct work_struct *work)
 		}
 flush_previous:
 		if (likely(scatters)) {
-			if (WARN_ON(total_len & 0x3))
+			if (total_len & 0x3) {
+				bes_err("%s: unaligned total_len %u\n",
+					__func__, total_len);
 				break;
+			}
 			else
 				total_len |= (cur_blk - 1);
 			sdio_claim_host(self->func);

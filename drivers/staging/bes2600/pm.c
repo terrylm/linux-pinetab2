@@ -272,7 +272,8 @@ int bes2600_wow_suspend(struct ieee80211_hw *hw, struct cfg80211_wowlan *wowlan)
 
 	bes_devel("bes2600_wow_suspend enter\n");
 
-	WARN_ON(!atomic_read(&hw_priv->num_vifs));
+	if (!atomic_read(&hw_priv->num_vifs))
+		bes_err("%s: no vifs\n", __func__);
 
 	/* reset wakeup reason to default */
 	bes2600_chrdev_wifi_update_wakeup_reason(0, 0);
@@ -419,7 +420,7 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 	wsm_set_ipv6_filter(hw_priv, &bes2600_ipv6_filter_on.hdr, priv->if_id);
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_keepalive_filter(priv, true));
+		bes_fail(__func__, wsm_set_keepalive_filter(priv, true));
 
 	/* Set Multicast Address Filter */
 	if (priv->multicast_filter.numOfAddresses) {
@@ -429,7 +430,7 @@ static int __bes2600_wow_suspend(struct bes2600_vif *priv,
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+		bes_fail(__func__, wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
 				&fwdoffload, priv->if_id));
 #endif
 
@@ -463,12 +464,13 @@ int bes2600_wow_resume(struct ieee80211_hw *hw)
 	int i, ret = 0;
 
 	bes_devel("bes2600_wow_resume enter\n");
-	WARN_ON(!atomic_read(&hw_priv->num_vifs));
+	if (!atomic_read(&hw_priv->num_vifs))
+		bes_err("%s: no vifs\n", __func__);
 
 	up(&hw_priv->scan.lock);
 
 	/* Resume BH thread */
-	WARN_ON(bes2600_bh_resume(hw_priv));
+	bes_fail(__func__, bes2600_bh_resume(hw_priv));
 
 	/* mark resume start to avoid device to exit ps mode when setting device */
 	bes2600_pwr_resume_start(hw_priv);
@@ -512,7 +514,7 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 		return 0;
 
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_keepalive_filter(priv, false));
+		bes_fail(__func__, wsm_set_keepalive_filter(priv, false));
 
 	/* Set Multicast Address Filter */
 	if (priv->multicast_filter.numOfAddresses) {
@@ -522,7 +524,7 @@ static int __bes2600_wow_resume(struct bes2600_vif *priv)
 
 #ifdef MCAST_FWDING
 	if (priv->join_status == BES2600_JOIN_STATUS_AP)
-		WARN_ON(wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
+		bes_fail(__func__, wsm_set_forwarding_offlad(hw_priv, /* Retained original name */
 				&fwdoffload, priv->if_id));
 #endif
 

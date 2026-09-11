@@ -352,7 +352,8 @@ static int tx_policy_get(struct bes2600_common *hw_priv,
 	tx_policy_build(hw_priv, &wanted, rates, count);
 
 	spin_lock_bh(&cache->lock);
-	if (WARN_ON_ONCE(list_empty(&cache->free))) {
+	if (list_empty(&cache->free)) {
+		bes_err("%s: TX policy cache empty\n", __func__);
 		spin_unlock_bh(&cache->lock);
 		return BES2600_INVALID_RATE_ID;
 	}
@@ -908,7 +909,8 @@ bes2600_tx_h_skb_pad(struct bes2600_common *priv,
 	size_t len = __le16_to_cpu(wsm->hdr.len);
 	size_t padded_len = priv->sbus_ops->align_size(priv->sbus_priv, len);
 
-	if (WARN_ON(skb_padto(skb, padded_len) != 0)) {
+	if (skb_padto(skb, padded_len) != 0) {
+		bes_err("%s: skb_padto failed\n", __func__);
 		return -EINVAL;
 	}
 	return 0;
@@ -1099,8 +1101,10 @@ void bes2600_tx(struct ieee80211_hw *dev,
 		t.sta_priv = (struct bes2600_sta_priv *)&t.sta->drv_priv;
 	}
 
-	if (WARN_ON(t.queue >= 4))
+	if (t.queue >= 4) {
+		bes_err("%s: bad queue %u\n", __func__, t.queue);
 		goto drop;
+	}
 
 	ret = bes2600_tx_h_calc_link_ids(priv, &t);
 	if (ret)
@@ -1379,7 +1383,8 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 		return;
 	}
 
-	if (WARN_ON(queue_id >= 4)) {
+	if (queue_id >= 4) {
+		bes_err("%s: bad queue_id %u\n", __func__, queue_id);
 		spin_unlock(&priv->vif_lock);
 		return;
 	}
@@ -1428,10 +1433,10 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			bes2600_queue_get_generation(arg->packetID) + 1,
 			priv->sta_asleep_mask);
 #ifdef CONFIG_BES2600_TESTMODE
-		WARN_ON(bes2600_queue_requeue(hw_priv, queue,
+		bes_fail(__func__, bes2600_queue_requeue(hw_priv, queue,
 				arg->packetID, true));
 #else
-		WARN_ON(bes2600_queue_requeue(queue,
+		bes_fail(__func__, bes2600_queue_requeue(queue,
 				arg->packetID, true));
 #endif
 		spin_lock_bh(&priv->ps_state_lock);
@@ -1572,8 +1577,11 @@ static void bes2600_notify_buffered_tx(struct bes2600_vif *priv,
 				[link_id - 1].buffered;
 
 		spin_lock_bh(&priv->ps_state_lock);
-		if (!WARN_ON(!buffered[tid]))
+		if (buffered[tid])
 			still_buffered = --buffered[tid];
+		else
+			bes_err("%s: buffered[%u] underflow\n",
+				__func__, tid);
 		spin_unlock_bh(&priv->ps_state_lock);
 
 		if (!still_buffered && tid < BES2600_MAX_TID) {
@@ -1773,7 +1781,8 @@ static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *a
 		bes_devel("[RX] Going to MAP&RESET link ID\n");
 
 		if (work_pending(&priv->linkid_reset_work))
-			WARN_ON(1);
+			bes_err("%s: linkid_reset_work already pending\n",
+				__func__);
 
 		memcpy(&priv->action_frame_sa[0],
 				ieee80211_get_SA(frame), ETH_ALEN);
@@ -1788,7 +1797,8 @@ static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *a
 		/* Link ID already exists for the ACTION frame.
 		 * Reset and Remap */
 		if (work_pending(&priv->linkid_reset_work))
-			WARN_ON(1);
+			bes_err("%s: linkid_reset_work already pending\n",
+				__func__);
 		memcpy(&priv->action_frame_sa[0],
 				ieee80211_get_SA(frame), ETH_ALEN);
 		priv->action_linkid = arg->link_id;
@@ -1899,7 +1909,8 @@ static bool bes2600_rx_handle_decryption(struct bes2600_vif *priv, struct ieee80
 			hdr->flag |= RX_FLAG_IV_STRIPPED;
 			break;
 		default:
-			WARN_ON("Unknown encryption type");
+			bes_err("%s: unknown encryption type %u\n",
+				__func__, WSM_RX_STATUS_ENCRYPTION(arg->flags));
 			return true;
 		}
 
@@ -2336,7 +2347,9 @@ void bes2600_link_id_reset(struct work_struct *work)
 		/* In GO mode we can receive ACTION frames without a linkID */
 		temp_linkid = bes2600_alloc_link_id(priv,
 				&priv->action_frame_sa[0]);
-		WARN_ON(!temp_linkid);
+		if (!temp_linkid)
+			bes_err("%s: no link_id for ACTION frame\n",
+				__func__);
 		if (temp_linkid) {
 			/* Make sure we execute the WQ */
 			flush_workqueue(hw_priv->workqueue);

@@ -1828,6 +1828,9 @@ static int bes2600_sdio_probe(struct sdio_func *func,
 	if (func->num > 1)
 		return 0;
 
+	/* Firmware load logs before core_probe; avoid "(NULL device *)". */
+	global_dev = &func->dev;
+
 	func->card->host->caps |= MMC_CAP_NONREMOVABLE;
 	bes2600_chrdev_bus_probe_notify();
 

@@ -2088,6 +2088,38 @@ static void bes2600_rx_queue_or_submit(struct bes2600_vif *priv, bool early_data
 	}
 }
 
+/* IEEE 802.11i EAPOL-Key key_info, big-endian. */
+#define BES_EAPOL_KI_PAIRWISE	BIT(3)
+#define BES_EAPOL_KI_ACK	BIT(7)
+#define BES_EAPOL_KI_MIC	BIT(8)
+#define BES_EAPOL_KI_SECURE	BIT(9)
+
+static const char *bes2600_eapol_rx_name(const struct sk_buff *skb, size_t hdrlen)
+{
+	const u8 *eapol;
+	u16 ki;
+
+	if (skb->len < hdrlen + 8 + 7)
+		return "EAPOL";
+	eapol = skb->data + hdrlen + 8;
+	if (eapol[1] != 3)
+		return "EAPOL";
+	ki = get_unaligned_be16(eapol + 5);
+	if (ki & BES_EAPOL_KI_PAIRWISE) {
+		if ((ki & BES_EAPOL_KI_ACK) && !(ki & BES_EAPOL_KI_MIC))
+			return "EAPOL M1";
+		if ((ki & BES_EAPOL_KI_ACK) && (ki & BES_EAPOL_KI_MIC))
+			return "EAPOL M3";
+		if (!(ki & BES_EAPOL_KI_ACK) && (ki & BES_EAPOL_KI_MIC) &&
+		    (ki & BES_EAPOL_KI_SECURE))
+			return "EAPOL M4";
+		if (!(ki & BES_EAPOL_KI_ACK) && (ki & BES_EAPOL_KI_MIC))
+			return "EAPOL M2";
+		return "EAPOL-Key pairwise";
+	}
+	return "EAPOL-Key group";
+}
+
 void bes2600_rx_cb(struct bes2600_vif *priv,
 		  struct wsm_rx *arg,
 		  struct sk_buff **skb_p)
@@ -2228,8 +2260,9 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 				  !!(arg->flags & WSM_RX_STATUS_GROUP),
 				  WSM_RX_STATUS_ENCRYPTION(arg->flags),
 				  skb->len);
-			if (eth == 0x888e)
-				bes_pin("P51 RX EAPOL M1? da=%pM a1match=%d\n",
+			if (eth == ETH_P_PAE)
+				bes_pin("P51 RX %s da=%pM a1match=%d\n",
+					bes2600_eapol_rx_name(skb, hdrlen),
 					frame->addr1,
 					!!(arg->flags & WSM_RX_STATUS_ADDRESS1));
 		}

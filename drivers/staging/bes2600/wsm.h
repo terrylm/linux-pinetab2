@@ -17,6 +17,7 @@
 #define BES2600_WSM_H_INCLUDED
 
 #include <linux/spinlock.h>
+#include "bes_log.h"
 
 struct bes2600_common;
 struct bes2600_vif;
@@ -1686,16 +1687,14 @@ static inline int wsm_set_block_ack_policy(struct bes2600_common *hw_priv,
 		.blockAckRxTidPolicy = blockAckRxTidPolicy,
 	};
 
-	printk(KERN_INFO "Calling wsm_write_mib for BLOCK_ACK_POLICY (tx=%d, rx=%d, if_id=%d)\n",
-		blockAckTxTidPolicy, blockAckRxTidPolicy, if_id);
+	bes_info("%s: BLOCK_ACK_POLICY tx=%u rx=%u if_id=%d\n",
+		 __func__, blockAckTxTidPolicy, blockAckRxTidPolicy, if_id);
 
 	int ret = wsm_write_mib(hw_priv, WSM_MIB_ID_BLOCK_ACK_POLICY, &val,
 	     sizeof(val), if_id);
 
 	if (ret)
-		printk(KERN_ERR "wsm_write_mib BLOCK_ACK_POLICY FAILED with %d\n", ret);
-//	else
-//		printk(KERN_INFO "wsm_write_mib BLOCK_ACK_POLICY succeeded\n");
+		bes_err("%s: BLOCK_ACK_POLICY failed %d\n", __func__, ret);
 
 	return ret;
 }

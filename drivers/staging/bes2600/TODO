@@ -1,147 +1,185 @@
 TODO list (incomplete)
 
 This is a Bestechnic BES2600 / BEST2002 SDIO mac80211 driver (CW1200-family
-WSM firmware protocol).  On PineTab2 v2.0 (RK3566, mmc2) STA Wi-Fi works at
-fdf13926e22c: firmware load, idle scan, open and WPA2 associate, DHCP, ping,
-and switching between APs (STARLINK open, NETGEAR15 WPA2).  Bluetooth has
-never worked.
+WSM firmware protocol).  On PineTab2 v2.0 (RK3566, mmc2) STA Wi-Fi works on
+branch wifi-good (058ba083bc1e and later): firmware load, idle scan, open and
+WPA2 associate, 4-way, DHCP, ping, FAST_PS on APs that implement it, associated
+scan after FAST_PS is proven, and switching between APs.  Bluetooth has never
+worked.
 
 The driver was previously removed from staging for quality.  Do not send it
-upstream until the items below are addressed enough that timeouts and RF
-misses cannot oops the machine or flood WARN stacks.
+upstream until timeouts and RF misses cannot oops the machine, and the
+vendor/debug leftovers below are gone.  BUG_ON and WARN_ON are already
+gone from live paths.
 
-Test both APs, both directions, after every change.  First association after
-boot is not enough.
+Test a FAST_PS-ok BSS and a PS-bad BSS (if you have both), both directions,
+after every change.  First association after boot is not enough.  Gate:
+ping -4 both ways.  No per-SSID hacks.
 
-Proven working (STA, PineTab2 v2.0, firmware Dec 2023, fdf13926e22c)
+Firmware is still Dec 2023 (best2002_fw_boot_sdio.bin / best2002_fw_sdio.bin,
+8125e20be).  No newer public SDIO LMAC blob.
+
+Proven working (STA, PineTab2 v2.0, firmware Dec 2023, wifi-good)
 -------------------------------------------------------------------
 * Probe, boot + main firmware, phy registration.
 * STA + P2P_DEVICE vifs (P2P is host-only; see below).
 * Idle scan: 2.4 GHz then 5 GHz, firmware scan-complete status 0.
-* Open (STARLINK) and WPA2-CCMP (NETGEAR15) association, 4-way, DHCP, ping.
-* Switching STARLINK ↔ NETGEAR15 after a working session.
+* Open and WPA2-CCMP association, 4-way, DHCP, ping.
+* Switching BSS after a working session, including 4-way after an open
+  BSS.  Occasional first WPA2 4-way still loses M3 (below).
 * Do not force_close the SDIO bus on -EBUSY (hard-locks the SoC).
+* No live BUG_ON or WARN_ON.  Firmware NAK / SDIO timeout / no-ACK log with
+  bes_err / bes_fail and keep the errno; they must not taint.
+* Firmware load logs on the SDIO function (global_dev set in sdio_probe;
+  macros fall back to pr_* if it is still NULL).
 
 Do not regress those without a replacement that has been tested on hardware.
 
+Power save / associated scan (current contract)
+----------------------------------------------
+This LMAC's power save is firmware-owned and poorly documented.  FAST_PS
+(0x81) is the only mode that actually enters PS (0x0809 psm=0x1).  Legacy
+0x01 never does.  Whether a given AP's FAST_PS is usable is also outside
+the host: some APs keep unicast IP working, some do not.  Host work is
+detect and work around, not "make the AP or the blob do IEEE PS correctly".
+A better PS mode may exist; it would need LMAC documentation we do not have.
+
+SUPPORTS_PS + SUPPORTS_DYNAMIC_PS; cfg.ps=1 → 0x81 even when dyn_to=0
+(this stack means "firmware owns idle").  Cache then send 0x0010; do not
+wait for 0x0809.  Do not wsm_set_pm from BH/RX or from bes_pwr MCU
+sleep/wake (0x0010 is owned by sta.c).  Skip MCU sleep while the firmware
+is in 802.11 PS (quiescent 0x0006 hung this LMAC).
+
+Two classes of BSS:
+* FAST_PS-ok: 0x0809 psm=0x1, unicast IP continues, associated scan
+  status=0.
+* PS-bad: either the firmware never enters psm=0x1, or it does and
+  unicast IP dies.  Stay ACTIVE, no associated scan.
+
+Once per association:
+* Pass: unicast IP RX after FAST_PS settled (~1s).  "FAST_PS ok, stop probe".
+* Fail: ICMP echo or TCP SYN with 802.11 ACK and no IP RX for 8s → ap_ps_bad,
+  stay ACTIVE, no associated scan.
+* ARP/DHCP/DNS/TCP payload are not probes (false-failed FAST_PS-ok APs).
+* 0x0809 psm=0 (fw stayed ACTIVE): retry FAST_PS up to 3 times, then PS-bad.
+  One refuse after roam is not a verdict.
+* Do not enter FAST_PS / do not fail the probe if RETRY_EXCEEDED after the
+  last IP RX (flaky 5 GHz).
+
+Associated scan: BACKGROUND + FORCE_BACKGROUND, 10/25 TU, one channel per
+0x0007, TX locked for the whole request.  Never foreground 0x0007 while
+joined, never wsm_reset() on scan failure while STA.  -EBUSY until FAST_PS
+is proven (ap_ps_checked && !ap_ps_bad).  PS-bad APs stay unanswered/ACTIVE
+and scans busy by design.  On associated scan timeout, send 0x0008 stop-scan
+(skipping it left LMAC off-channel and DNS died).  wsm_oper_lock times out
+at 10s.  scan_work drops conf_lock before 0x0007 (prevents deauth/rtnl hang).
+
+After associated scan the driver may still wsm_switch_channel (narrow to
+HT20 on the way in, restore type/home on the way out).  BACKGROUND scan
+is supposed to return to the home channel itself.  Double-check whether
+that extra channel-setting switch is still needed; it may be leftover
+from foreground/idle scan.
+
+Host ADDBA is dropped; firmware owns ADDBA.  BA after PS is settled, not
+after an EAPOL ACK.  Unjoin sends BA policy 0.  Join-after-unjoin: wsm_reset
+drops FW frames with no confirm; host zeros hw_bufs_used.
+
+Do not send 0x0010 ACTIVE from leave-BSS just to be tidy when already
+ACTIVE (unjoin wsm_reset is enough).  ACTIVE+AMPDU in firmware caused a 6s
+confirm timeout → SDIO -16.  Leaving a FAST_PS BSS may still send ACTIVE;
+that path has completed quickly in recent logs.
+
+Mainline still wants associated scan on every BSS.  This LMAC cannot do it
+while stuck ACTIVE on a PS-bad AP.  Keep the probe; do not special-case
+SSIDs.
+
+WARN_ON / BUG_ON
+----------------
+Done on live paths (003b791664bb BUG_ON, a9925f9a0ee6 WARN_ON).  Remaining
+mentions are comments.  Do not put WARN_ON back on firmware NAK, SDIO
+timeout, or "AP did not ACK".  147ad3eaca60 converted those blindly and
+broke reconnect; the later conversion kept the same if/return and only
+removed taint.
+
 Broken commits (wifi-broken, do not replay as a lump)
 -----------------------------------------------------
-* 0d7099dbf846 rate-limit / weak-signal: NETGEAR15 still worked, STARLINK
+* 0d7099dbf846 rate-limit / weak-signal: WPA2 BSS still worked, open BSS
   always failed.  The 1 Mbps clamp and related TX policy belong here.
-* 26ee084ec255 same STARLINK-fail / NETGEAR-ok pattern.
+* 26ee084ec255 same open-fail / WPA2-ok pattern.
 * c426582bf6ff associated-scan: BACKGROUND + FORCE_BACKGROUND, no
-  wsm_reset while STA.  Required for mainline — do not skip with
-  -EBUSY.  Bare BACKGROUND of NM's 14+27 channels at 100 ms dwell
-  while staying ACTIVE killed AMPDU.  Do not toggle BA 0/177
-  around scan.
+  wsm_reset while STA.  Bare BACKGROUND of NM's 14+27 channels at 100 ms
+  dwell while staying ACTIVE killed AMPDU.  Do not toggle BA 0/177 around
+  scan.  Do not skip associated scan with a blanket -EBUSY; the current
+  gate is FAST_PS proven, not "associated ⇒ busy".
 * d6c2ab442ff4 mainline-prep: broken.
 * 147ad3eaca60 WARN_ON/BUG_ON: first connect after boot worked; later
   connects failed.  Do not re-apply that conversion blindly.
 
-WARN_ON / BUG_ON
-----------------
-* Firmware NAK, SDIO timeout, and "AP did not ACK" must not WARN_ON
-  (stack + TAINT_WARN) or BUG_ON (panic).  The 147ad3e conversion of
-  those to bes_fail()/bes_err() broke reconnect; redo it in small
-  tested hunks.
-* Keep WARN_ON only for programmer invariants (NULL about to be
-  dereferenced, queue id out of range).
-* Easy BUG_ON pass (no I/O / TX-lock / queue-remove): unsupported
-  set_key cmd, double hw_scan, SSID length, queueId>=4 and missing
-  channel in work items, unknown SDD rev, missing DPD blob.  Leave
-  wsm_cmd.ptr, tx_lock, queue.c, BH lengths, queue_remove for later.
-* hwio.c: BUG_ON(!bes2600_subs_ops) → -ENODEV.
-* bes2600_sdio.c: BUG_ON(!self/!bus_priv) → -ENODEV/-EINVAL/false.
-* wsm.c (easy): unknown confirm id, wsm_buf_init already allocated.
-* bh.c: bad WSM TX/release length → drop, no panic.
-* txrx.c: rates[0].idx < 0, free_key if not allocated.
-* queue.c: queue_id mismatch, unlock-of-unlocked, OOM gc/record,
-  free-pool skb still set — log and return, no panic.
-* queue_put / queue_remove callers: log and drop/continue, no panic.
-* wsm.c last panics: cmd already in flight → -EBUSY; flush without
-  TX lock → return; LAST_CHANCE wait fail → log; cmd ptr race → skip.
-
 Logging
 -------
-* Hot-path bes_info (per-channel scan, per-frame TX/RX) is too loud.
-  Per-channel assoc 0x0007 is bes_devel.  Keep one line per hw_scan
-  request and scan complete at info until PS/scan is settled.
-* Firmware load still prints version/CRC at info; fine for now.
-* Bind device logs to the SDIO function, not a NULL global_dev.
-
-Power save / WSM 0x0010
------------------------
-* SUPPORTS_PS + SUPPORTS_DYNAMIC_PS.  cfg.ps=1 → FAST_PS (0x81)
-  even when dyn_to=0 (this stack means "firmware owns idle", not
-  legacy PS).  Idle period from BES2600_FASTPS_IDLE_TIME if set,
-  else mac80211 timeout.  Cache then send 0x0010; do not wait for
-  0x0809.  Do not wsm_set_pm() from BH/RX.
-* STARLINK 2.4 GHz: 0x0010 0x81 got 0x0809 psm=0x1.  Assoc, DHCP,
-  AMPDU worked.  Legacy 0x01 as session idle never got 0x0809.
+* Bring-up breadcrumbs (P5x / bes_pin) are gone.  EAPOL M1/M3 and most
+  per-assoc chatter is bes_devel (needs CONFIG_BES2600_ENABLE_DEVEL_LOGS).
+* Keep at info: firmware version/CRC, generated MAC, phy register,
+  assoc_mode once per join, 0x0010 send, FAST_PS ok / PS-bad, associated
+  scan request/complete/-EBUSY, 0x0008 abort, unjoin complete,
+  RETRY_EXCEEDED (ratelimited).
+* Factory cali dumps (tx_power_ch_*) are still unprefixed printk.
+* wsm_scan_complete_indication still ratelimits "N callbacks suppressed"
+  on 14+27 channel scans.
 
 Suspend / resume / shutdown
 ---------------------------
-* Deep suspend removes the STA vif.  On resume, MCU wake fails
-  for tens of seconds: bes2600_sdio_active failed / 
-  pwr_device_exit_lp_mode, active mcu fail, then LMAC station-ID
-  and add_interface recover.  Screen blank / console dead until
-  power-button is this path, not DRM.  Fix bes_pwr / SDIO
-  resume so mmc2 comes back without that retry storm.
-* Poweroff after a dead SDIO (TX -16) hung NM/wpa 1–3 min:
-  scan.lock busy-loop in bes2600_stop, deactive WARN_ON,
-  sdio_tx_work re-queueing -EBUSY forever.  Stop must abort
-  the scan with a timeout, mark the bus stale after a short
-  -EBUSY streak, and not WARN_ON deactive failure.
+* Deep suspend removes the STA vif.  On resume, MCU wake fails for tens
+  of seconds: bes2600_sdio_active failed / pwr_device_exit_lp_mode,
+  active mcu fail, then LMAC station-ID and add_interface recover.
+  Screen blank / console dead until power-button is this path, not DRM.
+  Fix bes_pwr / SDIO resume so mmc2 comes back without that retry storm.
+* Poweroff after a dead SDIO (TX -16) hung NM/wpa 1–3 min: scan.lock
+  busy-loop in bes2600_stop, deactive WARN_ON, sdio_tx_work re-queueing
+  -EBUSY forever.  Stop must abort the scan with a timeout, mark the bus
+  stale after a short -EBUSY streak, and not WARN on deactive failure.
+  (deactive no longer WARN_ONs; confirm stop/stale still hold.)
 
-Scan
-----
-* Associated scan is required.  BACKGROUND + FORCE_BACKGROUND,
-  10/25 TU, one channel per 0x0007.  Keep TX locked for the
-  whole request.  If idle is ACTIVE, wrap with legacy 0x01
-  (cw1200); if already 0x01/0x81, skip the wrap.
-* Never foreground 0x0007 while joined, never wsm_reset() on scan
-  failure while STA.
-* Do not run join_timeout/unjoin from scan first_run while associated.
-* Drain once at start (do not drop the host count).  Skip 0x0008
-  on associated scan timeout.  After that timeout, in_progress
-  is 0 while AMPDU may still sit in firmware — the LMAC 3s
-  monitor must not mark_bus_stale for leftover bufs (that
-  refused 0x0006 and skipped every later scan).
-* Drain can still leave bufs=20–46 after 500 ms when AMPDU is
-  retrying (manual scan while ping/browser).  Info no longer
-  prints that; leftover is devel.  Starting 0x0007 with a full
-  window can still -110 — later item, not a dead bus.
-* AMPDU RETRY_EXCEEDED can still show on STARLINK.
+Scan leftovers
+--------------
+* Drain once at start (do not drop the host count).  After a scan
+  timeout, in_progress is 0 while AMPDU may still sit in firmware — the
+  LMAC 3s monitor must not mark_bus_stale for leftover bufs (that refused
+  0x0006 and skipped every later scan).
+* Drain can still leave bufs=20–46 after 500 ms when AMPDU is retrying
+  (manual scan while ping/browser).  Starting 0x0007 with a full window
+  can still -110 — later item, not a dead bus.
+* AMPDU RETRY_EXCEEDED still shows on some 5 GHz BSSIDs after a working
+  session.  Leave for now.
 
 Association / rates / aggregation
 ---------------------------------
-* 5 GHz STARLINK BSSIDs (ch36 / ch149 / :47: / :37:) fail auth
-  at 6 Mbps.  2.4 GHz STARLINK (ch1, :27:) is the working BSS.
-* EAPOL must not set data_acked or enable BA.  After STARLINK →
-  NETGEAR, 4-way succeeded then minstrel/BA ran on the EAPOL ACK
-  and data RETRY_EXCEEDED.  Stay on 1/6 Mbps until a non-EAPOL
-  unicast data ACK, then BA (open and WPA2).
-* Occasional first 4-way timeout on NETGEAR: M1 RX, then
-  P53 drop st=9 (WSM_STATUS_NO_KEY_FOUND) — M3 encrypted before
-  set_key installed the PTK.  NM retry / "connect" again works.
-  Firmware already dropped the frame; host cannot decrypt it.
-  Not an easy driver fix without LMAC buffering.
+* 2.4 GHz is the reliable band here.  Some 5 GHz BSSIDs associate and
+  even pass FAST_PS, then drip RETRY_EXCEEDED.  Do not treat 5 GHz auth
+  success as "5 GHz is solid".
+* EAPOL must not set data_acked or enable BA.  Stay on 1/6 Mbps until a
+  non-EAPOL unicast data ACK, then BA (open and WPA2).
+* Occasional first 4-way timeout on WPA2: M1 RX, then P53 drop st=9
+  (WSM_STATUS_NO_KEY_FOUND) — M3 encrypted before set_key installed the
+  PTK.  NM retry / "connect" again works.  Firmware already dropped the
+  frame; host cannot decrypt it.  Not an easy driver fix without LMAC
+  buffering.
 * Do not clamp ICMP/DNS/DHCP to 1 Mbps the way 0d7099 did until that
-  change is re-proven against STARLINK.
+  change is re-proven on a FAST_PS-ok open BSS.
 * Firmware owns BlockAck.  Host ADDBA-Resp is dropped.  Do not
   auto-enable BA after HT ACKs ("connected" with 0% ping).
-* Join with leftover hw_bufs_used: often 1 and expected (auth
-  already in flight, or a scan/WSM slot after unjoin reset).
-  prepare_for_join host-clears it; late confirms clamp underflow.
-  Do not poke RX.  Do not queue_clear on unjoin.  Demote the
-  bes_warn when we next touch that path; not a leak to chase now.
+* Join with leftover hw_bufs_used: often 1 and expected (auth already
+  in flight, or a scan/WSM slot after unjoin reset).  prepare_for_join
+  host-clears it; late confirms clamp underflow.  Do not poke RX.  Do
+  not queue_clear on unjoin.
 * wsm_reset drops the firmware TX rate-policy table.  Host cache must
   clear uploaded so MCS policies are sent again on the next BSS.
 
 MAC / interfaces
 ----------------
-* Stable MAC is derived from the SoC serial (02:00:00:3d:05:3c locally).
-  Early dummy vs serial mismatch is confusing in dmesg; pick one story.
+* Stable MAC is derived from the SoC serial (locally administered).
+  Early dummy vs serial mismatch is still confusing in dmesg; pick one
+  story.
 * P2P_DEVICE (nl80211 type 10) is host-only.  Do not send WSM on the
   STA if_id for it.  DanctNIX 6.15 disabled P2P_DEVICE; keep or drop
   explicitly.
@@ -159,7 +197,31 @@ Hardware / firmware limits (not "just code")
   EVB does.  A wedged chip needs a board power cycle.
 * Firmware is proprietary (bes2600/best2002_fw_boot_sdio.bin +
   best2002_fw_sdio.bin, Dec 2023).  Fail cleanly if blobs are missing.
+  linux-firmware packaging + license is a parallel track for any
+  upstream submission.
 * Factory calibration comes from bes2600_factory.txt.
+* IEEE PS behaviour of this LMAC, and of some APs' FAST_PS, is not
+  something the host can fix without documentation or a new blob.
+
+Mainline / staging hygiene (next series, not protocol work)
+----------------------------------------------------------
+STA on this board is far enough along that more FAST_PS/scan tweaks will
+not get the driver into staging.  A reviewable tree needs:
+
+* Rewrite this file as items close (you are here).
+* P5x / bes_pin breadcrumbs and most bring-up bes_info are done.
+* ITP, nl80211 testmode, and GET_MAC_ADDR_METHOD are gone.
+* start_dhcpd() / call_usermodehelper: drop during P2P work, not now.
+* /dev/bes2600 (bes_chardev): side project; internal flags still used.
+* Makefile still lists bes2600_btusb.o; leave until BT work.  That file
+  is not in cw1200 either.
+* Makefile -Werror, unused platform variants, Android default paths
+  (/data/applog/, /data/cfg/).
+* checkpatch.pl --strict on the driver.
+* Then an RFC against linux-next staging, with firmware blobs called
+  out.  Do not ask to leave staging.  Reviewers will ask whether this
+  should be a cw1200 quirk (drivers/net/wireless/st/cw1200) rather than
+  a new driver; that merge is later, not the RFC.
 
 Kconfig / build
 ---------------
@@ -167,13 +229,12 @@ Kconfig / build
   ccflags -Werror and hardcoded -DCHIP_WIFI_ROM_VER.
 * Drop unused platform variants if PineTab2 is the only in-tree user,
   or isolate them.
-* GET_MAC_ADDR_METHOD as int 1-4 is not kernel style.
 * Android-style default paths (/data/applog/, /data/cfg/) do not belong
   in a generic driver.
 
 Dead / leftover code
 --------------------
-* TODO:COMBO, HACK!!!, commented dump_stack(), #if 0, testmode / ITP.
+* TODO:COMBO, HACK!!!, commented dump_stack(), #if 0.
 * EPTA 0x0029 was a lockup source on a sick bus; do not pile it on
   join/unjoin without a proven need.  BT is unused.
 * SDIO TX bounce (tx_pad): do not DMA padded length from the skb.
@@ -197,9 +258,9 @@ Not this driver
 
 Contact / trees
 ---------------
-* Current development: branch wifi-good from fdf13926e22c.
-  Tag wifi-good-fdf139 marks that snapshot.  Branch wifi-broken is the
-  old tip (147ad3e) for reading diffs only.
+* Current development: branch wifi-good.  Tag wifi-good-fdf139 marked
+  an earlier snapshot (fdf13926e22c).  Branch wifi-broken is the old
+  tip (147ad3e) for reading diffs only.
 * Distro: DanctNIX linux-pinetab2 on Codeberg
   (https://codeberg.org/DanctNIX/linux-pinetab2).
 * Mainline: linux-staging / wireless, patches against linux-next, with

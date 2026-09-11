@@ -1,6 +1,6 @@
 #
 # Automatically generated file; DO NOT EDIT.
-# Linux/arm64 6.14.8-lb1 Kernel Configuration
+# Linux/arm64 6.14.8 Kernel Configuration
 #
 CONFIG_CC_VERSION_TEXT="aarch64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0"
 CONFIG_CC_IS_GCC=y
@@ -6280,7 +6280,6 @@ CONFIG_BES2600_PLATFORM_NONE=y
 # CONFIG_BES2600_INTEGRATED_MODULE_V3 is not set
 CONFIG_BES2600_LISTEN_INTERVAL=3
 CONFIG_BES2600_FASTPS_IDLE_TIME=8
-CONFIG_GET_MAC_ADDR_METHOD=4
 CONFIG_FACTORY_PATH="/lib/firmware/bes2600_factory.txt"
 # CONFIG_BES2600_USE_GPIO_IRQ is not set
 CONFIG_BES2600_5GHZ_SUPPORT=y
@@ -6311,8 +6310,6 @@ CONFIG_BES2600_DEBUGFS=y
 # CONFIG_BES2600_TX_POLICY_DEBUG is not set
 # CONFIG_BES2600_STA_DEBUG is not set
 # CONFIG_BES2600_DUMP_ON_ERROR is not set
-# CONFIG_BES2600_ITP is not set
-# CONFIG_BES2600_TESTMODE is not set
 # end of Driver debug features
 
 # CONFIG_GPIB is not set

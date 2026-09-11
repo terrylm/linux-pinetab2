@@ -253,9 +253,6 @@ static const struct ieee80211_ops bes2600_ops = {
 	.remain_on_channel	= bes2600_remain_on_channel,
 	.cancel_remain_on_channel = bes2600_cancel_remain_on_channel,
 	//.set_data_filter		  = bes2600_set_data_filter,
-#ifdef CONFIG_BES2600_TESTMODE
-	.testmode_cmd  = bes2600_testmode_cmd,
-#endif
 };
 
 #ifdef CONFIG_PM
@@ -433,7 +430,8 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 /* Early dummy initialization so wiphy->addresses and PERM_ADDR are valid */
 	get_random_bytes(hw_priv->addresses[0].addr, ETH_ALEN);
 	hw_priv->addresses[0].addr[0] &= ~0x01;   /* make it unicast */
-	bes_info("Early MAC check: addresses[0] = %pM\n", hw_priv->addresses[0].addr);
+	bes_devel("Early MAC check: addresses[0] = %pM\n",
+		  hw_priv->addresses[0].addr);
 
 	bes2600_derive_mac(hw_priv);
 
@@ -547,18 +545,11 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	sema_init(&hw_priv->wsm_cmd_sema, 1);
 	sema_init(&hw_priv->conf_lock, 1);
 	sema_init(&hw_priv->wsm_oper_lock, 1);
-#ifdef CONFIG_BES2600_TESTMODE
-	spin_lock_init(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 	hw_priv->workqueue = create_singlethread_workqueue("bes2600_wq");
 	sema_init(&hw_priv->scan.lock, 1);
 	INIT_WORK(&hw_priv->scan.work, bes2600_scan_work);
 	INIT_DELAYED_WORK(&hw_priv->scan.probe_work, bes2600_probe_work);
 	INIT_DELAYED_WORK(&hw_priv->scan.timeout, bes2600_scan_timeout);
-#ifdef CONFIG_BES2600_TESTMODE
-	INIT_DELAYED_WORK(&hw_priv->advance_scan_timeout,
-		 bes2600_advance_scan_timeout);
-#endif
 	INIT_DELAYED_WORK(&hw_priv->rem_chan_timeout, bes2600_rem_chan_timeout);
 	hw_priv->rtsvalue = 0;
 	spin_lock_init(&hw_priv->rtsvalue_lock);
@@ -610,10 +601,6 @@ static struct ieee80211_hw *bes2600_init_common(size_t hw_priv_data_len)
 	bes2600_pending_unjoin_reset(hw_priv);
 #endif
 
-#ifdef CONFIG_BES2600_TESTMODE
-	hw_priv->test_frame.data = NULL;
-	hw_priv->test_frame.len = 0;
-#endif /* CONFIG_BES2600_TESTMODE */
 
 #if defined(CONFIG_BES2600_WSM_DUMPS_SHORT)
 	hw_priv->wsm_dump_max_size = 20;
@@ -654,14 +641,6 @@ static int bes2600_register_common(struct ieee80211_hw *dev)
 static void bes2600_free_common(struct ieee80211_hw *dev)
 {
 	/* struct bes2600_common *hw_priv = dev->priv; */
-#ifdef CONFIG_BES2600_TESTMODE
-	struct bes2600_common *hw_priv = dev->priv;
-	if (hw_priv->test_frame.data) {
-		kfree(hw_priv->test_frame.data);
-		hw_priv->test_frame.data = NULL;
-		hw_priv->test_frame.len = 0;
-	}
-#endif /* CONFIG_BES2600_TESTMODE */
 
 	/* unsigned int i; */
 
@@ -813,18 +792,18 @@ static void bes2600_reset_handler(struct work_struct *work)
 	msleep(1000);
 
 	// Power cycle block here
-	bes_info("Reset: Power off for cycle\n");
+	bes_devel("Reset: Power off for cycle\n");
 	hw_priv->sbus_ops->power_switch(hw_priv->sbus_priv, 0);  // Off
 	msleep(3000);  // Long delay for full shutdown
 	if (hw_priv->sbus_ops->reset)
 		hw_priv->sbus_ops->reset(hw_priv->sbus_priv);
-	bes_info("Reset: Power on for cycle\n");
+	bes_devel("Reset: Power on for cycle\n");
 	hw_priv->sbus_ops->power_switch(hw_priv->sbus_priv, 1);  // On
 	msleep(1000);  // Settle
 
-	bes_info("Reset: Power on complete, BH register\n");
+	bes_devel("Reset: Power on complete, BH register\n");
 	bes2600_register_bh(hw_priv);
-	bes_info("Reset: BH registered, wake queues\n");
+	bes_devel("Reset: BH registered, wake queues\n");
 	up(&hw_priv->conf_lock);		// Unlock
 	hw_priv->in_reset = false;		// Clear flag
 	//ieee80211_wake_queues(hw_priv->hw);
@@ -865,7 +844,8 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 
 	//timer_setup(&hw_priv->reset_timer, bes2600_reset_timer_cb, 0);	// 0 flags for normal timer
 	//mod_timer(&hw_priv->reset_timer, jiffies + msecs_to_jiffies(300000));	// 5 mins
-	bes_info("%s: Forced FW reset on probe. (no timer_setup() or mod_timer())\n", __func__);
+	bes_devel("%s: Forced FW reset on probe. (no timer_setup() or mod_timer())\n",
+		  __func__);
 
 
 	bes2600_pwr_init(hw_priv);
@@ -896,7 +876,7 @@ int bes2600_core_probe(const struct sbus_ops *sbus_ops,
 
 	hw_priv->in_reset = false;
 	hw_priv->channel = ieee80211_get_channel(hw_priv->hw->wiphy, 2412);  // Default
-	bes_info("Default channel set to ch1 (2412 MHz)\n");
+	bes_devel("Default channel set to ch1 (2412 MHz)\n");
 
 	init_waitqueue_head(&hw_priv->scan.wq);  // NEW: Initialize scan completion wait queue
 
@@ -927,41 +907,6 @@ void bes2600_core_release(struct bes2600_common *self)
 	bes2600_free_common(self->hw);
 	return;
 }
-
-#if (CONFIG_GET_MAC_ADDR_METHOD == 2) || (CONFIG_GET_MAC_ADDR_METHOD == 3) /* To use macaddr and ps mode of customers */
-int access_file(char *path, char *buffer, int size, int isRead)
-{
-	int ret=0;
-	struct file *fp;
-	mm_segment_t old_fs = get_fs();
-
-	if(isRead)
-		fp = filp_open(path,O_RDONLY,S_IRUSR);
-	else
-		fp = filp_open(path,O_CREAT|O_WRONLY,S_IRUSR);
-
-	if (IS_ERR(fp)) {
-		bes_err("BES2600 : can't open %s\n", path);
-		return -1;
-	}
-
-	if (isRead) {
-			fp->f_pos = 0;
-			set_fs(KERNEL_DS);
-			ret = vfs_read(fp,buffer,size,&fp->f_pos);
-			set_fs(old_fs);
-	} else {
-			fp->f_pos = 0;
-			set_fs(KERNEL_DS);
-			ret = vfs_write(fp,buffer,size,&fp->f_pos);
-			set_fs(old_fs);
-	}
-	filp_close(fp,NULL);
-
-	bes_info("BES2600 : access_file return code(%d)\n", ret);
-	return ret;
-}
-#endif
 
 int bes2600_wifi_start(struct bes2600_common *hw_priv)
 {

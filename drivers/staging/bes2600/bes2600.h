@@ -50,9 +50,6 @@
 #include "bes_log.h"
 #include "sbus.h"
 
-#ifdef CONFIG_BES2600_TESTMODE
-#include "bes_nl80211_testmode_msg.h"
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 
 /* extern */ struct sbus_ops;
@@ -94,10 +91,6 @@
 
 #define IEEE80211_FCTL_WEP		0x4000
 #define IEEE80211_QOS_DATAGRP	0x0080
-#ifdef CONFIG_BES2600_TESTMODE
-#define BES2600_SCAN_MEASUREMENT_PASSIVE (0)
-#define BES2600_SCAN_MEASUREMENT_ACTIVE  (1)
-#endif
 
 #ifdef MCAST_FWDING
 #define WSM_MAX_BUF		30
@@ -145,139 +138,10 @@ struct bes2600_link_entry {
 	struct sk_buff_head		rx_queue;
 };
 
-#ifdef CONFIG_BES2600_TESTMODE
-struct bes2600_testframe {
-	u8 len;
-	u8 *data;
-};
-
-struct advance_scan_elems {
-	u8 scanMode;
-	u16 duration;
-};
-/**
- * bes2600_tsm_info - Keeps information about ongoing TSM collection
- * @ac: Access category for which metrics to be collected
- * @use_rx_roaming: Use received voice packets to compute roam delay
- * @sta_associated: Set to 1 after association
- * @sta_roamed: Set to 1 after successful roaming
- * @roam_delay: Roam delay
- * @rx_timestamp_vo: Timestamp of received voice packet
- * @txconf_timestamp_vo: Timestamp of received tx confirmation for
- * successfully transmitted VO packet
- * @sum_pkt_q_delay: Sum of packet queue delay
- * @sum_media_delay: Sum of media delay
- *
- */
-struct bes2600_tsm_info {
-	u8 ac;
-	u8 use_rx_roaming;
-	u8 sta_associated;
-	u8 sta_roamed;
-	u16 roam_delay;
-	u32 rx_timestamp_vo;
-	u32 txconf_timestamp_vo;
-	u32 sum_pkt_q_delay;
-	u32 sum_media_delay;
-};
-
-/**
- * bes2600_start_stop_tsm - To start or stop collecting TSM metrics in
- * bes2600 driver
- * @start: To start or stop collecting TSM metrics
- * @up: up for which metrics to be collected
- * @packetization_delay: Packetization delay for this TID
- *
- */
-struct bes2600_start_stop_tsm {
-	u8 start;		/*1: To start, 0: To stop*/
-	u8 up;
-	u16 packetization_delay;
-};
-
-#endif /* CONFIG_BES2600_TESTMODE */
 
 /*
  * tcp & udp alive
  */
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-#define IP_KEEPALIVE_MAX_LEN	(256 + 8)
-#define AES_KEY_IV_LEN			(16 + 16)
-#define AES_KEY_LEN				(16)
-#define AES_IV_LEN				(16)
-#define NUM_IP_FRAMES			8
-#define TCP_PROTO				6
-#define UDP_PROTO				17
-
-#define KLV_VENDOR_DEFAULT		0
-#define KLV_VENDOR_XM			1
-#define WEBSOCKET_HD_LEN		6
-
-#define NET_DEVICE_NUM (3)
-
-struct ip_header {
-	/* version / header length */
-	uint8_t _v_hl;
-	/* type of service */
-	uint8_t _tos;
-	/* total length */
-	uint16_t _len;
-	/* identification */
-	uint16_t _id;
-	/* fragment offset field */
-	uint16_t _offset;
-	/* time to live */
-	uint8_t _ttl;
-	/* protocol*/
-	uint8_t _proto;
-	/* checksum */
-	uint16_t _chksum;
-	/* source and destination IP addresses */
-	uint32_t src;
-	uint32_t dest;
-} ;
-
-struct tcp_header {
-	uint16_t src;
-	uint16_t dest;
-	uint32_t seqno;
-	uint32_t ackno;
-	uint16_t _hdrlen_rsvd_flags;
-	uint16_t wnd;
-	uint16_t chksum;
-	uint16_t urgp;
-};
-
-struct udp_header {
-	uint16_t src;
-	uint16_t dest;
-	uint16_t len;
-	uint16_t chksum;
-};
-
-struct ip_alive_info {
-	uint8_t idx_used;
-	uint8_t proto; /* 0 for udp and 1 for tcp; */
-	uint16_t src_port;
-	uint16_t dest_port;
-	uint32_t src_ip;
-	uint32_t dest_ip;
-	uint16_t len;
-	uint32_t next_seqno;
-	uint8_t payload[IP_KEEPALIVE_MAX_LEN];
-	uint8_t dest_mac[6];
-};
-
-struct ip_alive_cfg {
-	struct ip_header iphd;
-	struct tcp_header tcphd;
-	struct udp_header udphd;
-	struct ip_alive_info bd;
-	uint8_t aes_key[AES_KEY_LEN];
-	uint8_t aes_iv[AES_IV_LEN];
-	uint8_t klv_vendor; /* stands for different vendor's keep-alive resolution; */
-};
-#endif /* CONFIG_BES2600_KEEP_ALIVE */
 
 struct bes2600_common {
 	struct bes2600_debug_common	*debug;
@@ -396,14 +260,6 @@ struct bes2600_common {
 	atomic_t			tx_lock;
 	u32				pending_frame_id;
 	int				join_pending_if_id;
-#ifdef CONFIG_BES2600_TESTMODE
-	/* Device Power Range */
-	struct wsm_tx_power_range		txPowerRange[2];
-	/* Advance Scan */
-	struct advance_scan_elems	advanceScanElems;
-	bool				enable_advance_scan;
-	struct delayed_work		advance_scan_timeout;
-#endif /* CONFIG_BES2600_TESTMODE */
 
 	/* WSM debug */
 	int				wsm_enable_wsm_dumps;
@@ -471,13 +327,6 @@ struct bes2600_common {
 	struct wsm_buf		wsm_release_buf[WSM_MAX_BUF];
 	u8			buf_released;
 #endif
-#ifdef CONFIG_BES2600_TESTMODE
-	struct bes2600_testframe test_frame;
-	struct bes_tsm_stats		tsm_stats;
-	struct bes2600_tsm_info		tsm_info;
-	spinlock_t			tsm_lock;
-	struct bes2600_start_stop_tsm	start_stop_tsm;
-#endif /* CONFIG_BES2600_TESTMODE */
 	u8		connected_sta_cnt;
 	u16		vif0_throttle;
 	u16		vif1_throttle;
@@ -485,9 +334,6 @@ struct bes2600_common {
 #ifdef CONFIG_BES2600_WAPI_SUPPORT
 	int		last_ins_wapi_usk_id;
 	int		last_del_wapi_usk_id;
-#endif
-#ifdef CONFIG_BES2600_TESTMODE
-	struct semaphore		vendor_rf_cmd_replay_sema;
 #endif
 
 	/* member for coexistence */
@@ -501,9 +347,6 @@ struct bes2600_common {
 	/* member for tx loop */
 	struct bes2600_tx_loop tx_loop;
 
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-	struct ip_alive_cfg iac[NUM_IP_FRAMES];
-#endif
 	struct timer_list reset_timer;
 	struct work_struct reset_work;  // For non-atomic FW reset
 	struct work_struct power_down_work;
@@ -779,44 +622,6 @@ static inline int cw12xx_get_nr_hw_ifaces(struct bes2600_common *hw_priv)
 	}
 }
 
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-/* IPV4 host addr info */
-struct ipv4_addr_info {
-	u8 filter_mode;
-	u8 address_mode;
-	u8 ipv4[4];
-};
-
-/* tcp keep alive test period */
-struct MIB_TCP_KEEP_ALIVE_PERIOD {
-	u16 TcpKeepAlivePeriod; /* in seconds */
-	u8	EncrType; /* (ex. WSM_KEY_TYPE_WEP_DEFAULT) */
-	u8	Reserved;
-};
-
-#ifdef CONFIG_VENDOR_XM_KEEPALIVE
-struct ip_alive_satus {
-	bool udp;
-	bool tcp;
-};
-
-void bes2600_get_keepalive_info(struct bes2600_common *hw_priv, struct ip_alive_satus *status);
-#endif
-
-int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
-						struct bes2600_vif *priv,
-						struct ip_alive_cfg *tac,
-						u16 idx);
-
-int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
-						struct bes2600_vif *priv,
-						u8 stream_idx);
-
-int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
-						struct bes2600_vif *priv,
-						u16 period_in_s);
-int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_id);
-#endif /* CONFIG_BES2600_KEEP_ALIVE */
 
 /* IPV6 host addr info */
 struct ipv6_addr_info {

@@ -23,10 +23,6 @@
 #include "wsm.h"
 #include "bh.h"
 #include "debug.h"
-#include "itp.h"
-#ifdef CONFIG_BES2600_TESTMODE
-#include "bes_nl80211_testmode_msg.h"
-#endif
 #include "bes_chardev.h"
 #include "bes2600_factory.h"
 #include "epta_coex.h"
@@ -176,11 +172,12 @@ int wsm_configuration(struct bes2600_common *hw_priv,
 	WSM_PUT16(buf, 5); /* DPD flags */
 	WSM_PUT(buf, arg->dpdData, arg->dpdData_size);
 
-	bes_err("LMAC cfg send station ID %pM if_id=%d (host mac_addr=%pM)\n",
-		arg->dot11StationId, if_id, hw_priv->mac_addr);
+	bes_devel("LMAC cfg send station ID %pM if_id=%d (host mac_addr=%pM)\n",
+		  arg->dot11StationId, if_id, hw_priv->mac_addr);
 	ret = wsm_cmd_send(hw_priv, buf, arg, 0x0009, WSM_CMD_TIMEOUT, if_id);
-	bes_err("LMAC cfg send ret=%d station ID now %pM\n",
-		ret, arg->dot11StationId);
+	if (ret)
+		bes_err("LMAC cfg send ret=%d station ID now %pM\n",
+			ret, arg->dot11StationId);
 
 	wsm_cmd_unlock(hw_priv);
 	return ret;
@@ -205,8 +202,8 @@ static int wsm_configuration_confirm(struct bes2600_common *hw_priv,
 
 	if (bes2600_chrdev_is_signal_mode()) {
 		WSM_GET(buf, arg->dot11StationId, ETH_ALEN);
-		bes_err("LMAC cfg confirm station ID %pM\n",
-			arg->dot11StationId);
+		bes_devel("LMAC cfg confirm station ID %pM\n",
+			  arg->dot11StationId);
 		arg->dot11FrequencyBandsSupported = WSM_GET8(buf);
 		WSM_SKIP(buf, 1);
 		arg->supportedRateMask = WSM_GET32(buf);
@@ -226,142 +223,6 @@ underflow:
 /* ******************************************************************** */
 
 //rf nosignaling tset
-#ifdef CONFIG_BES2600_TESTMODE
-
-int wsm_vendor_rf_cmd_confirm(struct bes2600_common *hw_priv, void *arg, struct wsm_buf *buf)
-{
-	return 0;
-}
-
-int wsm_vendor_rf_test_indication(struct bes2600_common *hw_priv, struct wsm_buf *buf)
-{
-	int i;
-	int16_t ret = 0;
-	u16 wsm_len;
-	u32 cmd_type;
-	struct wifi_power_cali_save_t power_cali_save;
-	struct wifi_freq_cali_t wifi_freq_cali;
-	struct wifi_get_power_cali_t power_cali_get;
-	struct wifi_power_cali_flag_t power_cali_flag;
-	struct wsm_mcu_hdr *msg_hdr = (struct wsm_mcu_hdr *)(buf->begin);
-
-	wsm_len = __le16_to_cpu(msg_hdr->hdr.len);
-	cmd_type = __le32_to_cpu(msg_hdr->cmd_type);
-	buf->data += sizeof(struct wsm_mcu_hdr) - sizeof(struct wsm_hdr);
-
-	switch (cmd_type) {
-	case VENDOR_RF_SAVE_FREQOFFSET_CMD:
-	case VENDOR_RF_GET_SAVE_FREQOFFSET_CMD:
-		wifi_freq_cali.save_type = WSM_GET16(buf);
-		wifi_freq_cali.freq_cali = WSM_GET16(buf);
-		wifi_freq_cali.status = -WSM_GET16(buf);
-		wifi_freq_cali.cali_flag = WSM_GET16(buf);
-		if (wifi_freq_cali.save_type == RF_CALIB_DATA_IN_LINUX) {
-			if (cmd_type == VENDOR_RF_SAVE_FREQOFFSET_CMD) {
-				ret = bes2600_wifi_cali_freq_write(&wifi_freq_cali);
-			}
-
-			if (cmd_type == VENDOR_RF_GET_SAVE_FREQOFFSET_CMD) {
-				ret = vendor_get_freq_cali(&wifi_freq_cali);
-			}
-			wifi_freq_cali.status = ret;
-		}
-		bes2600_rf_cmd_msg_assembly(cmd_type, &wifi_freq_cali,
-			sizeof(struct wifi_freq_cali_t));
-		break;
-	case VENDOR_RF_SAVE_POWERLEVEL_CMD:
-		power_cali_save.save_type = WSM_GET16(buf);
-		power_cali_save.mode = WSM_GET16(buf);
-		power_cali_save.bandwidth = WSM_GET16(buf);
-		power_cali_save.band = WSM_GET16(buf);
-		power_cali_save.ch = WSM_GET16(buf);
-		power_cali_save.power_cali = WSM_GET16(buf);
-		power_cali_save.status = -WSM_GET16(buf);
-		if (power_cali_save.save_type == RF_CALIB_DATA_IN_LINUX) {
-			ret = bes2600_wifi_power_cali_table_write(&power_cali_save);
-			power_cali_save.status = ret;
-		}
-
-		bes2600_rf_cmd_msg_assembly(cmd_type, &power_cali_save,
-			sizeof(struct wifi_power_cali_save_t));
-		break;
-	case VENDOR_RF_GET_SAVE_POWERLEVEL_CMD:
-		power_cali_get.save_type = WSM_GET16(buf);
-		if (power_cali_get.save_type == RF_CALIB_DATA_IN_LINUX) {
-			ret = vendor_get_power_cali(&power_cali_get);
-			power_cali_get.status = ret;
-		} else {
-			/* 2.4G have 3 cali ch */
-			for (i = 0; i < 3; i++)
-				power_cali_get.tx_power_ch[i] = WSM_GET16(buf);
-			/* 5G have 13 cali ch */
-			for (i = 0; i < 13; i++)
-				power_cali_get.tx_power_ch_5G[i] = WSM_GET16(buf);
-			power_cali_get.status = -WSM_GET16(buf);
-		}
-		bes2600_rf_cmd_msg_assembly(cmd_type, &power_cali_get,
-			sizeof(struct wifi_get_power_cali_t));
-
-		break;
-	case VENDOR_RF_POWER_CALIB_FINISH:
-		power_cali_flag.save_type = WSM_GET16(buf);
-		power_cali_flag.band = WSM_GET16(buf);
-		power_cali_flag.status = -WSM_GET16(buf);
-		if (power_cali_flag.save_type == RF_CALIB_DATA_IN_LINUX) {
-			ret = vendor_set_power_cali_flag(&power_cali_flag);
-			power_cali_flag.status = ret;
-		}
-		bes2600_rf_cmd_msg_assembly(cmd_type, &power_cali_flag,
-			sizeof(struct wifi_power_cali_flag_t));
-		break;
-	case VENDOR_RF_SIGNALING_CMD:
-	case VENDOR_RF_NOSIGNALING_CMD:
-	case VENDOR_RF_GET_CALI_FROM_EFUSE:
-		bes2600_rf_cmd_msg_assembly(cmd_type, buf->data, wsm_len - sizeof(struct wsm_mcu_hdr));
-		break;
-	default:
-		break;
-	}
-
-	up(&hw_priv->vendor_rf_cmd_replay_sema);
-
-	bes2600_pwr_clear_busy_event(hw_priv, BES_PWR_LOCK_ON_TEST_CMD);
-
-	return 0;
-
-underflow:
-	return -EINVAL;
-}
-
-int wsm_vendor_rf_cmd(struct bes2600_common *hw_priv, int if_id,
-					  const struct vendor_rf_cmd_t *vendor_rf_cmd)
-{
-	int ret;
-	struct wsm_buf *buf = &hw_priv->wsm_cmd_buf;
-
-	wsm_cmd_lock(hw_priv);
-
-	/* the command need to wait complete indication */
-	bes2600_pwr_set_busy_event(hw_priv, BES_PWR_LOCK_ON_TEST_CMD);
-
-	WSM_PUT32(buf, vendor_rf_cmd->cmd_type);
-	WSM_PUT32(buf, vendor_rf_cmd->cmd_argc);
-	WSM_PUT32(buf, vendor_rf_cmd->cmd_len);
-	WSM_PUT(buf, vendor_rf_cmd->cmd, vendor_rf_cmd->cmd_len);
-
-	/**
-	 * vendor signaling and nosignaling use id 0x0C25.
-	 */
-	ret = wsm_cmd_send(hw_priv, buf, NULL, 0x0C25, WSM_CMD_TIMEOUT, if_id);
-
-	wsm_cmd_unlock(hw_priv);
-	return ret;
-
-nomem:
-	wsm_cmd_unlock(hw_priv);
-	return -ENOMEM;
-}
-#endif /* CONFIG_BES2600_TESTMODE */
 
 /* ******************************************************************** */
  // wifi cpu sleep control
@@ -671,17 +532,17 @@ static int wsm_tx_confirm(struct bes2600_common *hw_priv,
 		if (tx_confirm.flags & WSM_TX_STATUS_AGGREGATION) {
 			if (agg_logged < 8) {
 				agg_logged++;
-				bes_info("wsm_tx_confirm: OK AMPDU "
-					 "flags=0x%x rate=%u pkt=0x%x "
-					 "(%u/8)\n",
+				bes_devel("wsm_tx_confirm: OK AMPDU "
+					  "flags=0x%x rate=%u pkt=0x%x "
+					  "(%u/8)\n",
 					 tx_confirm.flags,
 					 tx_confirm.txedRate,
 					 tx_confirm.packetID, agg_logged);
 			}
 		} else if (ok_logged < 4) {
 			ok_logged++;
-			bes_info("wsm_tx_confirm: OK flags=0x%x rate=%u "
-				 "pkt=0x%x (%u/4)\n",
+			bes_devel("wsm_tx_confirm: OK flags=0x%x rate=%u "
+				  "pkt=0x%x (%u/4)\n",
 				 tx_confirm.flags, tx_confirm.txedRate,
 				 tx_confirm.packetID, ok_logged);
 		} else {
@@ -1772,7 +1633,7 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 	arg.psm = WSM_GET8(buf);
 
 	if (arg.status == WSM_STATUS_SUCCESS) {
-		bes_info("%s: PM ind psm=0x%x\n", __func__, arg.psm);
+		bes_devel("%s: PM ind psm=0x%x\n", __func__, arg.psm);
 		hw_priv->pm_ind_psm = arg.psm;
 		hw_priv->pm_ind_pending = 0;
 		wake_up(&hw_priv->pm_ind_wq);
@@ -1791,7 +1652,7 @@ static int wsm_set_pm_indication(struct bes2600_common *hw_priv,
 					continue;
 				if (priv->firmware_ps_mode.pmMode &
 				    WSM_PSM_PS) {
-					bes_info("%s: fw stayed ACTIVE, cache was 0x%x refuse=%u\n",
+					bes_devel("%s: fw stayed ACTIVE, cache was 0x%x refuse=%u\n",
 						 __func__,
 						 priv->firmware_ps_mode.pmMode,
 						 priv->ps_refuse_count + 1);
@@ -1834,7 +1695,7 @@ static int wsm_join_complete_indication(struct bes2600_common *hw_priv,
 	struct wsm_join_complete arg;
 
 	arg.status = WSM_GET32(buf);
-	bes_info("[WSM] Join complete indication, status=%u\n", arg.status);
+	bes_devel("[WSM] Join complete indication, status=%u\n", arg.status);
 
 	if (hw_priv->wsm_cbc.join_complete)
 		hw_priv->wsm_cbc.join_complete(hw_priv, &arg);
@@ -2554,11 +2415,6 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 					"failed for request 0x%.4X.\n",
 					id & ~0x0400);
 			break;
-#ifdef CONFIG_BES2600_TESTMODE
-		case 0x0C25:
-			ret = wsm_vendor_rf_cmd_confirm(hw_priv, wsm_arg, &wsm_buf);
-			break;
-#endif /* CONFIG_BES2600_TESTMODE */
 		case 0x0C27:
 			ret = wsm_driver_rf_cmd_confirm(hw_priv, wsm_arg, &wsm_buf);
 			break;
@@ -2619,11 +2475,6 @@ int wsm_handle_rx(struct bes2600_common *hw_priv, int id,
 		}
 	} else if (WSM_TO_MCU_CMD_IND_CONDITION(id, ind_confirm_label)) {
 		switch (id) {
-#ifdef CONFIG_BES2600_TESTMODE
-		case 0x0C25:
-			ret = wsm_vendor_rf_test_indication(hw_priv, &wsm_buf);
-			break;
-#endif /* CONFIG_BES2600_TESTMODE */
 		case 0x0C30:
 			ret = wsm_bt_ts_request(hw_priv, &wsm_buf);
 			break;
@@ -2754,16 +2605,6 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 
 	if (action == doTx) {
 		if (unlikely(ieee80211_is_probe_req(fctl))) {
-#ifdef CONFIG_BES2600_TESTMODE
-			if (hw_priv->enable_advance_scan &&
-				(priv->join_status == BES2600_JOIN_STATUS_STA) &&
-				(hw_priv->advanceScanElems.scanMode ==
-					BES2600_SCAN_MEASUREMENT_ACTIVE))
-				/* If Advance Scan is Requested on Active Scan
-				 * then transmit the Probe Request */
-				action = doTx;
-			else
-#endif
 			action = doProbe;
 		} else if ((fctl & __cpu_to_le32(IEEE80211_FCTL_PROTECTED)) &&
 			tx_info->control.hw_key &&
@@ -2796,17 +2637,10 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 		/* See detailed description of "join" below.
 		 * We are dropping everything except AUTH in non-joined mode. */
 		bes_err("[WSM] Drop frame (0x%.4X).\n", fctl);
-#ifdef CONFIG_BES2600_TESTMODE
-		if (bes2600_queue_remove(hw_priv, queue,
-					 __le32_to_cpu(wsm->packetID)))
-			bes_err("%s: queue_remove failed id=0x%x\n",
-				__func__, __le32_to_cpu(wsm->packetID));
-#else
 		if (bes2600_queue_remove(queue,
 					 __le32_to_cpu(wsm->packetID)))
 			bes_err("%s: queue_remove failed id=0x%x\n",
 				__func__, __le32_to_cpu(wsm->packetID));
-#endif /*CONFIG_BES2600_TESTMODE*/
 		handled = true;
 	}
 	break;
@@ -2825,11 +2659,7 @@ static bool wsm_handle_tx_data(struct bes2600_vif *priv,
 			bes_warn("[WSM] doJoin refuse stale=%d busy=%d packet=0x%x\n",
 				 hw_priv->bus_stale,
 				 work_busy(&priv->join_work), pid);
-#ifdef CONFIG_BES2600_TESTMODE
-			bes2600_queue_remove(hw_priv, queue, pid);
-#else
 			bes2600_queue_remove(queue, pid);
-#endif
 			handled = true;
 			break;
 		}
@@ -2995,10 +2825,6 @@ int wsm_get_tx(struct bes2600_common *hw_priv, u8 **data,
 
 	/* More is used only for broadcasts. */
 	bool more = false;
-
-	count = bes2600_itp_get_tx(hw_priv, data, tx_len, burst);
-	if (count)
-		return count;
 
 	/* Dead bus: do not put another SDIO write on the wire (hard LOCKUP). */
 	if (hw_priv->bus_stale)

@@ -96,22 +96,10 @@ int bes2600_queue_get(struct bes2600_queue *queue,
 		     struct wsm_tx **tx,
 		     struct ieee80211_tx_info **tx_info,
 		     struct bes2600_txpriv **txpriv);
-#ifdef CONFIG_BES2600_TESTMODE
-int bes2600_queue_requeue(struct bes2600_common *hw_priv,
-			struct bes2600_queue *queue,
-			u32 packetID, bool check);
-#else
 int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check);
-#endif
 int bes2600_queue_requeue_all(struct bes2600_queue *queue);
-#ifdef CONFIG_BES2600_TESTMODE
-int bes2600_queue_remove(struct bes2600_common *hw_priv,
-			struct bes2600_queue *queue,
-			u32 packetID);
-#else
 int bes2600_queue_remove(struct bes2600_queue *queue,
 			u32 packetID);
-#endif /*CONFIG_BES2600_TESTMODE*/
 int bes2600_queue_get_skb(struct bes2600_queue *queue, u32 packetID,
 			 struct sk_buff **skb,
 			 const struct bes2600_txpriv **txpriv);

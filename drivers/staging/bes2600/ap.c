@@ -390,21 +390,6 @@ static void bes2600_bss_info_changed_bssid(struct bes2600_vif *priv,
 
 	bes_devel("BSS_CHANGED_BSSID: %pM\n", info->bssid);
 
-#ifdef CONFIG_BES2600_TESTMODE
-	// Is hw_priv correct? bes2600_bss_info() does if different. 
-	struct bes2600_common *hw_priv = priv->hw_priv;
-	spin_lock_bh(&hw_priv->tsm_lock);
-	if (hw_priv->tsm_info.sta_associated) {
-		unsigned now = jiffies;
-		hw_priv->tsm_info.sta_roamed = 1;
-		if ((now - hw_priv->tsm_info.txconf_timestamp_vo) >
-		    (now - hw_priv->tsm_info.rx_timestamp_vo))
-			hw_priv->tsm_info.use_rx_roaming = 1;
-	} else {
-		hw_priv->tsm_info.sta_associated = 1;
-	}
-	spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 	memcpy(priv->bssid, info->bssid, ETH_ALEN);
 	bes2600_setup_mac_pvif(priv);
@@ -748,7 +733,7 @@ static void bes2600_bss_info_changed_rates_and_ht(struct bes2600_vif *priv,
 
 				pm_ret = bes2600_set_pm(priv,
 							&priv->powersave_mode);
-				bes_info("%s: assoc set_pm mode=0x%x ret=%d\n",
+				bes_devel("%s: assoc set_pm mode=0x%x ret=%d\n",
 					 __func__,
 					 priv->powersave_mode.pmMode, pm_ret);
 			}
@@ -933,7 +918,7 @@ static void bes2600_bss_info_changed_bandwidth(struct bes2600_vif *priv,
 	 */
 	if (cfg->assoc && priv->join_status == BES2600_JOIN_STATUS_STA) {
 		if (hw_priv->ht_info.channel_type != ch_type)
-			bes_info("%s: record ch_type=%d (no switch cmd)\n",
+			bes_devel("%s: record ch_type=%d (no switch cmd)\n",
 				 __func__, ch_type);
 		hw_priv->ht_info.channel_type = ch_type;
 		return;
@@ -946,7 +931,7 @@ static void bes2600_bss_info_changed_ps(struct bes2600_vif *priv,
 	struct ieee80211_conf *conf,
 	struct ieee80211_vif_cfg *cfg)
 {
-	bes_info("%s: cfg.ps=%d dyn_to=%d aid=%d\n",
+	bes_devel("%s: cfg.ps=%d dyn_to=%d aid=%d\n",
 		 __func__, cfg->ps, conf->dynamic_ps_timeout,
 		 priv->bss_params.aid);
 	bes2600_pm_apply(priv);
@@ -1122,7 +1107,7 @@ void bes2600_bss_info_changed(struct ieee80211_hw *dev,
 			  __func__, info->txpower);
 
 	if (changed & BSS_CHANGED_PS) {
-		bes_info("%s: BSS_CHANGED_PS\n", __func__);
+		bes_devel("%s: BSS_CHANGED_PS\n", __func__);
 		bes2600_bss_info_changed_ps(priv, info, conf, cfg);
 	}
 

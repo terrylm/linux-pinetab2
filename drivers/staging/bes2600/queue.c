@@ -16,9 +16,6 @@
 #include "queue.h"
 #include "debug.h"
 #include "bes_log.h"
-#ifdef CONFIG_BES2600_TESTMODE
-#include <linux/time.h>
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 /* private */ struct bes2600_queue_item
 {
@@ -27,10 +24,6 @@
 	u32			packetID;
 	unsigned long		queue_timestamp;
 	unsigned long		xmit_timestamp;
-#ifdef CONFIG_BES2600_TESTMODE
-	unsigned long		mdelay_timestamp;
-	unsigned long		qdelay_timestamp;
-#endif /*CONFIG_BES2600_TESTMODE*/
 	struct bes2600_txpriv	txpriv;
 	u8			generation;
 };
@@ -425,9 +418,6 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 		     struct bes2600_txpriv *txpriv)
 {
 	int ret = 0;
-#ifdef CONFIG_BES2600_TESTMODE
-	struct timespec64 tmval;
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 	LIST_HEAD(gc_list);
 	struct bes2600_queue_stats *stats = queue->stats;
@@ -463,10 +453,6 @@ int bes2600_queue_put(struct bes2600_queue *queue,
 			*extra_data = (u32)jiffies_to_msecs(item->queue_timestamp);
 		}
 
-#ifdef CONFIG_BES2600_TESTMODE
-		ktime_get_real_ts64(&tmval);
-		item->qdelay_timestamp = tmval.tv_nsec / 1000;
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 		++queue->num_queued;
 		++queue->num_queued_vif[txpriv->if_id];
@@ -512,9 +498,6 @@ int bes2600_queue_get(struct bes2600_queue *queue,
 	struct bes2600_queue_item *item = NULL;
 	struct bes2600_queue_stats *stats = queue->stats;
 	bool wakeup_stats = false;
-#ifdef CONFIG_BES2600_TESTMODE
-	struct timespec64 tmval;
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 	spin_lock_bh(&queue->lock);
 	list_for_each_entry(item, &queue->queue, head) {
@@ -536,10 +519,6 @@ int bes2600_queue_get(struct bes2600_queue *queue,
 		--queue->link_map_cache[item->txpriv.if_id]
 				[item->txpriv.link_id];
 		item->xmit_timestamp = jiffies;
-#ifdef CONFIG_BES2600_TESTMODE
-		ktime_get_real_ts64(&tmval);
-		item->mdelay_timestamp = tmval.tv_nsec / 1000;
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 		spin_lock_bh(&stats->lock);
 		--stats->num_queued[item->txpriv.if_id];
@@ -558,12 +537,7 @@ int bes2600_queue_get(struct bes2600_queue *queue,
 	return ret;
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-int bes2600_queue_requeue(struct bes2600_common *hw_priv,
-	struct bes2600_queue *queue, u32 packetID, bool check)
-#else
 int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
-#endif
 {
 	int ret = 0;
 	u8 queue_generation, queue_id, item_generation, item_id, if_id, link_id;
@@ -576,11 +550,7 @@ int bes2600_queue_requeue(struct bes2600_queue *queue, u32 packetID, bool check)
 	item = &queue->pool[item_id];
 	if (check && item->txpriv.if_id == CW12XX_GENERIC_IF_ID) {
 		bes_devel("Requeued frame dropped for generic interface id.\n");
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue, packetID);
-#else
 		bes2600_queue_remove(queue, packetID);
-#endif
 		return 0;
 	}
 
@@ -633,11 +603,7 @@ int bes2600_sw_retry_requeue(struct bes2600_common *hw_priv,
 	item = &queue->pool[item_id];
 	if (check && item->txpriv.if_id == CW12XX_GENERIC_IF_ID) {
 		bes_devel("Requeued frame dropped for generic interface id.\n");
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue, packetID);
-#else
 		bes2600_queue_remove(queue, packetID);
-#endif
 		return 0;
 	}
 
@@ -708,12 +674,7 @@ int bes2600_queue_requeue_all(struct bes2600_queue *queue)
 
 	return 0;
 }
-#ifdef CONFIG_BES2600_TESTMODE
-int bes2600_queue_remove(struct bes2600_common *hw_priv,
-				struct bes2600_queue *queue, u32 packetID)
-#else
 int bes2600_queue_remove(struct bes2600_queue *queue, u32 packetID)
-#endif /*CONFIG_BES2600_TESTMODE*/
 {
 	int ret = 0;
 	u8 queue_generation, queue_id, item_generation, item_id, if_id, link_id;
@@ -752,43 +713,6 @@ int bes2600_queue_remove(struct bes2600_queue *queue, u32 packetID)
 		--queue->num_queued_vif[if_id];
 		++queue->num_sent;
 		++item->generation;
-#ifdef CONFIG_BES2600_TESTMODE
-		spin_lock_bh(&hw_priv->tsm_lock);
-		if (hw_priv->start_stop_tsm.start) {
-			if (queue_id == hw_priv->tsm_info.ac) {
-				struct timespec64 tmval;
-				unsigned long queue_delay;
-				unsigned long media_delay;
-				ktime_get_real_ts64(&tmval);
-
-				if (tmval.tv_nsec / 1000 > item->qdelay_timestamp)
-					queue_delay = tmval.tv_nsec / 1000 -
-						item->qdelay_timestamp;
-				else
-					queue_delay = tmval.tv_nsec / 1000 +
-					1000000 - item->qdelay_timestamp;
-
-				if (tmval.tv_nsec / 1000 > item->mdelay_timestamp)
-					media_delay = tmval.tv_nsec / 1000 -
-						item->mdelay_timestamp;
-				else
-					media_delay = tmval.tv_nsec / 1000 +
-					1000000 - item->mdelay_timestamp;
-				hw_priv->tsm_info.sum_media_delay +=
-							media_delay;
-				hw_priv->tsm_info.sum_pkt_q_delay += queue_delay;
-				if (queue_delay <= 10000)
-					hw_priv->tsm_stats.bin0++;
-				else if (queue_delay <= 20000)
-					hw_priv->tsm_stats.bin1++;
-				else if (queue_delay <= 40000)
-					hw_priv->tsm_stats.bin2++;
-				else
-					hw_priv->tsm_stats.bin3++;
-			}
-		}
-		spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 		/* Do not use list_move_tail here, but list_move:
 		 * try to utilize cache row.
 		 */

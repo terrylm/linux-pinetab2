@@ -31,9 +31,6 @@
 
 #define BES2600_INVALID_RATE_ID (0xFF)
 
-#ifdef CONFIG_BES2600_TESTMODE
-#include "bes_nl80211_testmode_msg.h"
-#endif /* CONFIG_BES2600_TESTMODE */
 static const struct ieee80211_rate *
 bes2600_get_tx_rate(const struct bes2600_common *hw_priv,
 		   const struct ieee80211_tx_rate *rate);
@@ -688,7 +685,7 @@ bes2600_tx_h_action(struct bes2600_vif *priv,
 	 * Firmware owns BlockAck (ampdu_action comment: host ADDBA-Resp
 	 * is discarded; FW generates its own).  Allowing host ADDBA
 	 * before wsm_set_block_ack_policy made the AP aggregate,
-	 * including EAPOL, while LMAC BA was still off — no P50/P51.
+	 * including EAPOL, while LMAC BA was still off.
 	 */
 	if (ieee80211_is_action(t->hdr->frame_control) &&
 	    mgmt->u.action.category == WLAN_CATEGORY_BACK) {
@@ -916,97 +913,6 @@ bes2600_tx_h_skb_pad(struct bes2600_common *priv,
 	return 0;
 }
 
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-static uint16_t find_idx_by_matched_paras(struct bes2600_common *hw_priv, uint8_t proto, uint16_t src_port,
-										 uint16_t dst_port, uint32_t src_ip, uint32_t dst_ip)
-{
-	uint16_t idx;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-
-	for (idx = 0; idx < NUM_IP_FRAMES; idx++) {
-		if (iac[idx].bd.idx_used &&
-			(proto == iac[idx].bd.proto) &&
-			(src_port == iac[idx].bd.src_port) &&
-			(dst_port == iac[idx].bd.dest_port)&&
-			(src_ip == iac[idx].bd.src_ip) &&
-			(dst_ip == iac[idx].bd.dest_ip)) {
-			break;
-		}
-	}
-
-	return idx;
-}
-
-static int extract_ip_headers_info(struct bes2600_common *hw_priv, struct bes2600_vif *priv, uint8_t *iphdr)
-{
-	uint16_t _v_hl, _proto, src_port, dst_port, idx, tcp_bd_len;
-	uint8_t offset;
-	uint32_t src_ip, dst_ip;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-
-	if (!iac) {
-			bes_err("IP alive config not initialized\n");
-			return -EINVAL;
-	}
-
-	print_hex_dump(KERN_DEBUG, "iphdr:", DUMP_PREFIX_NONE, 16, 1, iphdr, 64, false);
-
-	/* Frame Control Flags, bit6: 1 for protected frame and 0 for non-protected frame; */
-	((iphdr[1] >> 6) & 0x1) ? (offset = 40) : (offset = 32);
-
-	_v_hl = iphdr[offset + 2];
-	_proto = iphdr[offset + 11];
-
-	/*
-	 * _v_hl == 0x45 for ip packet;
-	 * _proto == 6 for tcp protocol and 17 for udp protocol;
-	 */
-	if (_v_hl == 0x45) {
-		if (_proto == TCP_PROTO) {
-			/* obtain destination's listening port. */
-			src_port = (iphdr[offset+22]<<8) + iphdr[offset+23];
-			dst_port = (iphdr[offset+24]<<8) + iphdr[offset+25];
-			src_ip = (iphdr[offset+14]<<24) + (iphdr[offset+15]<<16) + (iphdr[offset+16]<<8) + iphdr[offset+17];
-			dst_ip = (iphdr[offset+18]<<24) + (iphdr[offset+19]<<16) + (iphdr[offset+20]<<8) + iphdr[offset+21];
-			idx = find_idx_by_matched_paras(hw_priv, 1, src_port, dst_port, src_ip, dst_ip);
-			/* if port matches */
-			if (idx < NUM_IP_FRAMES) {
-				iac[idx].iphd._len = (iphdr[offset+4]<<8) + iphdr[offset+5];
-				iac[idx].iphd._proto = _proto;
-				iac[idx].tcphd._hdrlen_rsvd_flags = (iphdr[offset+34]<<8) + iphdr[offset+35];
-				iac[idx].tcphd.seqno = (iphdr[offset+26]<<24) + (iphdr[offset+27]<<16) + (iphdr[offset+28]<<8) + iphdr[offset+29];
-				iac[idx].tcphd.ackno = (iphdr[offset+30]<<24) + (iphdr[offset+31]<<16) + (iphdr[offset+32]<<8) + iphdr[offset+33];
-				tcp_bd_len = iac[idx].iphd._len - sizeof(struct ip_header) - sizeof(struct tcp_header);
-				iac[idx].bd.next_seqno = iac[idx].tcphd.seqno + tcp_bd_len;
-				memcpy(iac[idx].bd.dest_mac, ((struct ieee80211_hdr *)iphdr)->addr3, 6);
-
-				bes_devel("src-ip:%x dest-ip:%x src-port:%d dest-port:%d\n",
-								   iac[idx].iphd.src,
-								   iac[idx].iphd.dest,
-								   iac[idx].tcphd.src,
-								   iac[idx].tcphd.dest);
-				bes_devel("seqno:%u ackno:%u\n", iac[idx].tcphd.seqno, iac[idx].tcphd.ackno);
-			}
-		}
-		else if (_proto == UDP_PROTO) {
-			/* obtain destination's listening port. */
-			src_port = (iphdr[offset+22]<<8) + iphdr[offset+23];
-			dst_port = (iphdr[offset+24]<<8) + iphdr[offset+25];
-			src_ip = (iphdr[offset+14]<<24) + (iphdr[offset+15]<<16) + (iphdr[offset+16]<<8) + iphdr[offset+17];
-			dst_ip = (iphdr[offset+18]<<24) + (iphdr[offset+19]<<16) + (iphdr[offset+20]<<8) + iphdr[offset+21];
-			idx = find_idx_by_matched_paras(hw_priv, 0, src_port, dst_port, src_ip, dst_ip);
-			/* if port matches */
-			if (idx < NUM_IP_FRAMES) {
-				iac[idx].iphd._len = (iphdr[offset+4]<<8) + iphdr[offset+5];
-				iac[idx].iphd._proto = _proto;
-				memcpy(iac[idx].bd.dest_mac, ((struct ieee80211_hdr *)iphdr)->addr3, 6);
-			}
-		}
-	}
-
-	return 0;
-}
-#endif /* CONFIG_BES2600_KEEP_ALIVE */
 
 /* ******************************************************************** */
 
@@ -1072,19 +978,7 @@ void bes2600_tx(struct ieee80211_hw *dev,
 	bes2600_pwr_set_busy_event_with_timeout_async(
 		hw_priv, BES_PWR_LOCK_ON_TX, BES_PWR_EVENT_TX_TIMEOUT);
 
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-	/* extract ip & tcp header's information; */
-	extract_ip_headers_info(hw_priv, priv, skb->data);
-#endif
 
-#ifdef CONFIG_BES2600_TESTMODE
-	spin_lock_bh(&hw_priv->tsm_lock);
-	if (hw_priv->start_stop_tsm.start) {
-		if (hw_priv->tsm_info.ac == t.queue)
-			hw_priv->tsm_stats.txed_msdu_count++;
-	}
-	spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 	if ((ieee80211_is_action(frame->frame_control))
 			&& (mgmt->u.action.category == WLAN_CATEGORY_PUBLIC)) {
@@ -1148,9 +1042,6 @@ void bes2600_tx(struct ieee80211_hw *dev,
 		ret = -ENOMEM;
 		goto drop;
 	}
-#ifdef CONFIG_BES2600_TESTMODE
-	flags |= WSM_TX_FLAG_EXPIRY_TIME;
-#endif /*CONFIG_BES2600_TESTMODE*/
 	wsm->flags |= flags;
 	bes2600_tx_h_bt(priv, &t, wsm);
 	ret = bes2600_tx_h_rate_policy(hw_priv, &t, wsm);
@@ -1246,7 +1137,7 @@ static int bes2600_handle_pspoll(struct bes2600_vif *priv,
 			break;
 		}
 	}
-	bes_info("[RX] PSPOLL: %s\n", drop ? "local" : "fwd");
+	bes_devel("[RX] PSPOLL: %s\n", drop ? "local" : "fwd");
 done:
 	return drop;
 }
@@ -1364,15 +1255,9 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 	struct sk_buff *skb;
 	const struct bes2600_txpriv *txpriv;
 	struct bes2600_vif *priv;
-#ifdef CONFIG_BES2600_TESTMODE
-	u16 pkt_delay;
-#endif
 
 	bes_devel("[TX] TX confirm: %d, %d.\n",
 		arg->status, arg->ackFailures);
-
-	if (unlikely(bes2600_itp_tx_running(hw_priv)))
-		return;
 
 	priv = cw12xx_hwpriv_to_vifpriv(hw_priv, arg->if_id);
 	if (unlikely(!priv))
@@ -1392,31 +1277,6 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 	if (arg->status)
 		bes_devel("TX failed: %d.\n", arg->status);
 
-#ifdef CONFIG_BES2600_TESTMODE
-	spin_lock_bh(&hw_priv->tsm_lock);
-	if ((arg->status == WSM_STATUS_RETRY_EXCEEDED) ||
-		(arg->status == WSM_STATUS_TX_LIFETIME_EXCEEDED)) {
-		hw_priv->tsm_stats.msdu_discarded_count++;
-	} else if ((hw_priv->start_stop_tsm.start) &&
-		(arg->status == WSM_STATUS_SUCCESS)) {
-		if (queue_id == hw_priv->tsm_info.ac) {
-			struct timespec64 tmval;
-			ktime_get_real_ts64(&tmval);
-			pkt_delay = hw_priv->start_stop_tsm.packetization_delay;
-			if (hw_priv->tsm_info.sta_roamed &&
-				!hw_priv->tsm_info.use_rx_roaming) {
-				hw_priv->tsm_info.roam_delay = tmval.tv_nsec / 1000 -
-				hw_priv->tsm_info.txconf_timestamp_vo;
-				if (hw_priv->tsm_info.roam_delay > pkt_delay)
-					hw_priv->tsm_info.roam_delay -= pkt_delay;
-				bes_info("[TX] txConf Roaming: roam_delay = %u\n", hw_priv->tsm_info.roam_delay);
-				hw_priv->tsm_info.sta_roamed = 0;
-			}
-			hw_priv->tsm_info.rx_timestamp_vo = tmval.tv_nsec / 1000;
-		}
-	}
-	spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 	if ((arg->status == WSM_REQUEUE) &&
 		(arg->flags & WSM_TX_STATUS_REQUEUE)) {
 		/* "Requeue" means "implicit suspend" */
@@ -1432,13 +1292,8 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			arg->link_id,
 			bes2600_queue_get_generation(arg->packetID) + 1,
 			priv->sta_asleep_mask);
-#ifdef CONFIG_BES2600_TESTMODE
-		bes_fail(__func__, bes2600_queue_requeue(hw_priv, queue,
-				arg->packetID, true));
-#else
 		bes_fail(__func__, bes2600_queue_requeue(queue,
 				arg->packetID, true));
-#endif
 		spin_lock_bh(&priv->ps_state_lock);
 		if (!arg->link_id) {
 			priv->buffered_multicasts = true;
@@ -1486,9 +1341,9 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 			    !bes2600_skb_is_eapol(skb, txpriv->offset)) {
 				priv->data_acked = true;
 				priv->data_acked_jiffies = jiffies;
-				bes_info("%s: first unicast data ACK "
-					 "txedRate=%u flags=0x%x agg=%d "
-					 "ba_ena=%d privacy=%d\n",
+				bes_devel("%s: first unicast data ACK "
+					  "txedRate=%u flags=0x%x agg=%d "
+					  "ba_ena=%d privacy=%d\n",
 					 __func__, arg->txedRate, arg->flags,
 					 !!(arg->flags &
 					    WSM_TX_STATUS_AGGREGATION),
@@ -1551,11 +1406,7 @@ void bes2600_tx_confirm_cb(struct bes2600_common *hw_priv,
 		}
 #endif
 
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue, arg->packetID);
-#else
 		bes2600_queue_remove(queue, arg->packetID);
-#endif /*CONFIG_BES2600_TESTMODE*/
 		spin_unlock(&priv->vif_lock);
 	}else {
 		spin_unlock(&priv->vif_lock);
@@ -1609,75 +1460,13 @@ void bes2600_skb_dtor(struct bes2600_common *hw_priv,
 				txpriv->raw_link_id, txpriv->tid);
 		tx_policy_put(hw_priv, txpriv->rate_id);
 	}
-	if (likely(!bes2600_is_itp(hw_priv))) {
-		if (priv) {
-			/* The interface may be already removed */
-			bes2600_tx_status(priv, skb);
-		}
-		ieee80211_tx_status_skb(hw_priv->hw, skb);
+	if (priv) {
+		/* The interface may be already removed */
+		bes2600_tx_status(priv, skb);
 	}
+	ieee80211_tx_status_skb(hw_priv->hw, skb);
 
 }
-#ifdef CONFIG_BES2600_TESTMODE
-/* TODO It should be removed before official delivery */
-static void frame_hexdump(char *prefix, u8 *data, int len)
-{
-	print_hex_dump(KERN_DEBUG, prefix, DUMP_PREFIX_NONE, 16, 1, data, len, false);
-}
-/**
- * bes2600_tunnel_send_testmode_data - Send test frame to the driver
- *
- * @priv: pointer to bes2600 private structure
- * @skb: skb with frame
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_tunnel_send_testmode_data(struct bes2600_common *hw_priv,
-						struct sk_buff *skb)
-{
-	if (bes2600_testmode_event(hw_priv->hw->wiphy, BES_MSG_EVENT_FRAME_DATA,
-				 skb->data, skb->len, GFP_ATOMIC))
-		return -EINVAL;
-
-	return 0;
-}
-
-/**
- * bes2600_frame_test_detection - Detection frame_test
- *
- * @priv: pointer to bes2600 vif structure
- * @frame: ieee80211 header
- * @skb: skb with frame
- *
- * Returns: 1 - frame test detected, 0 - not detected
- */
-static int bes2600_frame_test_detection(struct bes2600_vif *priv,
-					   struct ieee80211_hdr *frame,
-					   struct sk_buff *skb)
-{
-	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
-	int hdrlen = ieee80211_hdrlen(frame->frame_control);
-	int detected = 0;
-	int ret;
-
-	if (hdrlen + hw_priv->test_frame.len <= skb->len &&
-		memcmp(skb->data + hdrlen, hw_priv->test_frame.data,
-		   hw_priv->test_frame.len) == 0) {
-		detected = 1;
-		bes_devel("TEST FRAME detected");
-		frame_hexdump("TEST FRAME original:", skb->data, skb->len);
-		ret = ieee80211_data_to_8023(skb, hw_priv->mac_addr,
-				priv->mode);
-		if (!ret) {
-			frame_hexdump("FRAME 802.3:", skb->data, skb->len);
-			ret = bes2600_tunnel_send_testmode_data(hw_priv, skb);
-		}
-		if (ret)
-			bes_err("Send TESTFRAME failed(%d)", ret);
-	}
-	return detected;
-}
-#endif /* CONFIG_BES2600_TESTMODE */
 
 
 static void
@@ -1738,29 +1527,6 @@ static void bes2600_rx_check_go_neg(struct bes2600_common *hw_priv, struct ieee8
 		u8 *action = (u8*)&mgmt->u.action.category;
 		bes2600_check_go_neg_conf_success(hw_priv, action);
 	}
-}
-
-static void bes2600_rx_handle_testmode(struct bes2600_common *hw_priv, struct sk_buff *skb)
-{
-#ifdef CONFIG_BES2600_TESTMODE
-	spin_lock_bh(&hw_priv->tsm_lock);
-	if (hw_priv->start_stop_tsm.start) {
-		unsigned queue_id = skb_get_queue_mapping(skb);
-		if (queue_id == 0) {
-			struct timespec64 tmval;
-			ktime_get_real_ts64(&tmval);
-			if (hw_priv->tsm_info.sta_roamed &&
-				hw_priv->tsm_info.use_rx_roaming) {
-				hw_priv->tsm_info.roam_delay = tmval.tv_nsec / 1000 -
-					hw_priv->tsm_info.rx_timestamp_vo;
-				bes_devel("[RX] RxInd Roaming: roam_delay = %u\n", hw_priv->tsm_info.roam_delay);
-				hw_priv->tsm_info.sta_roamed = 0;
-			}
-			hw_priv->tsm_info.rx_timestamp_vo = tmval.tv_nsec / 1000;
-		}
-	}
-	spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 }
 
 static void bes2600_rx_handle_link_id(struct bes2600_vif *priv, struct wsm_rx *arg, struct ieee80211_hdr *frame, bool *early_data, struct bes2600_link_entry **entry)
@@ -1991,7 +1757,7 @@ static void bes2600_rx_handle_beacon(struct bes2600_vif *priv, struct bes2600_co
 
 				if (!tim_pin_first) {
 					tim_pin_first = 1;
-					bes_devel("P56 TIM dtim=%u/%u bmap_ctrl=0x%02x "
+					bes_devel("TIM dtim=%u/%u bmap_ctrl=0x%02x "
 						  "v0=0x%02x v1=0x%02x aid=%d our=%d mcast=%d\n",
 						 tim->dtim_count, tim->dtim_period,
 						 tim->bitmap_ctrl, v0, v1,
@@ -2049,29 +1815,6 @@ static void bes2600_rx_handle_data_stats(struct bes2600_vif *priv, struct ieee80
 	}
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-static bool bes2600_rx_handle_test_frame(struct bes2600_vif *priv, struct ieee80211_hdr *frame, struct sk_buff *skb)
-{
-	if (hw_priv->test_frame.len > 0 &&
-		priv->mode == NL80211_IFTYPE_STATION) {
-		if (bes2600_frame_test_detection(priv, frame, skb) == 1) {
-			consume_skb(skb);
-			*skb_p = NULL;
-			return true;
-		}
-	}
-	return false;
-}
-#endif /* CONFIG_BES2600_TESTMODE */
-
-static bool bes2600_rx_check_itp(struct bes2600_common *hw_priv, struct sk_buff *skb)
-{
-	if (unlikely(bes2600_itp_rxed(hw_priv, skb))) {
-		consume_skb(skb);
-		return true;
-	}
-	return false;
-}
 
 static void bes2600_rx_queue_or_submit(struct bes2600_vif *priv, bool early_data, struct bes2600_link_entry *entry, struct sk_buff *skb)
 {
@@ -2152,16 +1895,16 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 	bes2600_rx_wakeup_device(hw_priv, frame);
 	bes2600_rx_check_go_neg(hw_priv, frame, mgmt);
-	bes2600_rx_handle_testmode(hw_priv, skb); /* CONFIG_BES2600_TESTMODE, or empty function. */
 	bes2600_rx_handle_link_id(priv, arg, frame, &early_data, &entry);
 
 	if (early_data)
-		bes_pin("P52 RX early_data filtered fc=0x%04x\n",
-			le16_to_cpu(frame->frame_control));
+		bes_devel("%s: RX early_data filtered fc=0x%04x\n",
+			  __func__, le16_to_cpu(frame->frame_control));
 
 	if (bes2600_rx_handle_status_drop(priv, arg, hdr)) {
-		bes_pin("P53 RX status drop st=%u fc=0x%04x da=%pM enc=%u\n",
-			arg->status, le16_to_cpu(frame->frame_control),
+		bes_err("%s: RX status drop st=%u fc=0x%04x da=%pM enc=%u\n",
+			__func__, arg->status,
+			le16_to_cpu(frame->frame_control),
 			frame->addr1, WSM_RX_STATUS_ENCRYPTION(arg->flags));
 		goto drop;
 	}
@@ -2202,8 +1945,8 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 		if (rx_agg < 8) {
 			rx_agg++;
-			bes_info("RX AMPDU flags=0x%x enc=%u len=%d "
-				 "(%u/8) privacy=%d\n",
+			bes_devel("RX AMPDU flags=0x%x enc=%u len=%d "
+				  "(%u/8) privacy=%d\n",
 				 arg->flags,
 				 WSM_RX_STATUS_ENCRYPTION(arg->flags),
 				 skb->len, rx_agg, priv->ap_privacy);
@@ -2220,8 +1963,8 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 		if (rx_data < 6 &&
 		    (eth == ETH_P_IP || eth == ETH_P_ARP || eth == ETH_P_PAE)) {
 			rx_data++;
-			bes_info("RX data eth=0x%04x len=%d agg=%d grp=%d "
-				 "(%u/6)\n",
+			bes_devel("RX data eth=0x%04x len=%d agg=%d grp=%d "
+				  "(%u/6)\n",
 				 eth, skb->len,
 				 !!(arg->flags & WSM_RX_STATUS_AGGREGATE),
 				 !!(arg->flags & WSM_RX_STATUS_GROUP),
@@ -2253,7 +1996,7 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 			 hw_priv->mac_addr,
 			 !!(arg->flags & WSM_RX_STATUS_ADDRESS1));
 		if (ieee80211_is_data(frame->frame_control)) {
-			bes_devel("P50 RX data eth=0x%04x da=%pM a1match=%d "
+			bes_devel("RX data eth=0x%04x da=%pM a1match=%d "
 				  "grp=%d enc=%u len=%d\n",
 				  eth, frame->addr1,
 				  !!(arg->flags & WSM_RX_STATUS_ADDRESS1),
@@ -2261,10 +2004,10 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 				  WSM_RX_STATUS_ENCRYPTION(arg->flags),
 				  skb->len);
 			if (eth == ETH_P_PAE)
-				bes_pin("P51 RX %s da=%pM a1match=%d\n",
-					bes2600_eapol_rx_name(skb, hdrlen),
-					frame->addr1,
-					!!(arg->flags & WSM_RX_STATUS_ADDRESS1));
+				bes_devel("RX %s da=%pM a1match=%d\n",
+					  bes2600_eapol_rx_name(skb, hdrlen),
+					  frame->addr1,
+					  !!(arg->flags & WSM_RX_STATUS_ADDRESS1));
 		}
 	}
 
@@ -2281,14 +2024,15 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 
 		if (addba_pin < 1) {
 			addba_pin++;
-			bes_pin("P59 RX ADDBA swallowed until 4-way\n");
+			bes_devel("%s: RX ADDBA swallowed until 4-way\n",
+				  __func__);
 		}
 		goto drop;
 	}
 
 	if (bes2600_rx_handle_decryption(priv, hdr, arg, skb, frame, hdrlen)) {
-		bes_pin("P54 RX decrypt drop fc=0x%04x enc=%u\n",
-			le16_to_cpu(frame->frame_control),
+		bes_err("%s: RX decrypt drop fc=0x%04x enc=%u\n",
+			__func__, le16_to_cpu(frame->frame_control),
 			WSM_RX_STATUS_ENCRYPTION(arg->flags));
 		goto drop;
 	}
@@ -2299,13 +2043,6 @@ void bes2600_rx_cb(struct bes2600_vif *priv,
 	bes2600_rx_handle_discon_power(hw_priv, frame);
 	bes2600_rx_handle_data_stats(priv, frame, hdrlen, skb);
 
-#ifdef CONFIG_BES2600_TESTMODE
-	if (bes2600_rx_handle_test_frame(priv, frame, skb))
-		return;
-#endif /* CONFIG_BES2600_TESTMODE */
-
-	if (bes2600_rx_check_itp(hw_priv, skb))
-		return;
 
 	bes2600_rx_queue_or_submit(priv, early_data, entry, skb);
 

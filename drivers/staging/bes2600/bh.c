@@ -518,14 +518,14 @@ static void bes2600_bh_parse_ipv4_data(struct iphdr *ip)
 {
 	u8 *tmp_ptr = (u8 *)ip;
 
-	bes_info("IP Addr src:0x%08x dst:0x%08x\n", __be32_to_cpu(ip->saddr), __be32_to_cpu(ip->daddr));
+	bes_devel("IP Addr src:0x%08x dst:0x%08x\n", __be32_to_cpu(ip->saddr), __be32_to_cpu(ip->daddr));
 
 	if (ip->protocol == IPPROTO_TCP) {
 		struct tcphdr *tcp = (struct tcphdr *)(tmp_ptr + ip->ihl * 4);
-		bes_info("TCP Port src:%d dst:%d\n", __be16_to_cpu(tcp->source), __be16_to_cpu(tcp->dest));
+		bes_devel("TCP Port src:%d dst:%d\n", __be16_to_cpu(tcp->source), __be16_to_cpu(tcp->dest));
 	} else if (ip->protocol == IPPROTO_UDP) {
 		struct udphdr *udp = (struct udphdr *)(tmp_ptr + ip->ihl * 4);
-	  bes_info("UDP Port src:%d dst:%d\n", __be16_to_cpu(udp->source), __be16_to_cpu(udp->dest));
+		bes_devel("UDP Port src:%d dst:%d\n", __be16_to_cpu(udp->source), __be16_to_cpu(udp->dest));
 	}
 }
 
@@ -548,7 +548,7 @@ static void bes2600_bh_parse_data_pkt(struct bes2600_common *hw_priv, struct sk_
 
 	if (eth_type == ETH_P_IP) {
 		struct iphdr *ip = (struct iphdr *)&eth_type_ptr[1];
-		bes_info("IP version: %d\nIP proto: %d", ip->version, ip->protocol);
+		bes_devel("IP version: %d\nIP proto: %d", ip->version, ip->protocol);
 
 		if (ip->version == 4) {
 			bes2600_bh_parse_ipv4_data(ip);
@@ -1299,7 +1299,7 @@ static int bes2600_bh(struct bes2600_common *hw_priv)
 		/* TODO: schedule_work(recovery) */
 	}
 	else
-		bes_info("%s: At bottom, fail?\n", __func__);
+		bes_devel("%s: At bottom, fail?\n", __func__);
 
 	return 0;
 }

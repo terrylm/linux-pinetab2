@@ -12,8 +12,6 @@
 #ifndef BES2600_DEBUG_H_INCLUDED
 #define BES2600_DEBUG_H_INCLUDED
 
-#include "itp.h"
-
 struct cw200_common;
 
 struct bes2600_debug_common {
@@ -25,9 +23,6 @@ struct bes2600_debug_common {
 	int ba_acc;
 	int ba_cnt_rx;
 	int ba_acc_rx;
-#ifdef CONFIG_BES2600_ITP
-	struct bes2600_itp itp;
-#endif /* CONFIG_BES2600_ITP */
 };
 
 struct bes2600_debug_priv {

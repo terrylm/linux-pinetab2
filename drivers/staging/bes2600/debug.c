@@ -511,10 +511,6 @@ int bes2600_debug_init_common(struct bes2600_common *hw_priv)
 		goto err;
 #endif
 
-	ret = bes2600_itp_init(hw_priv);
-	if (ret)
-		goto err;
-
 	return 0;
 
 err:
@@ -528,7 +524,6 @@ void bes2600_debug_release_common(struct bes2600_common *hw_priv)
 {
 	struct bes2600_debug_common *d = hw_priv->debug;
 	if (d) {
-		bes2600_itp_release(hw_priv);
 		hw_priv->debug = NULL;
 		kfree(d);
 	}
@@ -709,7 +704,8 @@ int bes2600_debug_init_priv(struct bes2600_common *hw_priv,
 	struct bes2600_debug_priv *d;
 	char name[VIF_DEBUGFS_NAME_S];
 	static int entrycount=0;
-	printk(KERN_DEBUG "bes2600_debug_init_priv entered %i times before, vif_%d\n", entrycount++, priv->if_id);
+	bes_devel("%s: entered %i times before, vif_%d\n",
+		  __func__, entrycount++, priv->if_id);
 
 	if (!hw_priv) {
 		bes_err("%s: no hw_priv\n", __func__);

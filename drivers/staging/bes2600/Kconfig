@@ -60,17 +60,6 @@ config BES2600_FASTPS_IDLE_TIME
 		Set the fast power save idle time in seconds.
 		Use 0 to enable dynamic PS timeout; other values override it for fixed idle time.
 
-config GET_MAC_ADDR_METHOD
-	int "Method for getting MAC address (1-4)"
-	range 1 4
-	default 4
-	help
-		Select the method to obtain the MAC address:
-		1: Rock API (fixed MAC)
-		2: Read from file (customer MAC)
-		3: Read from file (MAC template)
-		4: Random MAC address
-
 config FACTORY_PATH
 	string "Path to factory calibration file"
 	default "/lib/firmware/bes2600_factory.txt"
@@ -258,32 +247,6 @@ config BES2600_EXTRA_FEATURES
 	  Enable additional features for the BES2600 driver, such as multicast forwarding, SDIO optimizations, or vendor extensions.
 	  If disabled, all sub-features are forced off regardless of their defaults.
 
-if BES2600_EXTRA_FEATURES
-
-config BES2600_KEEP_ALIVE
-	bool "Enable keep-alive support in testmode"
-	default n
-	depends on BES2600_TESTMODE
-	help
-	  Enable TCP/UDP keepalive features in testmode for maintaining connections and analyzing packet delays.
-
-	  This is a vendor extension, useful for testing association/roaming behavior.
-
-	  If unsure, say N.
-
-config VENDOR_XM_KEEPALIVE
-	bool "Enable Xiaomi-specific keepalive extensions"
-	default n
-	depends on BES2600_KEEP_ALIVE
-	help
-	  Enable Xiaomi (XM) vendor-specific TCP/UDP keepalive patterns and filters for compatibility or testing.
-
-	  Only relevant if using Xiaomi hardware or test setups; otherwise disable to save code size.
-
-	  If unsure, say N.
-
-endif # BES2600_EXTRA_FEATURES
-
 menu "Driver debug features"
 
 config BES2600_DEBUGFS
@@ -364,38 +327,6 @@ config BES2600_DUMP_ON_ERROR
 	default n
 	help
 		Dump kernel state on critical driver errors.
-
-		If unsure, say N.
-
-config BES2600_ITP
-	bool "Enable ITP DebugFS"
-	default n
-	help
-		Enable ITP (Internal Test Point?) DebugFS entries.
-
-		If unsure, say N.
-
-config BES2600_TESTMODE
-	bool "Enable BES2600 testmode support"
-	select NL80211_TESTMODE
-	default n
-	help
-		Enable testmode features for the BES2600 driver, including vendor-specific RF commands
-		(e.g., calibration, power, frequency testing), advanced scan modes (passive/active measurements),
-		and Traffic Stream Metrics (TSM) for analyzing association, roaming, packet delays,
-		and media/queue statistics.  This is primarily for development and testing purposes,
-		allowing interaction via nl80211 tools like 'iw' for debugging WiFi performance and hardware behavior.
-
-		If unsure, say N.
-
-config BES2600_KEEP_ALIVE
-	bool "Enable keep-alive support under testmode"
-	default n
-	depends on BES2600_TESTMODE
-	help
-		Enable TCP/UDP keepalive features in testmode, including vendor-specific extensions
-		(e.g., for Xiaomi compatibility).
-		For testing association/packet delays or keepalive behavior.
 
 		If unsure, say N.
 

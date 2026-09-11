@@ -32,10 +32,8 @@ bes2600-y := \
 
 # compilation files select
 bes2600-$(CONFIG_BES2600_DEBUGFS)	+= debug.o
-bes2600-$(CONFIG_BES2600_ITP)		+= itp.o
 bes2600-$(CONFIG_PM)			+= pm.o
 bes2600-$(CONFIG_BES2600_BT)		+= bes2600_btusb.o
-bes2600-$(CONFIG_BES2600_TESTMODE)	+= wifi_testmode_cmd.o
 bes2600-$(CONFIG_BES2600_WOWLAN)	+= bes_pwr.o
 
 obj-$(CONFIG_BES2600) += bes2600.o

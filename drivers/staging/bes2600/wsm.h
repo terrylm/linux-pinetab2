@@ -133,11 +133,6 @@ struct bes2600_vif;
 
 /* The maximum number of SSIDs that the device can scan for. */
 #define WSM_SCAN_MAX_NUM_OF_SSIDS	(2)
-#ifdef CONFIG_BES2600_TESTMODE
-/* Transmit flags */
-/* Start Expiry time from the receipt of tx request */
-#define WSM_TX_FLAG_EXPIRY_TIME		(BIT(0))
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 /* Power management modes */
 /* 802.11 Active mode */
@@ -2157,24 +2152,6 @@ static inline u8 wsm_queue_id_to_wsm(u8 queueId)
 	return queue_mapping[queueId];
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-/**
- * include signaling and nosignaling mode
- */
-struct vendor_rf_cmd_t {
-	u32 cmd_type;
-	u32 cmd_argc;
-	u32 cmd_len;
-	u8 cmd[0];
-};
-
-int wsm_vendor_rf_cmd(struct bes2600_common *hw_priv, int if_id,
-                      const struct vendor_rf_cmd_t *vendor_rf_cmd);
-int wsm_vendor_rf_cmd_confirm(struct bes2600_common *hw_priv,
-                              void *arg, struct wsm_buf *buf);
-int wsm_vendor_rf_test_indication(struct bes2600_common *hw_priv, struct wsm_buf *buf);
-
-#endif /* CONFIG_BES2600_TESTMODE */
 
 /**
  *  bes2600 driver signaling and nosignaling cmd

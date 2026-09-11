@@ -46,7 +46,5 @@ static inline int bes_fail(const char *fn, int ret)
 		bes_err("%s: failed %d\n", fn, ret);
 	return ret;
 }
-/* KERN_ERR so it hits the console even if kmsg dies mid-line */
-#define bes_pin(fmt, ...) printk(KERN_ERR "bes2600 %s: " fmt, __func__, ##__VA_ARGS__)
 
 #endif /* BES_LOG_H_INCLUDED */

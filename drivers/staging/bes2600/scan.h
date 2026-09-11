@@ -57,9 +57,5 @@ void bes2600_cancel_hw_scan(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
 /* ******************************************************************** */
 /* Raw probe requests TX workaround					*/
 void bes2600_probe_work(struct work_struct *work);
-#ifdef CONFIG_BES2600_TESTMODE
-/* Advance Scan Timer							*/
-void bes2600_advance_scan_timeout(struct work_struct *work);
-#endif
 
 #endif

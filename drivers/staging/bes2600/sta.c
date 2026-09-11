@@ -24,10 +24,6 @@
 #include "bh.h"
 #include "debug.h"
 #include "wsm.h"
-#ifdef CONFIG_BES2600_TESTMODE
-#include "bes_nl80211_testmode_msg.h"
-#include <net/netlink.h>
-#endif /* CONFIG_BES2600_TESTMODE */
 #include "net/mac80211.h"
 #include "bes_chardev.h"
 #include "bes_log.h"
@@ -47,34 +43,6 @@
 #define MAX_ARP_REPLY_TEMPLATE_SIZE		120
 #define MAX_TCP_ALIVE_TEMPLATE_SIZE		256
 
-#ifdef CONFIG_BES2600_TESTMODE
-const int bes2600_1d_to_ac[8] = {
-	IEEE80211_AC_BE,
-	IEEE80211_AC_BK,
-	IEEE80211_AC_BK,
-	IEEE80211_AC_BE,
-	IEEE80211_AC_VI,
-	IEEE80211_AC_VI,
-	IEEE80211_AC_VO,
-	IEEE80211_AC_VO
-};
-
-/**
- * enum bes2600_ac_numbers - AC numbers as used in bes2600
- * @BES2600_AC_VO: voice
- * @BES2600_AC_VI: video
- * @BES2600_AC_BE: best effort
- * @BES2600_AC_BK: background
- */
-enum bes2600_ac_numbers {
-	BES2600_AC_VO	= 0,
-	BES2600_AC_VI	= 1,
-	BES2600_AC_BE	= 2,
-	BES2600_AC_BK	= 3,
-};
-
-int bes2600_testmode_reply(struct wiphy *wiphy, const void *data, int len);
-#endif /*CONFIG_BES2600_TESTMODE*/
 
 #define MAX_NEIGHBOR_ADVERTISEMENT_TEMPLATE_SIZE 144
 
@@ -89,19 +57,6 @@ static inline void __bes2600_free_event_queue(struct list_head *list)
 	}
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-/* User priority to WSM queue mapping */
-const int bes2600_priority_to_queueId[8] = {
-	WSM_QUEUE_BEST_EFFORT,
-	WSM_QUEUE_BACKGROUND,
-	WSM_QUEUE_BACKGROUND,
-	WSM_QUEUE_BEST_EFFORT,
-	WSM_QUEUE_VIDEO,
-	WSM_QUEUE_VIDEO,
-	WSM_QUEUE_VOICE,
-	WSM_QUEUE_VOICE
-};
-#endif /*CONFIG_BES2600_TESTMODE*/
 static inline void __bes2600_bf_configure(struct bes2600_vif *priv)
 {
 	priv->bf_table.numOfIEs = __cpu_to_le32(3);
@@ -155,12 +110,6 @@ int bes2600_start(struct ieee80211_hw *dev)
 	tx_policy_init(hw_priv);
 
 
-#ifdef CONFIG_BES2600_TESTMODE
-	spin_lock_bh(&hw_priv->tsm_lock);
-	memset(&hw_priv->tsm_stats, 0, sizeof(struct bes_tsm_stats));
-	memset(&hw_priv->tsm_info, 0, sizeof(struct bes2600_tsm_info));
-	spin_unlock_bh(&hw_priv->tsm_lock);
-#endif /*CONFIG_BES2600_TESTMODE*/
 	memcpy(hw_priv->mac_addr, dev->wiphy->perm_addr, ETH_ALEN);
 
 	atomic_inc(&hw_priv->netdevice_start);
@@ -219,9 +168,6 @@ void bes2600_stop(struct ieee80211_hw *dev, bool suspend)
 	cancel_delayed_work_sync(&hw_priv->scan.probe_work);
 	cancel_delayed_work_sync(&hw_priv->scan.timeout);
 
-#ifdef CONFIG_BES2600_TESTMODE
-	cancel_delayed_work_sync(&hw_priv->advance_scan_timeout);
-#endif
 	flush_workqueue(hw_priv->workqueue);
 	timer_delete_sync(&hw_priv->ba_timer);
 
@@ -284,8 +230,8 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	struct bes2600_vif *priv;
 	struct bes2600_vif **drv_priv = (void *)vif->drv_priv;
 
-	bes_info("%s: Adding VIF: addr=%pM, type=%d, p2p=%d\n",
-		 __func__, vif->addr, vif->type, vif->p2p);
+	bes_devel("%s: Adding VIF: addr=%pM, type=%d, p2p=%d\n",
+		  __func__, vif->addr, vif->type, vif->p2p);
 
 	priv = cw12xx_get_vif_from_ieee80211(vif);
 	atomic_set(&priv->enabled, 0);
@@ -308,7 +254,7 @@ int bes2600_add_interface(struct ieee80211_hw *dev,
 	if (vif->type == NL80211_IFTYPE_STATION && !vif->p2p) {
 		/* Check if we already have a station VIF */
 		if (hw_priv->vif_list[0]) {
-			bes_info("Station VIF already exists (if_id=0) - reusing it\n");
+			bes_devel("Station VIF already exists (if_id=0) - reusing it\n");
 			spin_unlock(&hw_priv->vif_list_lock);
 			up(&hw_priv->conf_lock);
 			return 0;               /* success, reuse existing */
@@ -409,8 +355,8 @@ void bes2600_remove_interface(struct ieee80211_hw *dev,
 		return;
 	}
 
-	bes_info("Removing VIF: type=%d p2p=%d addr=%pM if_id=%d\n",
-		vif->type, vif->p2p, vif->addr, priv->if_id);
+	bes_devel("Removing VIF: type=%d p2p=%d addr=%pM if_id=%d\n",
+		  vif->type, vif->p2p, vif->addr, priv->if_id);
 
 	atomic_set(&priv->enabled, 0);
 	down(&hw_priv->scan.lock);
@@ -550,10 +496,6 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 	int ret = 0;
 	struct bes2600_common *hw_priv = dev->priv;
 	struct ieee80211_conf *conf = &dev->conf;
-#ifdef CONFIG_BES2600_TESTMODE
-	int max_power_level = 0;
-	int min_power_level = 0;
-#endif
 	/* TODO:COMBO: adjust to multi vif interface
 	 * IEEE80211_CONF_CHANGE_IDLE is still handled per bes2600_vif*/
 	int if_id = 0;
@@ -598,31 +540,19 @@ int bes2600_config(struct ieee80211_hw *dev, u32 changed)
 		if (!want)
 			want = 20;
 		hw_priv->output_power = want;
-#ifdef CONFIG_BES2600_TESTMODE
-		if (conf->chandef.chan->band == NL80211_BAND_2GHZ) {
-			max_power_level = hw_priv->txPowerRange[0].max_power_level;
-			min_power_level = hw_priv->txPowerRange[0].min_power_level;
-		} else {
-			max_power_level = hw_priv->txPowerRange[1].max_power_level;
-			min_power_level = hw_priv->txPowerRange[1].min_power_level;
-		}
-		if (hw_priv->output_power > max_power_level)
-			hw_priv->output_power = max_power_level;
-		else if (hw_priv->output_power < min_power_level)
-			hw_priv->output_power = min_power_level;
-#endif /* CONFIG_BES2600_TESTMODE */
-		bes_info("%s: CONF_CHANGE_POWER conf=%d use=%d if_id=%d have_key=%d\n",
-			 __func__, conf->power_level, hw_priv->output_power,
-			 if_id, have_key);
+		bes_devel("%s: CONF_CHANGE_POWER conf=%d use=%d if_id=%d have_key=%d\n",
+			  __func__, conf->power_level, hw_priv->output_power,
+			  if_id, have_key);
 		if (have_key) {
 			int pret = wsm_set_output_power(hw_priv,
 							hw_priv->output_power * 10,
 							if_id);
-			bes_info("%s: wsm_set_output_power ret=%d\n",
-				 __func__, pret);
+			if (pret)
+				bes_err("%s: wsm_set_output_power ret=%d\n",
+					__func__, pret);
 		} else {
-			bes_info("%s: skip wsm_set_output_power until 4-way\n",
-				 __func__);
+			bes_devel("%s: skip wsm_set_output_power until 4-way\n",
+				  __func__);
 		}
 	}
 
@@ -789,8 +719,8 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		};
 
 		if (!(priv->vif && priv->vif->cfg.assoc)) {
-			bes_info("%s: defer filter WSM until associated\n",
-				 __func__);
+			bes_devel("%s: defer filter WSM until associated\n",
+				  __func__);
 			return;
 		}
 		/*
@@ -799,7 +729,7 @@ void bes2600_update_filtering_work(struct work_struct *work)
 		 * beacon 30s late.  Only disable beacon filter so TIM
 		 * can indicate EAPOL.
 		 */
-		bes_info("%s: pre-key beacon filter off only\n", __func__);
+		bes_devel("%s: pre-key beacon filter off only\n", __func__);
 		if (wsm_beacon_filter_control(hw_priv, &bf_disabled,
 					      priv->if_id))
 			bes_warn("%s: beacon filter disable failed\n",
@@ -1008,14 +938,12 @@ void bes2600_pin_fw_counters(struct bes2600_common *hw_priv, const char *tag)
 		return;
 	ret = wsm_get_counters_table(hw_priv, &c);
 	if (ret) {
-		bes_pin("P60 counters %s ret=%d\n", tag, ret);
+		bes_devel("%s: counters %s ret=%d\n", __func__, tag, ret);
 		return;
 	}
-	/* rxOK vs rxMcast: unicast data the LMAC counted but host never
-	 * saw would show rxOK growing with no P50. noKey/decryptFail
-	 * mean FW dropped frames we would never see as P50. */
-	bes_pin("P60 %s rxPkts=%u rxOK=%u rxMcast=%u rxErr=%u "
+	bes_devel("%s: %s rxPkts=%u rxOK=%u rxMcast=%u rxErr=%u "
 		"noKey=%u decryptFail=%u txOK=%u ackFail=%u\n",
+		__func__,
 		tag,
 		le32_to_cpu(c.countRxPackets),
 		le32_to_cpu(c.countRxFramesSuccess),
@@ -1255,11 +1183,11 @@ void bes2600_pm_apply(struct bes2600_vif *priv)
 		priv->powersave_mode.fastPsmIdlePeriod =
 			conf->dynamic_ps_timeout << 1;
 
-	bes_info("%s: ps=%d mode=0x%x dyn_to=%d idle=%u aid=%d ap_ps_bad=%d\n",
-		 __func__, ps, priv->powersave_mode.pmMode,
-		 conf->dynamic_ps_timeout,
-		 priv->powersave_mode.fastPsmIdlePeriod,
-		 priv->bss_params.aid, priv->ap_ps_bad);
+	bes_devel("%s: ps=%d mode=0x%x dyn_to=%d idle=%u aid=%d ap_ps_bad=%d\n",
+		  __func__, ps, priv->powersave_mode.pmMode,
+		  conf->dynamic_ps_timeout,
+		  priv->powersave_mode.fastPsmIdlePeriod,
+		  priv->bss_params.aid, priv->ap_ps_bad);
 
 	if (priv->join_status != BES2600_JOIN_STATUS_STA ||
 	    !priv->bss_params.aid)
@@ -1322,15 +1250,10 @@ int bes2600_set_key(struct ieee80211_hw *dev, enum set_key_cmd cmd,
 	if (priv->if_id == CW12XX_GENERIC_IF_ID)
 		bes_err("%s: generic if_id\n", __func__);
 	memset(&mgmt_policy, 0, sizeof(mgmt_policy));
-	/* INFO: if this never appears after "associated", freeze is before 4-way */
-	bes_pin("P57 set_key cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
-		cmd, key->cipher, key->keyidx,
-		!!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
-		priv->join_status);
-	bes_info("%s: enter cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
-		 __func__, cmd, key->cipher, key->keyidx,
-		 !!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
-		 priv->join_status);
+	bes_devel("%s: cmd=%d cipher=0x%x idx=%d pairwise=%d join_status=%d\n",
+		  __func__, cmd, key->cipher, key->keyidx,
+		  !!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
+		  priv->join_status);
 	if (down_timeout(&hw_priv->conf_lock, 5 * HZ)) {
 		bes_err("%s: conf_lock timeout 5s — possible deadlock\n", __func__);
 		return -ETIMEDOUT;
@@ -1584,11 +1507,7 @@ void bes2600_wep_key_work(struct work_struct *work)
 	wsm_flush_tx(hw_priv);
 	bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_DOT11_WEP_DEFAULT_KEY_ID,
 		&wep_default_key_id, sizeof(wep_default_key_id), priv->if_id));
-#ifdef CONFIG_BES2600_TESTMODE
-	bes2600_queue_requeue(hw_priv, queue, hw_priv->pending_frame_id, true);
-#else
 	bes2600_queue_requeue(queue, hw_priv->pending_frame_id, true);
-#endif
 	wsm_unlock_tx(hw_priv);
 }
 
@@ -2124,38 +2043,6 @@ void bes2600_tx_failure_work(struct work_struct *work)
 #endif /* CONFIG_BES2600_USE_STE_EXTENSIONS */
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-/**
- * bes2600_device_power_calc- Device power calculation
- * from values fetch from SDD File.
- *
- * @priv: the private structure
- * @Max_output_power: Power fetch from SDD
- * @fe_cor: front-end loss correction
- * @band: Either 2GHz or 5GHz
- *
- */
-void bes2600_device_power_calc(struct bes2600_common *hw_priv,
-		s16 max_output_power, s16 fe_cor, u32 band)
-{
-	s16 power_calc;
-
-	power_calc = max_output_power - fe_cor;
-	if ((power_calc % 16) != 0)
-		power_calc += 16;
-
-	hw_priv->txPowerRange[band].max_power_level = power_calc/16;
-	/*
-	 * 12dBm is control range supported by firmware.
-	 * This means absolute min power is
-	 * max_power_level - 12.
-	 */
-	hw_priv->txPowerRange[band].min_power_level =
-		hw_priv->txPowerRange[band].max_power_level - 12;
-	hw_priv->txPowerRange[band].stepping = 1;
-
-}
-#endif
 /* ******************************************************************** */
 /* Internal API								*/
 
@@ -2171,13 +2058,6 @@ void bes2600_device_power_calc(struct bes2600_common *hw_priv,
 static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 {
 	u8 *sdd_data = (u8 *)hw_priv->sdd->data;
-#ifdef CONFIG_BES2600_TESTMODE
-	s16 max_output_power_2G = 0;
-	s16 max_output_power_5G = 0;
-	s16 fe_cor_2G = 0;
-	s16 fe_cor_5G = 0;
-	int i;
-#endif
 	struct bes2600_sdd {
 		u8 id ;
 		u8 length ;
@@ -2185,13 +2065,6 @@ static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 	} *pElement;
 	int parsedLength = 0;
 	#define SDD_PTA_CFG_ELT_ID 0xEB
-#ifdef CONFIG_BES2600_TESTMODE
-	#define SDD_MAX_OUTPUT_POWER_2G4_ELT_ID 0xE3
-	#define SDD_MAX_OUTPUT_POWER_5G_ELT_ID	0xE4
-	#define SDD_FE_COR_2G4_ELT_ID	0x30
-	#define SDD_FE_COR_5G_ELT_ID	0x31
-	#define MIN(x, y, z) (x < y ? (x < z ? x : z) : (y < z ? y : z))
-#endif
 	#define FIELD_OFFSET(type, field) ((u8 *)&((type *)0)->field - (u8 *)0)
 
 	hw_priv->is_BT_Present = false;
@@ -2216,39 +2089,6 @@ static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 						hw_priv->conf_listen_interval);
 		}
 		break;
-#ifdef CONFIG_BES2600_TESTMODE
-		case SDD_MAX_OUTPUT_POWER_2G4_ELT_ID:
-		{
-			max_output_power_2G =
-				*((s16 *)pElement->data);
-		}
-		break;
-		case SDD_FE_COR_2G4_ELT_ID:
-		{
-			fe_cor_2G =
-				*((s16 *)pElement->data);
-		}
-		break;
-		case SDD_MAX_OUTPUT_POWER_5G_ELT_ID:
-		{
-			max_output_power_5G =
-				*((s16 *)(pElement->data + 4));
-		}
-		break;
-		case SDD_FE_COR_5G_ELT_ID:
-		{
-			fe_cor_5G = MIN(
-				*((s16 *)pElement->data),
-				*((s16 *)(pElement->data + 2)),
-				*((s16 *)(pElement->data + 4)));
-
-			fe_cor_5G = MIN(
-				fe_cor_5G,
-				*((s16 *)(pElement->data + 6)),
-				*((s16 *)(pElement->data + 8)));
-		}
-		break;
-#endif
 
 		default:
 		break;
@@ -2265,33 +2105,10 @@ static int bes2600_parse_SDD_file(struct bes2600_common *hw_priv)
 		bes_devel("PTA element NOT found.\n");
 		hw_priv->conf_listen_interval = 0;
 	}
-#ifdef CONFIG_BES2600_TESTMODE
-	bes2600_device_power_calc(hw_priv, max_output_power_2G,
-		fe_cor_2G, NL80211_BAND_2GHZ);
-	bes2600_device_power_calc(hw_priv, max_output_power_5G,
-		fe_cor_5G, NL80211_BAND_5GHZ);
-
-	for (i = 0; i < 2; ++i) {
-		bes_devel("[STA] Power Values Read from SDD %s:"
-			"min_power_level[%d]: %d max_power_level[%d]:"
-			"%d stepping[%d]: %d\n", __func__, i,
-			hw_priv->txPowerRange[i].min_power_level, i,
-			hw_priv->txPowerRange[i].max_power_level, i,
-			hw_priv->txPowerRange[i].stepping);
-	}
-
-
-	bes_devel("%s output power before %d\n",__func__,hw_priv->output_power);
-		if (!hw_priv->output_power)
-				hw_priv->output_power=hw_priv->txPowerRange[NL80211_BAND_2GHZ].max_power_level;
-
-		bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
-#else
 		bes_devel("%s output power before %d\n",__func__,hw_priv->output_power);
 		if (!hw_priv->output_power)
 				hw_priv->output_power=20;
 		bes_devel("%s output power after %d\n",__func__,hw_priv->output_power);
-#endif
 	return 0;
 
 	#undef SDD_PTA_CFG_ELT_ID
@@ -2472,12 +2289,7 @@ void bes2600_offchannel_work(struct work_struct *work)
 	if (unlikely(down_trylock(&hw_priv->scan.lock))) {
 		int ret = 0;
 		bes_devel("bes2600_offchannel_work***** drop frame\n");
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue,
-				hw_priv->pending_frame_id);
-#else
 		ret = bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-#endif
 		if (ret)
 			bes_err("bes2600_offchannel_work: "
 				   "queue_remove failed %d\n", ret);
@@ -2493,19 +2305,9 @@ void bes2600_offchannel_work(struct work_struct *work)
 		/* bes2600_update_filtering(priv); */
 	}
 	if (unlikely(!priv->join_status))
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue,
-				hw_priv->pending_frame_id);
-#else
 		bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-#endif /*CONFIG_BES2600_TESTMODE*/
 	else
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_requeue(hw_priv, queue,
-			hw_priv->pending_frame_id, false);
-#else
 		bes2600_queue_requeue(queue, hw_priv->pending_frame_id, false);
-#endif
 
 	queue_delayed_work(hw_priv->workqueue,
 			&priv->pending_offchanneltx_work, 204 * HZ/1000);
@@ -2578,8 +2380,8 @@ void bes2600_join_work(struct work_struct *work)
 		bes_devel("%s: finished — join_status=STA, awaiting auth TX\n",
 			 __func__);
 	else
-		bes_info("%s: finished — join_status=%d\n",
-			 __func__, priv->join_status);
+		bes_devel("%s: finished — join_status=%d\n",
+			  __func__, priv->join_status);
 
 out:
 	bes_devel("=== bes2600_join_work FINISHED for VIF %d ===\n", priv->if_id);
@@ -2642,8 +2444,8 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 	if (unlikely(priv->join_status)) {
 		struct wsm_reset reset = { .reset_statistics = true };
 
-		bes_info("%s: prior join_status=%d, fast FW reset for rejoin\n",
-			 __func__, priv->join_status);
+		bes_devel("%s: prior join_status=%d, fast FW reset for rejoin\n",
+			  __func__, priv->join_status);
 		atomic_set(&priv->connect_in_process, 0);
 		priv->delayed_unjoin = false;
 		priv->join_status = BES2600_JOIN_STATUS_PASSIVE;
@@ -2661,11 +2463,7 @@ static int bes2600_join_send_cmd(struct bes2600_vif *priv)
 			       IEEE80211_BSS_TYPE_ANY, IEEE80211_PRIVACY_ANY);
 	if (!bss) {
 		bes_err("Could not find BSS for BSSID %pM\n", bssid);
-#ifdef CONFIG_BES2600_TESTMODE
-		bes2600_queue_remove(hw_priv, queue, hw_priv->pending_frame_id);
-#else
 		bes2600_queue_remove(queue, hw_priv->pending_frame_id);
-#endif
 		wsm_unlock_tx(hw_priv);
 		return -ENOENT;
 	}
@@ -2898,14 +2696,8 @@ fail:
 		int fret = -1;
 
 		if (queueId < 4) {
-#ifdef CONFIG_BES2600_TESTMODE
-			fret = bes2600_queue_remove(hw_priv,
-				&hw_priv->tx_queue[queueId],
-				hw_priv->pending_frame_id);
-#else
 			fret = bes2600_queue_remove(&hw_priv->tx_queue[queueId],
 						    hw_priv->pending_frame_id);
-#endif
 		}
 		if (fret)
 			bes_err("bes2600_queue_remove() FAILED (fret=%d)\n", fret);
@@ -2946,15 +2738,9 @@ static int bes2600_join_finish_success(struct bes2600_vif *priv)
 
 	bes_devel("P01 join_finish_success enter pending=0x%x bufs=%d\n",
 		hw_priv->pending_frame_id, hw_priv->hw_bufs_used);
-#ifdef CONFIG_BES2600_TESTMODE
-	ret = bes2600_queue_requeue(hw_priv,
-		&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
-		hw_priv->pending_frame_id, true);
-#else
 	ret = bes2600_queue_requeue(
 		&hw_priv->tx_queue[bes2600_queue_get_queue_id(hw_priv->pending_frame_id)],
 		hw_priv->pending_frame_id, true);
-#endif
 	bes_devel("P02 after requeue ret=%d\n", ret);
 	if (ret) {
 		bes_err("%s: auth requeue FAILED ret=%d pending=0x%x queueId=%u\n",
@@ -3034,8 +2820,8 @@ static void bes2600_join_complete_work(struct work_struct *work)
 	struct bes2600_common *hw_priv = cw12xx_vifpriv_to_hwpriv(priv);
 	int ret;
 
-	bes_info("%s: FW join complete, status=%d (VIF %d)\n",
-		 __func__, priv->join_complete_status, priv->if_id);
+	bes_devel("%s: FW join complete, status=%d (VIF %d)\n",
+		  __func__, priv->join_complete_status, priv->if_id);
 
 	hw_priv->join_pending_if_id = -1;
 
@@ -3066,8 +2852,8 @@ static void bes2600_join_complete_work(struct work_struct *work)
 	bes2600_bh_wakeup(hw_priv);
 
 	up(&hw_priv->conf_lock);
-	bes_info("%s: join complete, auth released (VIF %d)\n",
-		 __func__, priv->if_id);
+	bes_devel("%s: join complete, auth released (VIF %d)\n",
+		  __func__, priv->if_id);
 }
 
 void bes2600_join_timeout(struct work_struct *work)
@@ -3089,8 +2875,8 @@ void bes2600_join_timeout(struct work_struct *work)
 	 * the heartbeat path above.
 	 */
 	if (priv->join_status == BES2600_JOIN_STATUS_STA) {
-		bes_info("%s: STA but not assoc — unjoin for scan/retry\n",
-			 __func__);
+		bes_devel("%s: STA but not assoc — unjoin for scan/retry\n",
+			  __func__);
 		hw_priv->join_pending_if_id = -1;
 		atomic_set(&priv->connect_in_process, 0);
 		/* Keep JOIN awake until unjoin's wsm_reset finishes */
@@ -3129,7 +2915,7 @@ void bes2600_unjoin_work(struct work_struct *work)
 	 */
 	if (unlikely(atomic_read(&hw_priv->scan.in_progress))) {
 		if (!priv->delayed_unjoin) {
-			bes_info("%s: delay unjoin until scan done\n", __func__);
+			bes_devel("%s: delay unjoin until scan done\n", __func__);
 			priv->delayed_unjoin = true;
 		}
 		/* Keep TX locked for the eventual unjoin */
@@ -4091,1158 +3877,3 @@ exit_p:
 	return ret;
 }
 
-#ifdef CONFIG_BES2600_TESTMODE
-/**
- * bes2600_set_snap_frame -Set SNAP frame format
- *
- * @hw: the hardware
- * @data: data frame
- * @len: data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_set_snap_frame(struct ieee80211_hw *hw,
-				 u8 *data, int len)
-{
-	struct bes_msg_set_snap_frame *snap_frame =
-		(struct bes_msg_set_snap_frame *) data;
-	struct bes2600_common *priv = (struct bes2600_common *) hw->priv;
-	u8 frame_len = snap_frame->len;
-	u8 *frame = &snap_frame->frame[0];
-
-	/*
-	 * Check length of incoming frame format:
-	 * SNAP + SNAP_LEN (u8)
-	 */
-	if (frame_len + sizeof(snap_frame->len) != len)
-		return -EINVAL;
-
-	if (frame_len > 0) {
-		priv->test_frame.data = (u8 *) krealloc(priv->test_frame.data,
-						sizeof(u8) * frame_len,
-						GFP_KERNEL);
-		if (priv->test_frame.data == NULL) {
-			bes_devel("bes2600_set_snap_frame memory" \
-					 "allocation failed");
-			priv->test_frame.len = 0;
-			return -EINVAL;
-		}
-		memcpy(priv->test_frame.data, frame, frame_len);
-	} else {
-		kfree(priv->test_frame.data);
-		priv->test_frame.data = NULL;
-	}
-	priv->test_frame.len = frame_len;
-	return 0;
-}
-
-
-/**
- * bes2600_set_txqueue_params -Set txqueue params after successful TSPEC negotiation
- *
- * @hw: the hardware
- * @data: data frame
- * @len: data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_set_txqueue_params(struct ieee80211_hw *hw,
-					 u8 *data, int len)
-{
-	struct bes_msg_set_txqueue_params *txqueue_params =
-		(struct bes_msg_set_txqueue_params *) data;
-	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
-	struct bes2600_vif *priv;
-	/* Interface ID is hard coded here, as interface is not
-		 * passed in testmode command.
-		 * Also it is assumed here that STA will be on interface
-		 * 0 always.
-		 */
-
-	int if_id = 0;
-	u16 queueId = bes2600_priority_to_queueId[txqueue_params->user_priority];
-
-	priv = cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
-
-	if (unlikely(!priv)) {
-		bes2600_err(BES2600_DBG_TEST_MODE, "[STA] %s: Warning Priv is Null\n",
-			   __func__);
-		return 0;
-	}
-	spin_unlock(&priv->vif_lock);
-
-	/* Default Ack policy is WSM_ACK_POLICY_NORMAL */
-	WSM_TX_QUEUE_SET(&priv->tx_queue_params,
-			queueId,
-			WSM_ACK_POLICY_NORMAL,
-			txqueue_params->medium_time,
-			txqueue_params->expiry_time);
-	return bes_fail(__func__, wsm_set_tx_queue_params(hw_priv,
-			&priv->tx_queue_params.params[queueId], queueId,
-			priv->if_id));
-}
-
-/**
- * bes2600_testmode_reply -called inside a testmode command
- * handler to send a response to user space
- *
- * @wiphy: the wiphy
- * @data: data to be send to user space
- * @len: data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_testmode_reply(struct wiphy *wiphy,
-				const void *data, int len)
-{
-	int ret = 0;
-	struct sk_buff *skb = cfg80211_testmode_alloc_reply_skb(wiphy,
-		nla_total_size(len));
-
-	bes_devel("%s\n", __func__);
-	if (!skb)
-		return -ENOMEM;
-
-	ret = nla_put(skb, BES_TM_MSG_DATA, len, data);
-	if (ret) {
-		kfree_skb(skb);
-		return ret;
-	}
-
-	return cfg80211_testmode_reply(skb);
-}
-
-/**
- * bes2600_testmode_event -send asynchronous event
- * to userspace
- *
- * @wiphy: the wiphy
- * @msg_id: BES msg ID
- * @data: data to be sent
- * @len: data length
- * @gfp: allocation flag
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_testmode_event(struct wiphy *wiphy, const u32 msg_id,
-			 const void *data, int len, gfp_t gfp)
-{
-	struct sk_buff *skb = cfg80211_testmode_alloc_event_skb(wiphy,
-		nla_total_size(len+sizeof(msg_id)), gfp);
-
-	if (!skb)
-		return -ENOMEM;
-
-	if (nla_put_u32(skb, BES_TM_MSG_ID, msg_id))
-		goto nla_put_failure;
-	if (data)
-		if (nla_put(skb, BES_TM_MSG_DATA, len, data))
-			goto nla_put_failure;
-
-	cfg80211_testmode_event(skb, gfp);
-	return 0;
-nla_put_failure:
-	kfree_skb(skb);
-	return -ENOBUFS;
-}
-
-/**
- * example function for test purposes
- * sends both: synchronous reply and asynchronous event
- */
-static int bes2600_test(struct ieee80211_hw *hw,
-			   void *data, int len)
-{
-	struct bes_msg_test_t *test_p;
-	struct bes_reply_test_t reply;
-	struct bes_event_test_t event;
-
-	if (sizeof(struct bes_msg_test_t)  != len)
-		return -EINVAL;
-
-	test_p = (struct bes_msg_test_t *) data;
-
-	reply.dummy = test_p->dummy + 10;
-
-	event.dummy = test_p->dummy + 20;
-
-	if (bes2600_testmode_event(hw->wiphy, BES_MSG_EVENT_TEST,
-		&event, sizeof(event), GFP_KERNEL))
-		return -1;
-
-	return bes2600_testmode_reply(hw->wiphy, &reply, sizeof(reply));
-}
-
-/**
- * bes2600_get_tx_power_level - send tx power level
- * to userspace
- *
- * @hw: the hardware
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_get_tx_power_level(struct ieee80211_hw *hw)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	int get_power = 0;
-	get_power = hw_priv->output_power;
-	bes_devel("[STA] %s: Power set on Device : %d",
-		__func__, get_power);
-	return bes2600_testmode_reply(hw->wiphy, &get_power, sizeof(get_power));
-}
-
-/**
- * bes2600_get_tx_power_range- send tx power range
- * to userspace for each band
- *
- * @hw: the hardware
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_get_tx_power_range(struct ieee80211_hw *hw)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	struct wsm_tx_power_range txPowerRange[2];
-	size_t len = sizeof(txPowerRange);
-	memcpy(txPowerRange, hw_priv->txPowerRange, len);
-	return bes2600_testmode_reply(hw->wiphy, txPowerRange, len);
-}
-
-/**
- * bes2600_set_advance_scan_elems -Set Advcance Scan
- * elements
- * @hw: the hardware
- * @data: data frame
- * @len: data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_set_advance_scan_elems(struct ieee80211_hw *hw,
-				 u8 *data, int len)
-{
-	struct advance_scan_elems *scan_elems =
-		(struct advance_scan_elems *) data;
-	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
-	size_t elems_len = sizeof(struct advance_scan_elems);
-
-	if (elems_len != len)
-		return -EINVAL;
-
-	scan_elems = (struct advance_scan_elems *) data;
-
-	/* Locks required to prevent simultaneous scan */
-	down(&hw_priv->scan.lock);
-	down(&hw_priv->conf_lock);
-
-	hw_priv->advanceScanElems.scanMode = scan_elems->scanMode;
-	hw_priv->advanceScanElems.duration = scan_elems->duration;
-	hw_priv->enable_advance_scan = true;
-
-	up(&hw_priv->conf_lock);
-	up(&hw_priv->scan.lock);
-
-	return 0;
-}
-
-/**
- * bes2600_set_power_save -Set Power Save
- * elements
- * @hw: the hardware
- * @data: data frame
- * @len: data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-static int bes2600_set_power_save(struct ieee80211_hw *hw,
-				 u8 *data, int len)
-{
-	struct power_save_elems *ps_elems =
-		(struct power_save_elems *) data;
-	struct bes2600_common *hw_priv = (struct bes2600_common *) hw->priv;
-	size_t elems_len = sizeof(struct power_save_elems);
-	struct bes2600_vif *priv;
-	int if_id = 0;
-	/* Interface ID is hard coded here, as interface is not
-		 * passed in testmode command.
-		 * Also it is assumed here that STA will be on interface
-		 * 0 always.
-		 */
-
-	if (elems_len != len)
-		return -EINVAL;
-
-	priv = cw12xx_hwpriv_to_vifpriv(hw_priv, if_id);
-
-	if (unlikely(!priv)) {
-		bes2600_err(BES2600_DBG_TEST_MODE, "[STA] %s: Warning Priv is Null\n",
-			   __func__);
-		return 0;
-	}
-
-	spin_unlock(&priv->vif_lock);
-	down(&hw_priv->conf_lock);
-
-	ps_elems = (struct power_save_elems *) data;
-
-	if (ps_elems->powerSave == 1)
-		priv->user_pm_mode = WSM_PSM_PS;
-	else
-		priv->user_pm_mode = WSM_PSM_FAST_PS;
-
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] Aid: %d, Joined: %s, Powersave: %s\n",
-		priv->bss_params.aid,
-		priv->join_status == BES2600_JOIN_STATUS_STA ? "yes" : "no",
-		priv->user_pm_mode == WSM_PSM_ACTIVE ? "WSM_PSM_ACTIVE" :
-		priv->user_pm_mode == WSM_PSM_PS ? "WSM_PSM_PS" :
-		priv->user_pm_mode == WSM_PSM_FAST_PS ? "WSM_PSM_FAST_PS" :
-		"UNKNOWN");
-	if (priv->join_status == BES2600_JOIN_STATUS_STA &&
-			priv->bss_params.aid &&
-			priv->setbssparams_done &&
-			priv->filter4.enable) {
-		priv->powersave_mode.pmMode = priv->user_pm_mode;
-		bes2600_set_pm(priv, &priv->powersave_mode);
-	}
-	else
-		priv->user_power_set_true = ps_elems->powerSave;
-	up(&hw_priv->conf_lock);
-	return 0;
-}
-/**
- * bes2600_start_stop_tsm - starts/stops collecting TSM
- *
- * @hw: the hardware
- * @data: data frame
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_start_stop_tsm(struct ieee80211_hw *hw, void *data)
-{
-	struct bes_msg_start_stop_tsm *start_stop_tsm =
-		(struct bes_msg_start_stop_tsm *) data;
-	struct bes2600_common *hw_priv = hw->priv;
-	hw_priv->start_stop_tsm.start = start_stop_tsm->start;
-	hw_priv->start_stop_tsm.up = start_stop_tsm->up;
-	hw_priv->start_stop_tsm.packetization_delay =
-		start_stop_tsm->packetization_delay;
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: start : %u: up : %u",
-		__func__, hw_priv->start_stop_tsm.start,
-		hw_priv->start_stop_tsm.up);
-	hw_priv->tsm_info.ac = bes2600_1d_to_ac[start_stop_tsm->up];
-
-	if (!hw_priv->start_stop_tsm.start) {
-		spin_lock_bh(&hw_priv->tsm_lock);
-		memset(&hw_priv->tsm_stats, 0, sizeof(hw_priv->tsm_stats));
-		memset(&hw_priv->tsm_info, 0, sizeof(hw_priv->tsm_info));
-		spin_unlock_bh(&hw_priv->tsm_lock);
-	}
-	return 0;
-}
-
-/**
- * bes2600_get_tsm_params - Retrieves TSM parameters
- *
- * @hw: the hardware
- *
- * Returns: TSM parameters collected
- */
-int bes2600_get_tsm_params(struct ieee80211_hw *hw)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	struct bes_tsm_stats tsm_stats;
-	u32 pkt_count;
-	spin_lock_bh(&hw_priv->tsm_lock);
-	pkt_count = hw_priv->tsm_stats.txed_msdu_count -
-			 hw_priv->tsm_stats.msdu_discarded_count;
-	if (pkt_count) {
-		hw_priv->tsm_stats.avg_q_delay =
-			hw_priv->tsm_info.sum_pkt_q_delay/(pkt_count * 1000);
-		hw_priv->tsm_stats.avg_transmit_delay =
-			hw_priv->tsm_info.sum_media_delay/pkt_count;
-	} else {
-		hw_priv->tsm_stats.avg_q_delay = 0;
-		hw_priv->tsm_stats.avg_transmit_delay = 0;
-	}
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: Txed MSDU count : %u",
-		__func__, hw_priv->tsm_stats.txed_msdu_count);
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: Average queue delay : %u",
-			__func__, hw_priv->tsm_stats.avg_q_delay);
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: Average transmit delay : %u",
-			__func__, hw_priv->tsm_stats.avg_transmit_delay);
-	memcpy(&tsm_stats, &hw_priv->tsm_stats, sizeof(hw_priv->tsm_stats));
-	/* Reset the TSM statistics */
-	memset(&hw_priv->tsm_stats, 0, sizeof(hw_priv->tsm_stats));
-	hw_priv->tsm_info.sum_pkt_q_delay = 0;
-	hw_priv->tsm_info.sum_media_delay = 0;
-	spin_unlock_bh(&hw_priv->tsm_lock);
-	return bes2600_testmode_reply(hw->wiphy, &tsm_stats,
-					 sizeof(hw_priv->tsm_stats));
-}
-
-/**
- * bes2600_get_roam_delay - Retrieves roam delay
- *
- * @hw: the hardware
- *
- * Returns: Returns the last measured roam delay
- */
-int bes2600_get_roam_delay(struct ieee80211_hw *hw)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	u16 roam_delay = hw_priv->tsm_info.roam_delay / 1000;
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: Roam delay : %u",
-		__func__, roam_delay);
-	spin_lock_bh(&hw_priv->tsm_lock);
-	hw_priv->tsm_info.roam_delay = 0;
-	hw_priv->tsm_info.use_rx_roaming = 0;
-	spin_unlock_bh(&hw_priv->tsm_lock);
-	return bes2600_testmode_reply(hw->wiphy, &roam_delay, sizeof(u16));
-}
-
-/* tcp & udp alive test */
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-
-int bes2600_set_ipv4addrfilter(struct bes2600_common *hw_priv, u8 *data, int if_id)
-{
-	struct wsm_ipv4_filter	*ipv4_filter =	NULL;
-	struct ipv4_addr_info *ipv4_info = NULL;
-	u8 action_mode = 0, no_of_ip_addr = 0, i = 0, ret = 0;
-	u16 ipaddrfiltersize = 0;
-
-	/* Retrieving Action Mode */
-	action_mode = data[0];
-	/* Retrieving number of ipv4 address entries */
-	no_of_ip_addr = data[1];
-
-	ipv4_info = (struct ipv4_addr_info *)&data[2];
-
-	/* Computing sizeof Mac addr filter */
-	ipaddrfiltersize =	sizeof(*ipv4_filter) + \
-				(no_of_ip_addr * sizeof(struct wsm_ip4_addr_info));
-
-
-	ipv4_filter = kzalloc(ipaddrfiltersize, GFP_KERNEL);
-	if (!ipv4_filter) {
-		ret = -ENOMEM;
-		goto exit_p;
-	}
-	ipv4_filter->action_mode = action_mode;
-	ipv4_filter->numfilter = no_of_ip_addr;
-
-	for (i = 0; i < no_of_ip_addr; i++) {
-		ipv4_filter->ipv4filter[i].address_mode = \
-							  ipv4_info[i].address_mode;
-		ipv4_filter->ipv4filter[i].filter_mode = \
-							 ipv4_info[i].filter_mode;
-		memcpy(ipv4_filter->ipv4filter[i].ipv4, \
-			   (u8 *)(ipv4_info[i].ipv4), 4);
-	}
-
-	ret = bes_fail(__func__, wsm_write_mib(hw_priv, WSM_MIB_ID_IPV4_ADDR_FILTERING, \
-					ipv4_filter, ipaddrfiltersize, \
-					if_id));
-
-	kfree(ipv4_filter);
-exit_p:
-	return ret;
-}
-
-
-/* Checksum a block of data */
-static uint16_t csum(uint16_t *packet, int packlen)
-{
-	uint32_t sum = 0;
-
-	while (packlen > 1) {
-		sum += *(packet++);
-		packlen -= 2;
-	}
-
-	if (packlen > 0)
-		sum += *(unsigned char *)packet;
-
-	while (sum >> 16)
-		sum = (sum & 0xffff) + (sum >> 16);
-
-	return (uint16_t) ~sum;
-}
-
-
-static void tcpcsum(struct ip_header *ip,
-					   struct tcp_header *tcp,
-					   uint8_t *data,
-					   uint16_t data_len)
-{
-	uint8_t tcphd_len = sizeof(struct tcp_header);
-	uint16_t *buf = kzalloc(12 + tcphd_len + data_len, GFP_KERNEL);
-	uint8_t *tempbuf = (uint8_t *)buf;
-
-	if(tempbuf == NULL) {
-		bes2600_err(BES2600_DBG_TEST_MODE, "Out of memory: TCP checksum not computed\n");
-		return;
-	}
-
-	tcp->chksum = 0;
-	/* Set up the pseudo header */
-	memcpy(tempbuf, &(ip->src), sizeof(uint32_t));
-	memcpy(&(tempbuf[4]), &(ip->dest), sizeof(uint32_t));
-	tempbuf[8] = 0;
-	tempbuf[9] = (uint16_t)ip->_proto;
-	tempbuf[10] = (uint16_t)((tcphd_len + data_len) & 0xFF00) >> 8;
-	tempbuf[11] = (uint16_t)((tcphd_len + data_len) & 0x00FF);
-	/* Copy the TCP header and data */
-	memcpy(tempbuf + 12, (uint8_t *)tcp, tcphd_len);
-	memcpy(tempbuf + 12 + tcphd_len, data, data_len);
-	/* CheckSum it */
-	tcp->chksum = csum(buf, 12 + tcphd_len + data_len);
-	kfree(buf);
-}
-
-int bes2600_set_ip_offload(struct bes2600_common *hw_priv,
-							struct bes2600_vif *priv,
-							struct ip_alive_cfg *iac,
-							u16 idx)
-{
-	u32 framehdrlen, encrypthdr, encrypttailsize, framebdylen = 0, tu_len, tu_proto;
-	bool encrypt = false;
-	int ret = 0;
-	u8 *tmp_frame = NULL;
-	u8 *ptr = NULL;
-	struct ieee80211_hdr_3addr *dot11hdr = NULL;
-	struct ieee80211_snap_hdr *snaphdr = NULL;
-	struct ip_header *ipheader = NULL;
-	struct tcp_header *tcpheader = NULL;
-	struct udp_header *udpheader = NULL;
-	u8 *tcpbody = NULL;
-	u8 *udpbody = NULL;
-	u8 EncrType;
-
-	u8 *payload = iac->bd.payload;
-	u32 bodylen = iac->bd.len;
-	tmp_frame = kzalloc(MAX_TCP_ALIVE_TEMPLATE_SIZE, GFP_ATOMIC);
-	if (!tmp_frame) {
-		bes2600_err(BES2600_DBG_TEST_MODE, "[STA] Template frame memory failed\n");
-		ret = -ENOMEM;
-		goto exit_p;
-	}
-	dot11hdr = (struct ieee80211_hdr_3addr *)&tmp_frame[4];
-
-	framehdrlen = sizeof(*dot11hdr);
-	if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
-		priv->cipherType = WLAN_CIPHER_SUITE_CCMP;
-	switch (priv->cipherType) {
-
-	case WLAN_CIPHER_SUITE_WEP40:
-	case WLAN_CIPHER_SUITE_WEP104:
-		bes_devel("[STA] WEP\n");
-		encrypthdr = WEP_ENCRYPT_HDR_SIZE;
-		encrypttailsize = WEP_ENCRYPT_TAIL_SIZE;
-		encrypt = 1;
-		EncrType = 1;
-		break;
-
-	case WLAN_CIPHER_SUITE_TKIP:
-		bes_devel("[STA] WPA\n");
-		encrypthdr = WPA_ENCRYPT_HDR_SIZE;
-		encrypttailsize = WPA_ENCRYPT_TAIL_SIZE;
-		encrypt = 1;
-		EncrType = 3;
-		break;
-
-	case WLAN_CIPHER_SUITE_CCMP:
-		bes_devel("[STA] WPA2\n");
-		encrypthdr = WPA2_ENCRYPT_HDR_SIZE;
-		encrypttailsize = WPA2_ENCRYPT_TAIL_SIZE;
-		encrypt = 1;
-		EncrType = 5;
-		break;
-
-	case WLAN_CIPHER_SUITE_SMS4:
-		bes_devel("[STA] WAPI\n");
-		encrypthdr = WAPI_ENCRYPT_HDR_SIZE;
-		encrypttailsize = WAPI_ENCRYPT_TAIL_SIZE;
-		encrypt = 1;
-		EncrType = 7;
-		break;
-
-	default:
-		encrypthdr = 0;
-		encrypttailsize = 0;
-		encrypt = 0;
-		EncrType = 8;
-		break;
-	}
-
-	framehdrlen += encrypthdr;
-
-	/* Filling the 802.11 Hdr */
-	dot11hdr->frame_control = cpu_to_le16(IEEE80211_FTYPE_DATA);
-	if (priv->vif->type == NL80211_IFTYPE_STATION)
-		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_TODS);
-	else
-		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_FROMDS);
-
-	if (encrypt)
-		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_FCTL_WEP);
-
-	if (priv->vif->bss_conf.qos) {
-		bes2600_info(BES2600_DBG_TEST_MODE, "[STA] QOS Enabled\n");
-		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_QOS_DATAGRP);
-		*(u16 *)(dot11hdr + 1) = 0x0;
-		framehdrlen += 2;
-	} else {
-		dot11hdr->frame_control |= cpu_to_le16(IEEE80211_STYPE_DATA);
-	}
-
-	memcpy(dot11hdr->addr1, priv->vif->bss_conf.bssid, ETH_ALEN);
-	memcpy(dot11hdr->addr2, priv->vif->addr, ETH_ALEN);
-	memcpy(dot11hdr->addr3, iac->bd.dest_mac, ETH_ALEN);
-
-	/* Filling the LLC/SNAP Hdr */
-	snaphdr = (struct ieee80211_snap_hdr *)((u8 *)dot11hdr + framehdrlen);
-	memcpy(snaphdr, (struct ieee80211_snap_hdr *)rfc1042_header, \
-		   sizeof(*snaphdr));
-	*(u16 *)(++snaphdr) = cpu_to_be16(ETH_P_IP);
-	/* Updating the framebdylen with snaphdr and LLC hdr size */
-	framebdylen = sizeof(*snaphdr) + 2;
-
-	/* proto == 0 for udp stream or 1 for tcp stream; */
-	(iac->bd.proto) ? (tu_len = sizeof(struct tcp_header)):(tu_len = sizeof(struct udp_header));
-	(iac->bd.proto) ? (tu_proto = TCP_PROTO):(tu_proto = UDP_PROTO);
-
-	/* Filling the ip header */
-	ptr = (u8 *)dot11hdr + framehdrlen + framebdylen;
-	ipheader = (struct ip_header *)kzalloc(128, GFP_ATOMIC);
-	ipheader->_v_hl = 0x45;
-	ipheader->_tos = 0x00;
-	ipheader->_len = __swab16(sizeof(*ipheader) + tu_len + bodylen);
-	ipheader->_id = 0;
-	ipheader->_offset = 0;
-	ipheader->_ttl = 0xff;
-	ipheader->_proto = tu_proto;
-	ipheader->_chksum = 0;
-	ipheader->src = __swab32(iac->iphd.src);
-	ipheader->dest = __swab32(iac->iphd.dest);
-
-	/* Calculate ip header's checksum value; */
-	ipheader->_chksum = (csum((uint16_t *)ipheader, sizeof(*ipheader)));
-
-	/* Updating the frmbdylen with ip Hdr */
-	framebdylen += sizeof(*ipheader);
-
-	if (tu_proto == TCP_PROTO) {
-		/* Filling the tcp header */
-		tcpheader = (struct tcp_header *)((u8 *)ipheader + sizeof(struct ip_header));
-		tcpheader->src = __swab16(iac->tcphd.src);
-		tcpheader->dest = __swab16(iac->tcphd.dest);
-		tcpheader->seqno = __swab32(iac->bd.next_seqno);
-		tcpheader->ackno = __swab32(iac->tcphd.ackno);
-		tcpheader->_hdrlen_rsvd_flags = 0x1050;
-		tcpheader->wnd = 0xFFFF;
-		tcpheader->chksum = 0;
-		tcpheader->urgp = 0;
-
-		/* Updating the frmbdylen with tcp Hdr */
-		framebdylen += sizeof(*tcpheader);
-
-		/* Filling the tcp body */
-		tcpbody = (u8 *)dot11hdr + framehdrlen + framebdylen;
-		memcpy(tcpbody, payload, bodylen);
-
-		/* Calculate tcp's checksum value; */
-		tcpcsum(ipheader, tcpheader, payload, bodylen);
-	} else if (tu_proto == UDP_PROTO) {
-		/* Filling the udp header */
-		udpheader = (struct udp_header *)((u8 *)ipheader + sizeof(struct ip_header));
-		udpheader->src = __swab16(iac->udphd.src);
-		udpheader->dest = __swab16(iac->udphd.dest);
-		udpheader->len = __swab16(sizeof(struct udp_header) + bodylen);
-		udpheader->chksum = 0;
-
-		/* Updating the frmbdylen with udp Hdr */
-		framebdylen += sizeof(*udpheader);
-
-		/* Filling the tcp body */
-		udpbody = (u8 *)dot11hdr + framehdrlen + framebdylen;
-		memcpy(udpbody, payload, bodylen);
-	}
-
-	memcpy(ptr, ipheader, sizeof(struct ip_header) + tu_len);
-	kfree(ipheader);
-
-	/* Updating the frmbdylen with tcp payload */
-	framebdylen += bodylen;
-
-	/* Updating the framebdylen with Encryption Tail Size */
-	framebdylen += encrypttailsize;
-
-	/* Filling the Template Frame Hdr.
-	 * Bit7 of the first idx stards for tcp/udp protocol,0 for udp and 1 for tcp;
-	 * Bit6 indicates if send the heartbeat or not. 1 to send and 0 not.
-	 * Bits 3-5 reserve for use.
-	 * Bit 0-2 stands for stream index.
-	 */
-	if (iac->klv_vendor == KLV_VENDOR_DEFAULT) {
-		tmp_frame[0] = idx | (1 << 6) | (iac->bd.proto << 7);
-	} else {
-		tmp_frame[0] = idx | (1 << 6) | (iac->bd.proto << 7);
-	}
-	tmp_frame[1] = 0xFF; /* Fixed to 0xFF */
-	((u16 *)&tmp_frame[2])[0] = framehdrlen + framebdylen + AES_KEY_IV_LEN + 1;
-	memcpy(&tmp_frame[framehdrlen + framebdylen + 4], iac->aes_key, AES_KEY_LEN);
-	memcpy(&tmp_frame[framehdrlen + framebdylen + 20], iac->aes_iv, AES_IV_LEN);
-	/*
-	 *bit0-bit3 stands for encrypt type,
-	 *bit4-bit7 stands for klv_vendor;
-	 */
-	tmp_frame[framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN] = (EncrType | (iac->klv_vendor << 4));
-
-	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
-								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
-								tmp_frame,
-								(framehdrlen + framebdylen + 4 + AES_KEY_IV_LEN + 1),
-								priv->if_id));
-	kfree(tmp_frame);
-
-exit_p:
-	return ret;
-}
-
-int bes2600_del_ip_offload(struct bes2600_common *hw_priv,
-							struct bes2600_vif *priv,
-							u8 stream_idx)
-{
-	u8 tmp_frame[8];
-	int ret;
-
-	/* Filling the Template Frame Hdr */
-	tmp_frame[0] = stream_idx;
-	tmp_frame[1] = 0xFF; /* Fixed to 0xFF */
-	((u16 *)&tmp_frame[2])[0] = 0;
-
-	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
-								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_FRAME,
-								tmp_frame,
-								4,
-								priv->if_id));
-
-	return ret;
-}
-
-int bes2600_en_ip_offload(struct bes2600_common *hw_priv,
-						   struct bes2600_vif *priv,
-						   u16 period_in_s)
-{
-	int ret;
-	struct MIB_TCP_KEEP_ALIVE_PERIOD period;
-	u8 EncrType;
-
-	if ((priv->vif->type == NL80211_IFTYPE_AP) && priv->vif->p2p)
-		priv->cipherType = WLAN_CIPHER_SUITE_CCMP;
-	switch (priv->cipherType) {
-
-	case WLAN_CIPHER_SUITE_WEP40:
-	case WLAN_CIPHER_SUITE_WEP104:
-		EncrType = 1;
-		break;
-
-	case WLAN_CIPHER_SUITE_TKIP:
-		EncrType = 3;
-		break;
-
-	case WLAN_CIPHER_SUITE_CCMP:
-		EncrType = 5;
-		break;
-
-	case WLAN_CIPHER_SUITE_SMS4:
-		EncrType = 7;
-		break;
-
-	default:
-		EncrType = 8;
-		break;
-	}
-
-	/* Send mib WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_PERIOD */
-	period.TcpKeepAlivePeriod = period_in_s;
-	period.EncrType = EncrType;
-	period.Reserved = 0;
-	ret = bes_fail(__func__, wsm_write_mib(hw_priv,
-								WSM_MIB_ID_EXT_TCP_KEEP_ALIVE_PERIOD,
-								(u8 *)&period,
-								sizeof(period),
-								priv->if_id));
-
-	return ret;
-}
-
-static int search_for_free_stream(struct bes2600_common *hw_priv, uint8_t proto,
-					uint16_t src_port, uint16_t dst_port,
-					uint32_t src_ip, uint32_t dst_ip)
-{
-	int i = 0, free_idx = -1;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-
-	/* If port matches, overwrites the configuration; */
-	for (i = 0; i < NUM_IP_FRAMES; i++) {
-		if (iac[i].bd.idx_used == 1 &&
-			iac[i].bd.proto == proto &&
-			iac[i].bd.src_port == src_port &&
-			iac[i].bd.dest_port == dst_port &&
-			iac[i].bd.src_ip == src_ip &&
-			iac[i].bd.dest_ip == dst_ip) {
-			free_idx = i;
-			break;
-		} else if (free_idx == -1 && iac[i].bd.idx_used == 0) {
-			free_idx = i;
-			iac[i].bd.idx_used = 1;
-		}
-	}
-
-	return free_idx;
-}
-
-static int get_keep_alive_used_stream(struct ieee80211_hw *hw)
-{
-	int i;
-	struct ip_alive_cfg *iac = ((struct bes2600_common *)hw->priv)->iac;
-	u8 stream = 0;
-
-	for (i = 0; i < NUM_IP_FRAMES; i++) {
-		if (iac[i].bd.idx_used == 1)
-			stream |= (1 << i);
-	}
-	return bes2600_testmode_reply(hw->wiphy, &stream, sizeof(u8));
-}
-
-#ifdef CONFIG_VENDOR_XM_KEEPALIVE
-void bes2600_get_keepalive_info(struct bes2600_common *hw_priv, struct ip_alive_satus *status)
-{
-	int i;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-
-	status->udp = false;
-	status->tcp = false;
-
-	for (i = 0; i < NUM_IP_FRAMES; i++) {
-		if (iac[i].bd.idx_used == 1) {
-			if (iac[i].bd.proto == 0)
-				status->udp = true;
-			else if (iac[i].bd.proto == 1)
-				status->tcp = true;
-		}
-	}
-}
-#endif
-
-static int net_device_add_ip_offload(struct ieee80211_hw *hw, u8 *data, int len)
-{
-	struct ip_alive_paras *paras = (struct ip_alive_paras *)data;
-	struct ip_alive_cfg *iac = ((struct bes2600_common *)hw->priv)->iac;
-	int idx_check;
-	struct ip_stream_cfg idx_cfg = {
-		.err_code = 0,
-		.idx = -1,
-	};
-
-	/* only allowed paras->idx == 0xF */
-	if (paras->idx != 0xF) {
-		idx_cfg.err_code = -1; /* cmd with idx err */
-		bes2600_info(BES2600_DBG_TEST_MODE, "cmd with idx err\n");
-		goto err_idx;
-	}
-
-	if (paras->payload_len <= IP_KEEPALIVE_MAX_LEN) {
-		/* idx == 0xF, find a free one. */
-		idx_check = search_for_free_stream(hw->priv, paras->proto,
-											paras->src_port,
-											paras->dst_port,
-											paras->src_ip,
-											paras->dst_ip);
-		if (idx_check < 0 || idx_check >= NUM_IP_FRAMES) {
-			paras->idx = 0xF;
-			idx_cfg.err_code = -2; /* get stream fail */
-			bes2600_info(BES2600_DBG_TEST_MODE, "Exceeded maximum number of keepalive streams\n");
-			goto err_idx;
-		} else {
-			paras->idx = idx_check;
-		}
-
-		iac[paras->idx].bd.proto = paras->proto;
-		iac[paras->idx].klv_vendor = paras->klv_vendor;
-		iac[paras->idx].bd.src_port = paras->src_port;
-		iac[paras->idx].bd.dest_port = paras->dst_port;
-		iac[paras->idx].iphd.src = iac[paras->idx].bd.src_ip = paras->src_ip;
-		iac[paras->idx].iphd.dest = iac[paras->idx].bd.dest_ip = paras->dst_ip;
-		if (paras->proto) { //tcp
-			iac[paras->idx].tcphd.src = paras->src_port;
-			iac[paras->idx].tcphd.dest = paras->dst_port;
-		} else { //udp
-			iac[paras->idx].udphd.src = paras->src_port;
-			iac[paras->idx].udphd.dest = paras->dst_port;
-		}
-
-		if (iac[paras->idx].klv_vendor == KLV_VENDOR_DEFAULT) {
-			iac[paras->idx].bd.len = paras->payload_len;
-		} else if (iac[paras->idx].klv_vendor == KLV_VENDOR_XM) {
-			iac[paras->idx].bd.len = paras->payload_len;
-			if (paras->proto) { //tcp
-				//Reserve space for pkcs5 padding and base64 coding in firmware;
-				iac[paras->idx].bd.len = (iac[paras->idx].bd.len + (AES_KEY_LEN -
-											(iac[paras->idx].bd.len % AES_KEY_LEN))) * 8 / 6;
-				//Reserve space for websocket frame's head,
-				iac[paras->idx].bd.len += WEBSOCKET_HD_LEN;
-			}
-		}
-
-		memset(iac[paras->idx].bd.payload, 0, IP_KEEPALIVE_MAX_LEN);
-		memcpy(iac[paras->idx].bd.payload, paras->payload, paras->payload_len);
-		memcpy(iac[paras->idx].aes_key, paras->key, AES_KEY_LEN);
-		memcpy(iac[paras->idx].aes_iv, paras->iv, AES_IV_LEN);
-
-		bes2600_info(BES2600_DBG_TEST_MODE, "idx = %d, len=%d\n", paras->idx, iac[paras->idx].bd.len);
-		idx_cfg.idx = paras->idx;
-	} else {
-		bes2600_err(BES2600_DBG_TEST_MODE, "payload_len = %d, too long!\n", paras->payload_len);
-		idx_cfg.err_code = -3; /* playload err */
-	}
-
-err_idx:
-	return bes2600_testmode_reply(hw->wiphy, &idx_cfg, sizeof(struct ip_stream_cfg));
-
-}
-
-static int net_device_del_ip_offload(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u8 *data, int len)
-{
-	struct ip_alive_iac_idx *alive_iac_idx = (struct ip_alive_iac_idx *)data;
-	int idx = alive_iac_idx->idx;
-	struct bes2600_common *hw_priv = hw->priv;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-	struct bes2600_vif *priv;
-
-	if (vif) {
-		priv = cw12xx_get_vif_from_ieee80211(vif);
-	} else {
-		bes2600_err(BES2600_DBG_TEST_MODE, "failed to get vif\n");
-		return -EOPNOTSUPP;
-	}
-
-	if (idx <= NUM_IP_FRAMES && idx >= 0) {
-		iac[idx].bd.idx_used = 0;
-		bes2600_del_ip_offload(hw_priv, priv, idx);
-		bes2600_info(BES2600_DBG_TEST_MODE, "delete idx = %d\n", idx);
-	} else {
-		bes2600_err(BES2600_DBG_TEST_MODE, "wrong idx = %d!\n", idx);
-		idx = -1; /* invalid idx */
-	}
-	return bes2600_testmode_reply(hw->wiphy, &idx, sizeof(int));
-}
-
-
-static int net_device_en_ip_offload(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u8 *data, int len)
-{
-	struct ip_alive_period *alive_period = (struct ip_alive_period *)data;
-	int period = alive_period->period;
-	struct bes2600_common *hw_priv = hw->priv;
-	struct ip_alive_cfg *iac = hw_priv->iac;
-	struct bes2600_vif *priv;
-	u8 idx;
-	u8 ip_ack_filter[10] = {
-	1, // action mode: 0 disable, 1 filter out, 2 filter in
-	1, // filter number
-	1, // filter_mode: 0 disable, 1 filter out, 2 filter in
-	3, // address_mode: 1, src addr, 2 dest addr, 3 tcp ack
-	};
-
-	if (vif) {
-		priv = cw12xx_get_vif_from_ieee80211(vif);
-	} else {
-		bes2600_err(BES2600_DBG_TEST_MODE, "failed to get vif\n");
-		return -EOPNOTSUPP;
-	}
-
-	for (idx = 0; idx < NUM_IP_FRAMES; idx++) {
-		if (iac[idx].bd.idx_used) {
-			bes2600_set_ip_offload(hw_priv, priv, &iac[idx], idx);
-			bes2600_set_ipv4addrfilter(hw_priv, ip_ack_filter, priv->if_id);
-		}
-	}
-
-	bes2600_en_ip_offload(hw_priv, priv, period);
-	bes2600_info(BES2600_DBG_TEST_MODE, "en period = %d\n", period);
-
-	return 0;
-}
-#endif /* CONFIG_BES2600_KEEP_ALIVE */
-
-static int bes2600_factory_cali_to_mcu(struct ieee80211_hw *hw, enum bes2600_rf_cmd_type cmd_type)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	u8 *factory_data = NULL;
-	u8 *file_buffer = NULL;
-	u32 factory_data_len = 0;
-	int ret;
-
-	if (bes2600_chrdev_is_signal_mode())
-		return -EOPNOTSUPP;
-
-	if (!(file_buffer = bes2600_factory_get_file_buffer()))
-		return -ENOMEM;
-
-	bes2600_factory_lock();
-	factory_data = bes2600_get_factory_cali_data(file_buffer, &factory_data_len, FACTORY_PATH);
-	if (!factory_data) {
-		bes2600_warn(BES2600_DBG_DOWNLOAD, "factory cali data get failed.\n");
-		ret = -ENOENT;
-	} else {
-		bes2600_factory_data_check(factory_data);
-		factory_little_endian_cvrt(factory_data);
-		ret = wsm_save_factory_txt_to_mcu(hw_priv, factory_data, 0, cmd_type);
-		bes2600_err_with_cond(ret, BES2600_DBG_DOWNLOAD, "save factory data to mcu failed.\n");
-	}
-	bes2600_factory_free_file_buffer(file_buffer);
-	bes2600_factory_unlock();
-
-	if (ret >= 0)
-		return bes2600_testmode_reply(hw->wiphy, &ret, sizeof(int));
-
-	return ret;
-}
-
-static int bes2600_set_select_efuse_flag_to_txt(struct ieee80211_hw *hw,
-			   void *data, int len)
-{
-	struct bes_select_calib_t *test_p = (struct bes_select_calib_t *)data;
-	int ret = bes2600_select_efuse_flag_write(test_p->select_efuse_flag);
-	return bes2600_testmode_reply(hw->wiphy, &ret, sizeof(int));
-}
-
-static int bes2600_vendor_cpu_usage(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
-{
-	return wsm_cpu_usage_cmd(hw->priv);
-}
-
-static int bes2600_vendor_epta_parm_config(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u8 *data, int len)
-{
-	struct bes2600_common *hw_priv = hw->priv;
-	struct vendor_epta_parm *epta_para = (struct vendor_epta_parm *)data;
-
-	return coex_set_epta_params(hw_priv, epta_para->wlan_duration,
-				epta_para->bt_duration, epta_para->hw_epta_enable);
-}
-
-/**
- * bes2600_testmode_cmd -called when tesmode command
- * reaches bes2600
- *
- * @hw: the hardware
- * @data: incoming data
- * @len: incoming data length
- *
- * Returns: 0 on success or non zero value on failure
- */
-int bes2600_testmode_cmd(struct ieee80211_hw *hw, struct ieee80211_vif *vif, void *data, int len)
-{
-	int ret = 0;
-	struct nlattr *type_p = nla_find(data, len, BES_TM_MSG_ID);
-	struct nlattr *data_p = nla_find(data, len, BES_TM_MSG_DATA);
-
-	if (!type_p || !data_p)
-		return -EINVAL;
-
-	bes2600_info(BES2600_DBG_TEST_MODE, "[STA] %s: type: %i\n",
-		__func__, nla_get_u32(type_p));
-
-	switch (nla_get_u32(type_p)) {
-	case BES_MSG_TEST:
-		ret = bes2600_test(hw,
-			nla_data(data_p), nla_len(data_p));
-		break;
-	case BES_MSG_SET_SNAP_FRAME:
-		ret = bes2600_set_snap_frame(hw, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_GET_TX_POWER_LEVEL:
-		ret = bes2600_get_tx_power_level(hw);
-		break;
-	case BES_MSG_GET_TX_POWER_RANGE:
-		ret = bes2600_get_tx_power_range(hw);
-		break;
-	case BES_MSG_SET_ADVANCE_SCAN_ELEMS:
-		ret = bes2600_set_advance_scan_elems(hw, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_SET_TX_QUEUE_PARAMS:
-		ret = bes2600_set_txqueue_params(hw, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_GET_TSM_PARAMS:
-		ret = bes2600_get_tsm_params(hw);
-		break;
-	case BES_MSG_START_STOP_TSM:
-		ret = bes2600_start_stop_tsm(hw, (u8 *) nla_data(data_p));
-		break;
-	case BES_MSG_GET_ROAM_DELAY:
-		ret = bes2600_get_roam_delay(hw);
-		break;
-	case BES_MSG_SET_POWER_SAVE:
-		ret = bes2600_set_power_save(hw, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_ADD_IP_OFFLOAD:
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-		ret = net_device_add_ip_offload(hw, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-#else
-		ret = -EPERM;
-#endif
-		break;
-	case BES_MSG_DEL_IP_OFFLOAD:
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-		ret = net_device_del_ip_offload(hw, vif, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-#else
-		ret = -EPERM;
-#endif
-		break;
-	case BES_MSG_SET_IP_OFFLOAD_PERIOD:
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-		ret = net_device_en_ip_offload(hw, vif, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-#else
-		ret = -EPERM;
-#endif
-		break;
-	case BES_MSG_GET_KEEP_ALIVE_STREAM:
-#ifdef CONFIG_BES2600_KEEP_ALIVE
-		ret = get_keep_alive_used_stream(hw);
-#else
-		ret = -EPERM;
-#endif
-		break;
-	case BES_MSG_SAVE_CALI_TXT_TO_FLASH:
-		ret = -EPERM;
-		break;
-	case BES_MSG_SAVE_CALI_TXT_TO_EFUSE:
-		ret = bes2600_factory_cali_to_mcu(hw, BES2600_RF_CMD_CALI_TXT_TO_EFUSE);
-		break;
-	case BES_MSG_SET_SELECT_EFUSE_FLAG:
-		ret = bes2600_set_select_efuse_flag_to_txt(hw, nla_data(data_p), nla_len(data_p));
-		break;
-	case BES_MSG_VENDOR_RF_CMD:
-		ret = bes2600_vendor_rf_cmd(hw, vif, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_EPTA_PARM_CONFIG:
-		ret = bes2600_vendor_epta_parm_config(hw, vif, (u8 *) nla_data(data_p),
-			nla_len(data_p));
-		break;
-	case BES_MSG_MCU_CPUUSAGE:
-		ret = bes2600_vendor_cpu_usage(hw, vif);
-		break;
-	default:
-		break;
-	}
-	return ret;
-}
-#endif /* CONFIG_BES2600_TESTMODE */

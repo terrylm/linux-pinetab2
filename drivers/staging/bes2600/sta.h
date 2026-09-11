@@ -133,15 +133,6 @@ void bes2600_rem_chan_timeout(struct work_struct *work);
 int bes2600_set_macaddrfilter(struct bes2600_common *hw_priv, struct bes2600_vif *priv, u8 *data);
 int bes2600_set_na(struct ieee80211_hw *hw,
 			struct ieee80211_vif *vif);
-#ifdef CONFIG_BES2600_TESTMODE
-void bes2600_device_power_calc(struct bes2600_common *priv,
-			      s16 max_output_power, s16 fe_cor, u32 band);
-int bes2600_testmode_cmd(struct ieee80211_hw *hw, struct ieee80211_vif *vif, void *data, int len);
-int bes2600_testmode_event(struct wiphy *wiphy, const u32 msg_id,
-			 const void *data, int len, gfp_t gfp);
-int bes2600_get_tx_power_range(struct ieee80211_hw *hw);
-int bes2600_get_tx_power_level(struct ieee80211_hw *hw);
-#endif /* CONFIG_BES2600_TESTMODE */
 int bes2600_wifi_start(struct bes2600_common *hw_priv);
 int bes2600_wifi_stop(struct bes2600_common *hw_priv);
 #endif /* STA_H_INCLUDED */
